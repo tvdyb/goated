@@ -78,6 +78,21 @@ class TradingCalendar:
             "wti": (_wti_trading_seconds, _SECONDS_PER_TRADING_YEAR_WTI),
         }
 
+    def register_handler(
+        self,
+        commodity: str,
+        trading_seconds_fn,
+        seconds_per_trading_year: float,
+    ) -> None:
+        """Add a commodity's session schedule. Called by later deliverables as
+        brent/gold/copper/etc. calendars come online. Also used by benchmarks
+        to stand up a 50-market synthetic book."""
+        if seconds_per_trading_year <= 0.0:
+            raise ValueError(
+                f"{commodity}: seconds_per_trading_year must be > 0, got {seconds_per_trading_year}"
+            )
+        self._handlers[commodity] = (trading_seconds_fn, seconds_per_trading_year)
+
     def tau_years(self, commodity: str, now_ns: int, settle_ns: int) -> float:
         if commodity not in self._handlers:
             raise NotImplementedError(

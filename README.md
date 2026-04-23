@@ -4,7 +4,24 @@ Live Kalshi commodity theo engine. Computes `P(S_T > K)` for every listed Kalshi
 
 ## Status
 
-Deliverable 1: skeleton + WTI GBM end-to-end with Black-Scholes analytical parity tests.
+Deliverable 2: benchmark harness + budget tests. WTI GBM end-to-end ships
+from deliverable 1.
+
+## Measured latency (M-series macOS, single process)
+
+```
+kernel _gbm_prob_above  (n_strikes= 1)   p50  0.25μs  p99  0.29μs
+kernel _gbm_prob_above  (n_strikes=20)   p50  0.54μs  p99  0.58μs
+kernel _gbm_prob_above  (n_strikes=50)   p50  1.00μs  p99  1.04μs
+GBMTheo.price           (20 strikes)     p50  4.71μs  p99  5.21μs   (budget 50μs)
+Pricer.reprice_market   (1 market)       p50 17.33μs  p99 18.84μs   (budget 200μs)
+FULL BOOK               (50 × 20 strk)   p50  864μs   p99  936μs    (budget 200ms)
+tick→theo (ingest+price, 1 market)       p50 18.38μs  p99 22.17μs   (budget 250μs)
+```
+
+Full book clears its 200ms budget by ~200×, leaving comfortable headroom
+for jump-diffusion FFT and regime-switch models later. Re-run with
+`python -m benchmarks.run`.
 
 ## Latency targets
 
