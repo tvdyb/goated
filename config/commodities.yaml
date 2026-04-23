@@ -1,0 +1,84 @@
+# Per-commodity configuration. Deliverable 1 populates WTI fully; others are
+# stubs with enough fields for the registry to parse — they'll be filled as we
+# implement each model family. Hot-path code must never silently accept a
+# partial config; unknown commodities raise at registry load.
+
+wti:
+  pyth_feed_id: "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
+  pyth_min_publishers: 5
+  pyth_max_staleness_ms: 2000
+  cme_symbol: "CL"
+  cme_roll_rule: "20th_of_month"
+  options_symbol: "LO"
+  options_expiry: "weekly"
+  model: "gbm"
+  vol_source: "implied_weekly_atm"
+  vol_fallback: "ewma_30d"
+  drift: 0.0
+  basis_model: "ewma_5min"
+  trading_hours:
+    # WTI electronic: Sun 17:00 ET → Fri 17:00 ET, 60-min daily maintenance halt.
+    # Approximated as 23hrs/day Sun-Fri for τ calculation (engine/event_calendar.py).
+    session: "sun_17_fri_17_et"
+    hours_per_day: 23.0
+  event_calendar:
+    - name: "EIA_crude"
+      day_of_week: "wed"
+      time_et: "10:30"
+      vol_adjustment: "strip_event_vol_if_after"
+  jump: null
+  notes: "Add Iran/Hormuz jump overlay when conflict regime detected"
+
+# --- stubs below; will be filled in deliverables 3–5 ---
+
+brent:
+  model: "gbm"
+  stub: true
+
+gold:
+  model: "gbm"
+  stub: true
+
+silver:
+  model: "gbm"
+  stub: true
+
+copper:
+  model: "gbm"
+  stub: true
+
+diesel:
+  model: "gbm"
+  stub: true
+
+corn:
+  model: "gbm"
+  stub: true
+
+soy:
+  model: "gbm"
+  stub: true
+
+nat_gas:
+  model: "jump_diffusion"
+  stub: true
+
+wheat:
+  model: "jump_diffusion"
+  stub: true
+
+coffee:
+  model: "jump_diffusion"
+  stub: true
+
+nickel:
+  model: "regime_switch"
+  stub: true
+
+lithium:
+  model: "point_mass"
+  stub: true
+
+sugar:
+  model: "gbm"
+  stub: true

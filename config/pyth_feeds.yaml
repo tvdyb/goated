@@ -1,0 +1,16 @@
+# Pyth Hermes feed metadata. Feed IDs from pyth.network/price-feeds.
+#
+# Deliverable 1 only wires WTI. Others populated as each commodity is enabled.
+# hermes_endpoint is the Hermes websocket streaming endpoint; hermes_http is
+# the SSE/REST fallback used for smoke tests and (never) the hot path.
+
+hermes_endpoint: "wss://hermes.pyth.network/ws"
+hermes_http: "https://hermes.pyth.network"
+
+feeds:
+  wti:
+    feed_id: "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
+    symbol: "Crude Oil/USD"
+    description: "Pyth WTI crude oil spot aggregate"
+    expected_publishers_floor: 5
+    max_staleness_ms: 2000
