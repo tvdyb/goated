@@ -1,0 +1,68 @@
+# Truflation AI & DePIN Index — Kalshi market KXTRUFAIDP-26APR27
+#
+# 15 strikes, $1.50 spaced, 52.04 → 73.04. Settlement: index value on
+# 2026-04-27 (UTC end of day, per Kalshi rules). Underlying: Truflation
+# AI & DePIN Index — basket of 6 tokens, market-cap weighted, capped at
+# 25% per name, rebalanced quarterly (per Truflation methodology).
+
+event_ticker: KXTRUFAIDP-26APR27
+settlement_utc: "2026-04-27T23:59:59Z"
+
+# Strike grid (Yes pays if index strictly above strike).
+strikes:
+  - 52.04
+  - 53.54
+  - 55.04
+  - 56.54
+  - 58.04
+  - 59.54
+  - 61.04
+  - 62.54
+  - 64.04
+  - 65.54
+  - 67.04
+  - 68.54
+  - 70.04
+  - 71.54
+  - 73.04
+
+# Constituents. CoinGecko IDs are the canonical ones. Token quantities
+# (`n`) are calibrated by `scripts/calibrate.py` from a known anchor
+# (index_value, prices) tuple — fill `anchor` below from the latest
+# Truflation marketplace publish, then run calibrate to populate `n`.
+constituents:
+  - symbol: FET
+    coingecko_id: fetch-ai
+  - symbol: RENDER
+    coingecko_id: render-token
+  - symbol: TAO
+    coingecko_id: bittensor
+  - symbol: AKT
+    coingecko_id: akash-network
+  - symbol: AIOZ
+    coingecko_id: aioz-network
+  - symbol: PRIME
+    coingecko_id: echelon-prime
+
+# Anchor: a (timestamp, index level, constituent prices) tuple from
+# Truflation's published index. Used to back out token quantities so
+# the live reconstruction matches the published index level.
+# Fill these from the most recent Truflation publish before going live.
+anchor:
+  ts_utc: null            # e.g. "2026-04-26T23:59:59Z"
+  index_value: null       # e.g. 60.12
+  prices: {}              # {FET: 0.42, RENDER: 3.1, TAO: 220.0, ...}
+  target_weights: {}      # {FET: 0.25, RENDER: 0.20, ...} sum to 1.0; capped at 0.25
+
+# Calibrated token quantities n_i so that index = sum(n_i * P_i).
+# Populated by scripts/calibrate.py.
+quantities: {}
+
+# Annualized volatility / correlation — populated by calibration/cov.py
+# from rolling hourly log-returns. Fall back to defaults until calibrated.
+sigma_annual: {}          # {FET: 0.95, ...}
+correlation: []           # 6x6 row-major; identity until calibrated
+
+# Calibration window for cov matrix.
+cov_window_days: 30
+cov_bar_minutes: 60

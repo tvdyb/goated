@@ -29,7 +29,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["feeds*", "state*", "models*", "engine*", "calibration*", "validation*"]
+include = ["feeds*", "state*", "models*", "engine*", "calibration*", "validation*", "trufaidp*"]
 exclude = ["tests*", "benchmarks*"]
 
 [tool.pytest.ini_options]
