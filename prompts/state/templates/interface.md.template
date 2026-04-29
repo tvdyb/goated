@@ -1,0 +1,110 @@
+# Interface contract — `<contract_name>`
+
+**Frozen.** <YYYY-MM-DD>
+**Frozen by.** <agent-id or human>
+**Affected actions.** ACT-<XX>, ACT-<YY>, ...
+**Version.** v1
+**Stub commit.** <git-sha or "pending">
+
+---
+
+## Purpose
+
+<One paragraph: what this contract describes and why it had to be
+frozen before parallel actions could touch it.>
+
+---
+
+## Type / signature
+
+```python
+# Concrete code, copy-paste-ready.
+
+@dataclass(frozen=True)
+class Foo:
+    field_a: float
+    field_b: np.ndarray  # dtype: float64
+    as_of_ns: int        # provenance
+    source_tick_seq: int # provenance
+
+
+def bar(commodity: str, *, now_ns: int) -> Foo:
+    """One-line summary."""
+    ...
+```
+
+---
+
+## Semantics
+
+- **When called.** <e.g., "On every tick that reaches the pricer">
+- **Returns.** <what shape, what dtype, what invariants>
+- **Raises.** <which exception classes for which failure modes>
+- **Threading / async.** <e.g., "Synchronous; do not await">
+- **Performance.** <if relevant: "Hot path; must be sub-X µs">
+
+---
+
+## Provenance fields
+
+If the contract carries provenance (typical for hot-path dataclasses):
+
+- `as_of_ns`: nanosecond timestamp of the input that produced this.
+- `source_tick_seq`: monotonic sequence id from the originating tick.
+- `model_name`: string identifier of the producing model.
+- `params_version`: version tag for the calibration parameters used.
+
+---
+
+## Invariants
+
+- <Invariant 1: e.g., "field_a is finite">
+- <Invariant 2: e.g., "len(field_b) == number of strikes in
+  TheoInputs">
+- ...
+
+The verifier (`prompts/03_ACTION_VERIFY.md`) will check each invariant
+on PASS.
+
+---
+
+## Tests required
+
+These tests must exist and pass before any honouring action is
+verified-complete:
+
+- `tests/test_<contract_name>_shape.py` — assert the dataclass / sig
+  exists with the named fields and types.
+- `tests/test_<contract_name>_invariants.py` — assert invariants hold
+  on a fixture instance.
+- `tests/test_<contract_name>_raise.py` — assert each documented
+  raise condition triggers the documented exception.
+
+---
+
+## Versioning
+
+- **Version.** v1
+- **Breaking-change policy.** New version (v2) lives alongside v1
+  until all callers migrate. v1 emits `DeprecationWarning` during
+  migration. No silent shape changes.
+- **Migration plan (when v2 lands).** <Empty until v2 is contemplated>
+
+---
+
+## Examples
+
+```python
+# Concrete usage example.
+
+result = bar("KXSOYBEANW-26APR24-1050", now_ns=1714233600_000_000_000)
+print(result.field_a)
+```
+
+---
+
+## History
+
+| Version | Date | Change | By |
+|---|---|---|---|
+| v1 | <YYYY-MM-DD> | initial freeze | <agent or human> |

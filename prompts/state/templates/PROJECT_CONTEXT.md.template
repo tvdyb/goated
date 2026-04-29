@@ -1,0 +1,108 @@
+# PROJECT_CONTEXT — `goated`
+
+**Last updated.** <YYYY-MM-DD HH:MM TZ>
+**Updated by.** <agent-id or human-name>
+
+---
+
+## Operative plan
+
+**Plan file.** `audit/audit_F3_refactor_plan_lip.md`
+**Framing.** Low-frequency, LIP-driven (Liquidity Incentive Program).
+**Supersedes.** F1 (`audit/audit_F_refactor_plan.md`),
+F2 (`audit/audit_F2_refactor_plan_mm_program.md`).
+
+If a newer plan supersedes F3, update this section and run
+`08_DEPENDENCY_AUDIT.md` to revalidate the runtime DAG.
+
+---
+
+## Active wave
+
+**Wave.** <0 / 1 / 2 / 3 / 4>
+**Wave status file.** `state/wave_<N>_status.md`
+**Wave goal (one line).** <copied from wave_<N>_status.md>
+
+---
+
+## In flight
+
+Actions currently being implemented (status: `mid-flight` or
+`complete-pending-verify`):
+
+| Action | Status | Implementer | Resumption pointer |
+|---|---|---|---|
+| ACT-XX | mid-flight | agent-NN | `state/action_XX/handoff.md` |
+| ACT-YY | complete-pending-verify | agent-MM | (awaiting verifier) |
+
+---
+
+## Ready (deps met, not started)
+
+| Action | Wave | Effort | Notes |
+|---|---|---|---|
+| ACT-AA | 0 | M | Independent of in-flight work |
+
+---
+
+## Blocked
+
+| Action | Blocking factor | ETA |
+|---|---|---|
+| ACT-20 | IB account approval | ~1-2 weeks |
+
+---
+
+## Completed phases
+
+- Wave -1 (audit): complete; digests in `audit/audit_*.md`.
+- (append wave digests here as they close)
+
+---
+
+## Decisions
+
+**Resolved.** See `state/decisions_log.md` for full entries.
+- OD-01 (scope): research is the spec
+- OD-11 (FCM): Interactive Brokers
+- OD-18 (capture): tiered REST + WS
+- OD-31 (cadence): low-frequency periodic-quoting
+- (more as they resolve)
+
+**Pending.** See operative plan §7 for full list. Working defaults
+shipped per F3.
+- OD-32′, OD-33′, OD-34′: refined by ACT-LIP-VIAB
+- OD-25, OD-36: refined by paper-trading observation
+- OD-13, OD-19, OD-21, OD-22, OD-24, OD-26, OD-27, OD-28, OD-35:
+  working defaults; design-review at relevant action
+
+---
+
+## Non-negotiables in force
+
+- No pandas in hot path; no Python loops over markets/strikes.
+- No Monte Carlo in hot path; offline-validation only.
+- No silent failures: stale Pyth, out-of-bounds IV, dropouts → raise.
+- `scipy.special.ndtr` over `scipy.stats.norm.cdf`.
+- `numba.njit` on all hot-path math.
+- Synchronous main loop; `asyncio` for I/O only.
+- Theo for `KXSOYBEANW` is bucket Yes-price (corridor decomposition).
+
+---
+
+## External dependencies
+
+- IB account application (Interactive Brokers, ~1-2 weeks lead time).
+- LIP pool data accumulation (rolling window; 2 weeks needed before ACT-LIP-VIAB can run).
+- Forward-capture tape (ACT-01 Phase 1a running continuously since
+  <date>).
+
+---
+
+## Resumption pointer
+
+If you are picking up this project mid-flight, your starting move is:
+<one of: 'run prompts/00_BOOT.md to refresh status', 'pick a ready
+action and run prompts/02_ACTION_IMPLEMENT.md', 'verify ACT-XX with
+prompts/03_ACTION_VERIFY.md', 'run prompts/09_WAVE_GATE.md if all
+actions in wave verified', etc.>

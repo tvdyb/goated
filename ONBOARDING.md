@@ -166,31 +166,60 @@ Kalshi WS reconnect storm) needs to be layered on top.
 
 ---
 
-## 6. The plan: 59 actions in 5 waves
+## 6. The plan: ~44 actions in 5 waves (F3)
 
-`audit_F_refactor_plan.md` groups the 185 gaps into 59 actions
-sequenced as follows:
+The audit produced three plan documents:
 
-| Wave | Goal | Actions | Effort |
-|---|---|---|---|
-| 0 | Minimum tradeable surface — sign, throttle, send, capture, cap | 13 (ACT-01–ACT-13) | ~5 ew critical path |
-| 1 | Structural correctness — RND pipeline, A–S/CJ control loop, hedge leg, kill switch end-to-end, M0 backtest | 13 (ACT-14–ACT-26) | XL-dominated |
-| 2 | Quoting and pricing quality — Heston/Bates SV, matrix skew, vertical-spread hedge, microstructure | 12 (ACT-27–ACT-38) | mostly parallel |
-| 3 | Signals and strategy — weather, COT, soybean complex, TSMOM, event-driven | 11 (ACT-39–ACT-49) | mostly parallel |
-| 4 | Hardening — observability, topology, calibration substrate, backtest realism | 10 (ACT-50–ACT-59) | leaves |
+- **`audit_F_refactor_plan.md` (F1)** — 59 actions, edge-driven framing inherited from Phase 02. Historical reference / upper bound.
+- **`audit_F2_refactor_plan_mm_program.md` (F2)** — 45 actions, low-frequency framing assuming a formal Kalshi Market Maker Agreement. **Superseded** because the formal MM Agreement turned out to be the wrong program for `KXSOYBEANW`.
+- **`audit_F3_refactor_plan_lip.md` (F3)** — 44 actions, low-frequency framing under Kalshi's **Liquidity Incentive Program (LIP)** — the program that actually applies. **This is the plan we execute.**
 
-Each action cites at least one research C-id and one code location, and
-tags as refactor / feature / bugfix. Section 8 of that file has the
-full dependency DAG; section 9 calls out parallelisable vs serial work
-per wave.
+F3 supersedes F1 and F2 for sequencing. F1/F2 stand as historical references — F2 in case Kalshi later opens the formal MM Agreement to `KXSOYBEANW`, F1 in case LIP terminates and the strategy has to pivot to edge-driven. Read F3 first.
 
-The single most important callout: **ACT-01 (forward-capture tape) has
-no prerequisites and every uncaptured day is permanently lost.** Start
-it on day zero, even if everything else is paused for decisions.
+F3 groups the gaps as follows:
+
+| Wave | Goal | Actions (F3) |
+|---|---|---|
+| 0 | LIP-ready quoting surface — sign, quote two-sided continuously at the inside, capture tape, kill cleanly, attribute pool share. **Ends with ACT-LIP-VIAB**, a two-week observation that gates whether Wave 1 proceeds. | 16 |
+| 1 | Structural correctness, LIP-aware — RND pipeline, distance-multiplier-preserving inside quoting (no A-S/CJ control loop), IB hedge leg, settlement, reconciliation, kill switch, scenarios, M0 backtest, LIP P&L attribution. | 13 |
+| 2 | Quoting refinements aligned to score optimization — Heston SV, hedge basis tracker, score-optimal pre-event widening, measure overlay, limit-day correction, competitor presence estimator. | 7 |
+| 3 | Capacity (more LIP-eligible markets) — multi-product LIP extension, USDA REST minimum, stocks-to-use regime gate. | 3 |
+| 4 | Operational hardening — structured logging, inline calibration, backtest realism, Pyth hardening, LIP-reward reconciliation. | 5 |
+
+Each F1 action cites at least one research C-id and one code location.
+F1 §8 has the full dependency DAG; F1 §9 calls out parallelisable vs
+serial work per wave. F2 inherits the same dependency structure for
+the actions it carries forward; the F2 cuts and additions are
+explicit in F2 §5 and §6.
+
+Two callouts that drive day-zero work:
+
+- **ACT-01 Phase 1a (REST polling sentinel)** has no prerequisites and starts this week. Cheap, no auth, sufficient for M0. Phase 1b (full WS forward-capture) lands before M0 closes.
+- **ACT-LIP-VIAB (Wave 0 final action)** is a deliberate tripwire. Two weeks of pool data + observed competition + simulated quoting policy answers the economic-viability question before sinking weeks into Wave 1. If it fails, pivot before engineering accumulates sunk cost.
+
+The MM-Agreement application item from F2 (ACT-MM2) is **gone** under F3. LIP is auto-enrolled — no application, no contract, no calendar-XL legal lead time. The only non-engineering long-lead item left is the IB account application (~1–2 weeks for ACT-20 prerequisite).
 
 ---
 
 ## 7. Decisions you have to make
+
+**Resolved so far (2026-04-27):**
+
+- **OD-01** *(scope)* — research corpus is the spec. The gap register stands as written.
+- **OD-11** *(FCM vendor)* — Interactive Brokers, with IB Gateway + `ib_insync`. Account + CME-futures-permission application is a 1–2 week prerequisite for ACT-20.
+- **OD-18** *(forward-capture)* — reframed into two tiers. Phase 1a (REST polling) is M0-sufficient, no auth, this week. Phase 1b (full WS forward-capture) is M1+, lands before M0 closes.
+- **OD-31** *(operating cadence)* — low-frequency periodic-quoting service, 30-second baseline, sub-second event reflex, threshold-driven hedge.
+- **OD-32 / OD-33 / OD-34** *(MM Agreement scope / rebates / designated markets)* — **invalidated** under F3. The strategy targets the Liquidity Incentive Program, which has no agreement, no formal rebate negotiation, and no designated-market list.
+
+**New under F3 (LIP-specific):**
+
+- **OD-32′** — market-selection policy across `KXSOYBEANW` markets (default: top-by-pool-net-of-competition, revisit after ACT-LIP-VIAB).
+- **OD-33′** — target-size posting policy (default: 1.5× Target Size threshold, revisit after viability check).
+- **OD-34′** — distance-multiplier curve calibration source (default: ask Kalshi support first, fall back to empirical post-and-observe).
+- **OD-36** — event-window policy (widen and lose score, or stay tight and risk adverse selection — default: tight on majority buckets, widen on tail).
+
+**Still open from F1/F2 with working defaults:**
+
 
 `audit_F_refactor_plan.md` §11 lists 30 outstanding decisions
 (`OD-01`–`OD-30`). They split into three groups:
@@ -223,10 +252,9 @@ Practitioner corpus selection? The plan ships working assumptions for
 every one of these so engineering can proceed; treat them as
 defaults to revisit, not commitments.
 
-The triage advice from the previous response stands: **OD-01, OD-11,
-OD-18 (forward-capture status today) are the three that gate
-day-zero work.** Everything else can be answered in parallel with
-ACT-01 starting.
+With OD-01 and OD-11 resolved and OD-18 reframed, the day-zero blockers
+are clear. Everything else can be answered in parallel with ACT-01
+Phase 1a starting.
 
 ---
 
@@ -256,6 +284,22 @@ The Phase-D files are the most directly actionable — they tell you
 which C-ids hit which file:line ranges and how each one was scored.
 
 ---
+
+## 8.5. Operating the project (prompt stack)
+
+The project uses a structured prompt stack designed for cross-context-window execution and parallel agents. All prompts and state-file templates live in `prompts/`. Read `prompts/README.md` for the architecture overview. The stack provides:
+
+- **00_BOOT** for any agent picking up the project cold.
+- **01_WAVE_PLANNER** at the start of each wave to decompose into parallel/serial tracks.
+- **02_ACTION_IMPLEMENT** as the workhorse for implementing one action.
+- **03_ACTION_VERIFY** as the read-only auditor that gates every action.
+- **04_HANDOFF** for compressing state before context resets.
+- **05_PARALLEL_MERGE / 07_INTERFACE_CONTRACT** for parallelism safety.
+- **06_DECISION_RESOLVE** for closing outstanding decisions with rationale.
+- **08_DEPENDENCY_AUDIT** for catching DAG drift.
+- **09_WAVE_GATE** for end-of-wave verification, including the Wave-0 ACT-LIP-VIAB go/no-go.
+
+State lives under `state/` with templates in `prompts/state/templates/`. Decisions are append-only; code is verified before being marked complete; handoff packets carry mental models forward across context boundaries. The patterns are derived from 2026 best practices for long-running agent harnesses (artifact-based handoff, three-layer storage, context resets over compaction, explicit interface contracts before parallel work).
 
 ## 9. Where to start
 

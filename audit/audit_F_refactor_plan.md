@@ -75,7 +75,7 @@ plus hard caps. The proper RND pipeline lands in Wave 1.
 
 | ID | Summary | Type | Severity | Effort | Gaps closed | Deps | Dependents |
 |---|---|---|---|---|---|---|---|
-| ACT-01 | Forward-capture tape sinks (Kalshi WS+ticker+trade+fill, CME L1+EOD chain, fundamentals+weather) to S3+Parquet | feature | blocker | XL | GAP-148, GAP-173 | — | ACT-26 |
+| ACT-01 | Forward-capture tape sinks — **Phase 1a:** REST polling sentinel (`/markets/{ticker}/orderbook` every 30–60s + `/markets/trades` + settled outcomes; no auth needed; M0-sufficient). **Phase 1b:** WebSocket forward-capture (Kalshi `orderbook_delta`+`ticker`+`trade`+`fill`, CME L1+EOD chain, fundamentals+weather) to S3+Parquet (M1+ required). | feature | blocker | XL | GAP-148, GAP-173 | — | ACT-26 |
 | ACT-02 | Soybean commodities.yaml fill-in (`cme_symbol`, Kalshi block, fees, position cap, bucket-grid source) | feature | blocker | S | GAP-100 | — | ACT-03, ACT-08, ACT-10 |
 | ACT-03 | Kalshi REST client foundation: `httpx.AsyncClient` + RSA-PSS-SHA256 signing + tiered token-bucket pacer + 429 backoff | feature | blocker | XL | GAP-071, GAP-072, GAP-073 | ACT-02 | ACT-04, ACT-05, ACT-11, ACT-22 |
 | ACT-04 | Series→Event→Market→Yes/No ticker schema, parser/formatter, `GET /events/{ticker}` puller, `Event`/`Bucket` data structures (MECE check, open-tail handling) | feature | blocker | M | GAP-074, GAP-075, GAP-079 | ACT-03 | ACT-06, ACT-09, ACT-13, ACT-21 |
@@ -89,12 +89,22 @@ plus hard caps. The proper RND pipeline lands in Wave 1.
 | ACT-12 | Aggregate book-delta cap + risk-gating stage J (block-on-breach) + Milestone-2 quoter contract (≥4¢ each side, amend-not-cancel) | feature | blocker | L | GAP-118, GAP-120, GAP-145 | ACT-09 | ACT-19, ACT-25 |
 | ACT-13 | Bucket Yes-price vector via `D(ℓᵢ)−D(uᵢ)` corridor decomposition adapter on existing GBM `P(S_T>K)` + bucket integration `value_i = ∫_ℓ^u f_T dx` + sum-to-1 gate in `validation/sanity.py` | refactor+feature | blocker | M | GAP-005, GAP-043, GAP-044 | ACT-04, ACT-08 | ACT-17, ACT-19 |
 
-**ACT-01.** Forward-only capture is the only Wave-0 item that has no
-prerequisite and is the only one whose absence destroys an irreplaceable
-asset (one Kalshi day uncaptured = one Kalshi day lost forever). Cited
-C09-23/24/62/63; today nothing writes a Kalshi tape (`feeds/__init__.py`
-is empty and the cartography records no S3 sink at lines 108-115).
-Sequenced first so capture starts running while the rest of Wave 0 lands.
+**ACT-01.** Cited C09-23/24/62/63. Today nothing writes a Kalshi tape
+(`feeds/__init__.py` is empty; cartography records no S3 sink at
+lines 108-115). Two-tiered after the OD-18 reframe: **Phase 1a** is a
+REST polling sentinel that hits public read-only endpoints
+(`/markets/{ticker}/orderbook` snapshot every 30–60s, `/markets/trades`,
+settled outcomes) and writes to S3+Parquet. Cheap, no auth, doesn't need
+ACT-03; sufficient for M0 (RND-implied probability vs realized outcome
+scoring) because M0 only needs representative quotes plus settlements,
+not full book reconstruction. Stand up Phase 1a immediately — every
+day uncaptured is one fewer week of M0 history. **Phase 1b** is the
+full WebSocket forward-capture (Kalshi `orderbook_delta`+`ticker`+
+`trade`+`fill`, CME L1+EOD chain, fundamentals+weather), required from
+M1 onward because would-quote simulation needs historical book state
+that REST cannot reconstruct retroactively. Phase 1b lands before M0
+finishes evaluating, so the M1 backtest has weeks of captured data
+ready when M0 closes.
 
 **ACT-02.** Cited C07-15/21/112 and C03-87. The `soy` block at
 `config/commodities.yaml:58-60` is `stub: true` only and every consumer
@@ -715,7 +725,8 @@ prefix is `OD-NN`; the originating Appendix B item is in parentheses.
 - **OD-01.** *Project scope.* Is the C02/C08/C10 corpus the spec the
   live code is being built toward, or is it research input the system
   may decline to implement? (Appendix B.1.1) — gates the entire plan;
-  this document assumes the former.
+  this document assumes the former. **RESOLVED 2026-04-27: research is
+  the spec; the gap register stands as written.**
 - **OD-02.** *GBM scalar σ default.* Is `models/gbm.py:35-42`'s
   constant σ intended as the default for all CME commodities, or only
   a baseline for soybean weekly density? (Appendix B.1.8) — affects
@@ -747,6 +758,12 @@ prefix is `OD-NN`; the originating Appendix B item is in parentheses.
   signal? (Appendix B.4.10) — required before any production wire-on.
 - **OD-11.** *FCM vendor.* IB, AMP, or Tradovate? (Appendix B.5.5 /
   B.7.10) — this document assumes IB; gates ACT-20 effort and timing.
+  **RESOLVED 2026-04-27: Interactive Brokers.** Implementation pattern:
+  IB Gateway running headless + `ib_insync` async wrapper. Account +
+  CME-futures-permission application is a hard prerequisite (~1–2 weeks
+  lead time); paper-trading account stood up in parallel for ACT-26.
+  Real-time CME Globex L1 market-data subscription (~$10–15/mo retail)
+  is an additional running cost.
 - **OD-12.** *FCM vs self-clear.* Constrains pre-trade-risk hooks and
   order-size cap surface (Appendix B.7.10) — coupled to OD-11.
 - **OD-13.** *Reconciliation cadence ownership.* Scheduler-driven or
@@ -765,7 +782,13 @@ prefix is `OD-NN`; the originating Appendix B item is in parentheses.
 - **OD-18.** *Forward-capture status today.* Has any private branch /
   external service started writing the Kalshi tape? (Appendix B.8.3) —
   if yes, ACT-01 reduces to picking up the existing sink; if no,
-  ACT-01 is the day-zero priority.
+  ACT-01 is the day-zero priority. **PARTIALLY REFRAMED 2026-04-27:**
+  ACT-01 split into Phase 1a (REST polling sentinel — cheap, no auth,
+  M0-sufficient) and Phase 1b (full WS forward-capture — required from
+  M1). Phase 1a is non-blocking by anything and can start this week.
+  OD-18 reduces to: does any team member already run a Kalshi tape
+  capture (any tier) we can pick up? If yes, ACT-01 collapses; if no,
+  Phase 1a starts immediately and Phase 1b lands before M0 closes.
 - **OD-19.** *Fee table source-of-truth.* Lives in `fees/` package,
   `config/`, or hardcoded in the order client? (Appendix B.8.4) — this
   document assumes new `fees/` package called from both pricer and

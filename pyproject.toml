@@ -18,6 +18,8 @@ dependencies = [
     "structlog>=24.1",
     "python-dateutil>=2.9",
     "pytz>=2024.1",
+    "duckdb>=1.0",
+    "ib_insync>=0.9.86",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +32,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["feeds*", "state*", "models*", "engine*", "calibration*", "validation*", "trufaidp*"]
+include = ["feeds*", "state*", "models*", "engine*", "calibration*", "validation*", "trufaidp*", "hedge*"]
 exclude = ["tests*", "benchmarks*"]
 
 [tool.pytest.ini_options]

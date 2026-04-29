@@ -1,0 +1,103 @@
+# Wave <N> gate — <YYYY-MM-DD>
+
+(Append-only. If a gate fails, the next gate run appends below.)
+
+---
+
+## Gate pass <N> — <YYYY-MM-DD>
+
+**Gate runner.** <agent-id>
+**Wave goal.** <copied from wave_<N>_status.md>
+
+---
+
+## Decision
+
+**PASS / FAIL / NO-GO**
+
+(Definitions: PASS = advance to next wave; FAIL = remediate listed
+failures and re-run gate; NO-GO = stop project, convene human
+stakeholders. NO-GO is reserved for kill-criterion triggers,
+notably Wave 0's ACT-LIP-VIAB.)
+
+---
+
+## Pre-gate audit
+
+- `prompts/08_DEPENDENCY_AUDIT.md` ran on <date>: <CLEAN /
+  AUTO-CORRECTED / ESCALATE>
+- All Wave <N> actions in `state/dependency_graph.md` show
+  `verified-complete`: <yes/no>
+
+---
+
+## Integration tests
+
+- pytest tests/ result: <N pass / M fail / K skip>
+- New regressions vs prior wave gate: <N>
+
+(For Wave 1+: also run wave-specific scenario tests.
+For Wave 0: also exercise ACT-LIP-POOL by polling Kalshi for one
+cycle and confirming pool data is captured.)
+
+---
+
+## Wave-specific gate criteria
+
+(Each row is wave-specific; see `prompts/09_WAVE_GATE.md` Step 3 for
+the per-wave criteria list.)
+
+| Criterion | Result | Evidence |
+|---|---|---|
+| (Wave 0) ACT-LIP-VIAB produced output | yes | `backtest/viability_report_<date>.md` |
+| (Wave 0) ≥2 weeks of pool data observed | yes | <N> distinct dates of pool data captured |
+| (Wave 1) M0 backtest pipeline runs end-to-end | yes/no | <evidence> |
+| (Wave 1) Hedge paper-trade closes a round-trip | yes/no | <evidence> |
+
+---
+
+## Kill criteria evaluated
+
+| KC | Triggered? | Notes |
+|---|---|---|
+| C10-KC-01 (M0 fails) | no / yes / N/A this wave | <evidence> |
+| KC-LIP-01 (pool < $50/day) | no / yes / N/A | <pool-summary value> |
+| KC-LIP-02 (our share < 5%) | no / yes / N/A | <projected share> |
+| KC-LIP-03 (distance multiplier too steep) | no / yes / N/A | <empirical or Kalshi-disclosed> |
+| KC-AUD-01 (capture loss) | no / yes / N/A | <captured-day count> |
+| ... | | |
+
+---
+
+## Findings (FAIL or NO-GO only)
+
+(Each finding numbered, specific, actionable.)
+
+- **F1.** <e.g., "ACT-23 verify shows latest fill-ingestion test
+  fails when WS reconnect happens mid-event; remediate before
+  proceeding to Wave 2.">
+- ...
+
+---
+
+## Recommendation
+
+- **PASS:** Run `prompts/01_WAVE_PLANNER.md` for Wave <N+1>. Update
+  `state/PROJECT_CONTEXT.md` to active_wave <N+1>. Write
+  `state/wave_<N>_digest.md`.
+- **FAIL:** Address findings via `prompts/02_ACTION_IMPLEMENT.md` on
+  affected actions; re-run gate.
+- **NO-GO:** Stop. Convene human stakeholders. Consider pivot per
+  operative-plan §7 reconsideration triggers.
+
+---
+
+## Sign-off
+
+**Agent verdict.** <agent-id>
+**Human sign-off (required for NO-GO).** <human name + date>
+
+---
+
+(append next gate run below this line if FAIL/NO-GO triggers a
+re-run after remediation)

@@ -1,0 +1,56 @@
+# deploy/config.yaml — Live deployment configuration
+#
+# API keys are NOT stored here. Use environment variables:
+#   KALSHI_API_KEY, KALSHI_PRIVATE_KEY_PATH
+#   IB_GATEWAY_HOST, IB_GATEWAY_PORT (override defaults below)
+
+series:
+  - ticker_prefix: KXSOYBEANMON
+    cme_symbol: ZS
+    hedge_enabled: true
+    max_inventory_usd: 1000
+    min_spread_cents: 4
+    edge_tolerance_cents: 2
+    hedge_threshold_contracts: 3
+    max_contracts_per_strike: 50
+
+risk:
+  max_total_inventory_usd: 1000
+  max_per_event_inventory_usd: 500
+  kill_switch_pnl_threshold_pct: 5
+  hedge_disconnect_timeout_s: 15
+  aggregate_delta_cap: 500
+  per_event_delta_cap: 200
+
+settlement_gate:
+  pre_window_seconds: 60
+  post_window_minutes: 15
+  size_down_ladder_hours: [24, 18, 12, 6]
+
+quoter:
+  min_half_spread_cents: 2
+  max_half_spread_cents: 4
+  inventory_skew_gamma: 0.1
+  fee_threshold_cents: 1
+  taker_rate: 0.07
+  maker_fraction: 0.25
+
+taker_imbalance:
+  window_seconds: 60
+  threshold: 0.7
+  cooldown_seconds: 120
+  min_trades: 5
+
+hedge:
+  threshold_contracts: 3.0
+  cooldown_s: 60.0
+
+loop:
+  cycle_seconds: 30
+  cme_refresh_seconds: 900   # 15 min
+
+api:
+  kalshi_base: https://api.elections.kalshi.com
+  ib_gateway_host: 127.0.0.1
+  ib_gateway_port: 4001
+  ib_client_id: 1

@@ -56,8 +56,64 @@ corn:
   stub: true
 
 soy:
+  pyth_feed_id: "0xbfa30e6dff4c406a6f8b2993a18afc8f63b1fee0a569e1a9b6e2540696ef7a00"
+  pyth_min_publishers: 5
+  pyth_max_staleness_ms: 2000
+  cme_symbol: "ZS"
+  cme_contract_cycle: "F/H/K/N/Q/U/X"  # Jan/Mar/May/Jul/Aug/Sep/Nov
+  cme_roll_rule: "fnd_minus_15bd"        # 15 business days before FND (commodity monthlies)
+  options_symbol: "OZS"
+  options_expiry: "monthly"
   model: "gbm"
-  stub: true
+  vol_source: "implied_weekly_atm"
+  vol_fallback: "ewma_30d"
+  drift: 0.0
+  basis_model: "ewma_5min"
+  kalshi:
+    series: "KXSOYBEANW"
+    event_ticker_pattern: "KXSOYBEANW-{YY}{MON}{DD}"
+    bucket_grid_source: "GET /trade-api/v2/events/{event_ticker}"
+    trading_hours: "24_7"  # Kalshi commodities hub trades 24/7 including weekends (C07-108)
+    reference_price_mode: "cbot_daily_settle"  # per C07-112; configurable pending Appendix A
+  kalshi_monthly:
+    series: "KXSOYBEANMON"
+    event_ticker_pattern: "KXSOYBEANMON-{YY}{MON}{DD}"
+    bucket_grid_source: "GET /trade-api/v2/events/{event_ticker}"
+    trading_hours: "24_7"
+    reference_price_mode: "cbot_daily_settle"
+    strike_spacing_cents: 5  # 5c uniform half-line spacing per PREMISE.md
+  fees:
+    taker_formula: "ceil(0.07 * P * (1 - P) * 100) / 100"
+    maker_fraction: 0.25  # maker fee = 25% of taker fee
+    surcharge: null        # no commodity surcharge confirmed; verify against fee-schedule PDF
+  position_cap:
+    max_loss_dollars: 25000  # default from Phase 07; verify against Appendix A per-contract limit
+  trading_hours:
+    # CBOT ZS electronic: Sun 19:00 CT → Fri 07:45 CT; day session 08:30–13:20 CT Mon–Fri.
+    # Kalshi KXSOYBEANW trades 24/7 (C07-108). The CBOT hours matter for tau calculation
+    # and hedge-leg availability, not for Kalshi quoting.
+    cbot_session: "sun_19_fri_0745_ct"
+    cbot_hours_per_day: 16.75  # approx: ~20h45m electronic on weekdays, closed weekends
+    kalshi_session: "24_7"
+  event_calendar:
+    - name: "WASDE"
+      schedule: "monthly_around_12th"
+      time_et: "12:00"
+      vol_adjustment: "strip_event_vol_if_after"
+    - name: "Crop_Progress"
+      schedule: "weekly_mon_apr_nov"
+      time_et: "16:00"
+      vol_adjustment: "strip_event_vol_if_after"
+    - name: "Export_Inspections"
+      schedule: "weekly_mon"
+      time_et: "11:00"
+      vol_adjustment: null
+    - name: "Grain_Stocks"
+      schedule: "quarterly"
+      time_et: "12:00"
+      vol_adjustment: "strip_event_vol_if_after"
+  jump: null
+  notes: "Primary target commodity. F4 pivots to KXSOYBEANMON (monthly). KXSOYBEANW retained for optionality. Pyth feed_id from pyth.network — verify against live Hermes endpoint before go-live."
 
 nat_gas:
   model: "jump_diffusion"

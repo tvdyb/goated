@@ -1,0 +1,5 @@
+hour_start,spread_capture_cents,adverse_selection_cents,hedge_slippage_cents,kalshi_fees_cents,ib_fees_cents,net_pnl_cents,n_fills,n_cycles
+1777424400,0,0,0,345,0,-345,165,15
+1777428000,0,0,0,806,0,-806,349,22
+1777431600,0,0,0,148,0,-148,64,4
+1777435200,0,0,0,370,0,-370,160,10

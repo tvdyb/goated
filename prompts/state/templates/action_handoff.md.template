@@ -1,0 +1,124 @@
+# ACT-<XX> handoff
+
+**Created.** <YYYY-MM-DD HH:MM TZ>
+**Last updated.** <YYYY-MM-DD HH:MM TZ>
+**Implementer.** <agent-id>
+
+---
+
+## Status
+
+**State.** <one of: complete, mid-flight context-capacity, blocked-on-X>
+**Reason for current state.** <one line>
+**Resumption pointer (if mid-flight).** <first concrete step the
+next agent should take>
+
+---
+
+## Action scope (recap)
+
+**Wave.** <N>
+**Effort tier (planned).** <S / M / L / XL>
+**Effort actually expended (so far).** <S / M / L / XL>
+**Gaps closed.** <list of GAP-id with one-liner each>
+**Code locations to touch.** <list>
+
+---
+
+## Files written or edited
+
+| Path | Lines added | Lines removed | Purpose | State |
+|---|---|---|---|---|
+| `engine/quoter.py` | +127 | -3 | new module | committed |
+| `models/base.py` | +12 | -4 | TheoOutput shape | uncommitted |
+
+---
+
+## Tests added
+
+| Path | Test count | Pass | Fail | Skip |
+|---|---|---|---|---|
+| `tests/test_act_19_quoter.py` | 8 | 7 | 1 | 0 |
+
+**Failure detail (if any).**
+- `test_inventory_bound_at_extreme_q`: <one-line description of why
+  failing; expected vs actual>
+
+---
+
+## Gaps closed (with rationale)
+
+- **GAP-001:** A-S/CJ control loop reframed under F3 as
+  inventory-bound + γ-skew (not full optimal-control framing).
+  Implemented in `engine/quoter.py` lines 30-78.
+- **GAP-002:** Reservation price `r = S − γσ²(T−t)q` computed in
+  `engine/quoter.py:42`.
+- ...
+
+---
+
+## Frozen interfaces honoured
+
+- `state/interfaces/theo_output.md` v1 — `TheoOutput` carries
+  `bid`, `ask`, `delta_per_bucket`.
+- `state/interfaces/quote_policy.md` v1 — Quote policy interface
+  signature matches.
+
+---
+
+## New interfaces emitted
+
+- (none) or list with state/interfaces/<name>.md pointers.
+
+---
+
+## Decisions encountered
+
+**Resolved during this action (now in decisions_log.md):**
+- OD-XX: <one-line resolution>
+
+**Deferred to next action / next decision-resolve:**
+- OD-YY: <one-line description; what blocks resolution>
+
+---
+
+## Open issues for verifier
+
+- Specific things the verifier should scrutinise:
+  - <e.g., "γ-skew threshold is hardcoded to 5 contracts; should
+    probably be config-driven; please flag if you agree">
+  - <e.g., "I made one numba.njit decorator on an outer function
+    that internally calls another njit function; verify this
+    compiles correctly with pytest">
+
+---
+
+## Done-when checklist
+
+Copied from `state/action_<XX>/plan.md` Step 6, with each item
+ticked or annotated:
+
+- [x] Reservation price computed for at least the first bucket.
+- [x] Inventory bound enforced.
+- [x] γ-skew applied past threshold.
+- [ ] Pre-event widening hooked in. — DEFERRED to ACT-32.
+- [x] Tests pass.
+
+---
+
+## Resumption notes (if mid-flight)
+
+- **What's done.** <enumerated, precise>
+- **What's left.** <enumerated, ordered>
+- **Files in flight that may be inconsistent.** <list with state>
+- **Mental model.** <5-10 lines of design context — the rationale
+  behind your choices>
+- **Gotchas / traps.** <specific things that bit you>
+
+---
+
+## Mental model (END section)
+
+<This is the most important section if the work was non-trivial.
+5-10 lines on the design choices made and the tradeoffs accepted.
+A future agent reading this can avoid re-deriving the same paths.>

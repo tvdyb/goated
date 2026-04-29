@@ -1,0 +1,35 @@
+# deploy/config_lip.yaml — LIP-optimized mode
+#
+# Maximizes liquidity incentive score:
+#   - Larger size (50 contracts per side)
+#   - Posts at best bid/ask (1.0x multiplier)
+#   - Only cancels when price changes (maximize time on book)
+#
+# Usage: python -m deploy.lip_mode --config deploy/config_lip.yaml
+
+series:
+  - ticker_prefix: KXSOYBEANMON
+    cme_symbol: ZS
+
+lip:
+  contracts_per_side: 30
+  max_half_spread_cents: 4
+  min_half_spread_cents: 2
+  max_distance_from_best: 2    # never post more than 2c from best (0.25x floor)
+  eligible_strikes:
+    - 1136.99
+    - 1146.99
+    - 1156.99
+    - 1166.99
+    - 1176.99
+    - 1186.99
+    - 1196.99
+
+synthetic:
+  vol: 0.15
+
+loop:
+  cycle_seconds: 15    # faster cycles to stay current with best bid/ask
+
+api:
+  kalshi_base: https://api.elections.kalshi.com

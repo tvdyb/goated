@@ -1,0 +1,100 @@
+# Verify report — ACT-<XX>
+
+(Append-only. Each verify pass produces a new entry below the prior
+ones, never overwriting.)
+
+---
+
+## Verify pass <N> — <YYYY-MM-DD>
+
+**Verifier.** <agent-id>
+**Verdict.** PASS or FAIL.
+**Implementation handoff.** `state/action_<XX>/handoff.md` (last
+modified <date>)
+**Code base ref.** <git-sha at verify time>
+
+---
+
+## Gaps verified closed
+
+| GAP-id | Closed? | Evidence | Notes |
+|---|---|---|---|
+| GAP-001 | yes | `engine/quoter.py:30-78` implements reservation price + bound | Matches F3 reframe (no GLFT closed-form) |
+| GAP-002 | yes | `engine/quoter.py:42` formula matches | Tested in `tests/test_quoter.py::test_reservation_price` |
+| GAP-022 | partial | inventory bound implemented; no GLFT spread per F3 | F3 explicitly cuts GLFT spread; partial closure documented in plan.md |
+
+---
+
+## Code locations verified touched
+
+| Path:lines | Touched? | Notes |
+|---|---|---|
+| `engine/pricer.py:79` | yes | line moved to engine/pricer.py:84 due to import additions |
+| `models/gbm.py:35` | no-touch | per implementer note: out-of-scope under F3 reframe |
+
+---
+
+## Non-negotiable checks
+
+| Check | Pass/Fail | Findings |
+|---|---|---|
+| No `import pandas` in hot-path modules | PASS | grep clean |
+| No `scipy.stats.norm.cdf` introduced | PASS | grep clean |
+| No silent excepts in touched modules | PASS | inspected `engine/quoter.py` |
+| No fail-silent default returns | PASS | inspected reservation-price code path |
+| `numba.njit` on hot-path math | PASS | `_compute_reservation_price` is jitted |
+| Synchronous main loop preserved (F3 cadence) | PASS | no asyncio added to engine/ |
+| Quote-band gate at `[$0.01, $0.99]` if Kalshi-side | N/A | this action does not touch quote band |
+
+---
+
+## Test results
+
+- Total: 8
+- Pass: 8
+- Fail: 0
+- Skip: 0
+- New tests added by this action: 5
+
+**Coverage of gap closures:**
+- GAP-001: covered by `test_reservation_price`,
+  `test_inventory_bound`
+- GAP-002: covered by `test_reservation_price`
+- GAP-022: covered by `test_inventory_bound_at_extreme_q`
+
+---
+
+## Interface contracts
+
+| Contract | Honoured? | Notes |
+|---|---|---|
+| `state/interfaces/quote_policy.md` v1 | yes | signature matches |
+| `state/interfaces/theo_output.md` v1 | yes | bid/ask fields populated |
+
+---
+
+## Findings (FAIL items only)
+
+(Empty if PASS.)
+
+For FAIL verdict, each finding must be specific:
+
+- **F1.** `engine/quoter.py:54` — γ-skew is hardcoded to 0.5; the F3
+  plan §3 ACT-19 calls for it to be config-driven from
+  `commodities.yaml`. Move to config and add a fallback default.
+- **F2.** `tests/test_quoter.py::test_reservation_price` — passes,
+  but only checks q=0; no test for q≠0. Add cases at q=−5, q=0, q=+5.
+
+---
+
+## Recommendation
+
+- **PASS:** mark ACT-<XX> as 'verified-complete' in
+  `state/dependency_graph.md`. Proceed to next action.
+- **FAIL:** re-invoke `prompts/02_ACTION_IMPLEMENT.md` on ACT-<XX>
+  with this verify report attached. Implementer must address each
+  numbered finding explicitly.
+
+---
+
+(append next verify pass below this line on remediation)

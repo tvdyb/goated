@@ -1,0 +1,136 @@
+# Dependency graph — runtime state
+
+**Last updated.** <YYYY-MM-DD HH:MM TZ>
+**Last audited.** <YYYY-MM-DD by `prompts/08_DEPENDENCY_AUDIT.md`>
+
+---
+
+## Status legend
+
+- `unstarted` — no `state/action_<XX>/handoff.md` exists.
+- `mid-flight` — handoff exists with status `mid-flight`.
+- `complete-pending-verify` — handoff complete; verify not yet PASS.
+- `verified-complete` — latest verify is PASS, no subsequent code
+  changes invalidate it.
+- `verify-failed` — latest verify is FAIL; remediation pending.
+- `blocked` — decision pending or external dep.
+
+State transitions enforced by `prompts/08_DEPENDENCY_AUDIT.md`:
+
+```
+unstarted → mid-flight → complete-pending-verify → verified-complete
+                              ↓                       ↑
+                          verify-failed → mid-flight ─┘
+```
+
+---
+
+## Wave 0 — LIP-ready quoting surface
+
+| Action | Status | Deps (canonical) | Deps met? | Notes |
+|---|---|---|---|---|
+| ACT-01 (capture) | unstarted | — | yes | start day-zero |
+| ACT-02 (soy yaml) | unstarted | — | yes | |
+| ACT-03 (Kalshi client) | unstarted | ACT-02 | no | XL effort |
+| ACT-04 (ticker + bucket) | unstarted | ACT-03 | no | |
+| ACT-05 (WS multiplex, reduced) | unstarted | ACT-03 | no | |
+| ACT-06 (order builder) | unstarted | ACT-04 | no | |
+| ACT-07 (24/7 calendar) | unstarted | — | yes | |
+| ACT-08 (settle resolver) | unstarted | ACT-02 | no | |
+| ACT-09 (positions) | unstarted | ACT-04 | no | |
+| ACT-10 (fees) | unstarted | ACT-02 | no | |
+| ACT-11 (kill primitives) | unstarted | ACT-03 | no | |
+| ACT-12 (risk gates) | unstarted | ACT-09 | no | |
+| ACT-13 (corridor adapter) | unstarted | ACT-04, ACT-08 | no | |
+| ACT-LIP-POOL | unstarted | ACT-03 | no | |
+| ACT-LIP-SCORE | unstarted | ACT-04, ACT-LIP-POOL | no | |
+| ACT-LIP-VIAB | unstarted | ACT-01 (Phase 1a), ACT-LIP-POOL | no | wave gate |
+
+---
+
+## Wave 1 — Structural correctness
+
+| Action | Status | Deps (canonical) | Deps met? | Notes |
+|---|---|---|---|---|
+| ACT-14 (IV signature) | unstarted | — | yes | within-Wave-1 root |
+| ACT-15 (TheoOutput shape) | unstarted | — | yes | within-Wave-1 root |
+| ACT-16 (CME ingest, reduced) | unstarted | ACT-14 | no | |
+| ACT-17 (RND pipeline) | unstarted | ACT-13, ACT-14, ACT-16 | no | XL |
+| ACT-18 (USDA event clock) | unstarted | ACT-07 | no | |
+| ACT-19 (quoting, reframed) | unstarted | ACT-09, ACT-15, ACT-17 | no | |
+| ACT-20 (hedge leg) | unstarted | ACT-15 | no | needs IB account |
+| ACT-21 (settlement) | unstarted | ACT-04, ACT-22 | no | |
+| ACT-22 (order pipeline) | unstarted | ACT-06 | no | |
+| ACT-23 (reconciliation) | unstarted | ACT-09, ACT-22 | no | |
+| ACT-24 (kill switch) | unstarted | ACT-11, ACT-23 | no | |
+| ACT-25 (scenarios) | unstarted | ACT-12, ACT-19, ACT-20 | no | |
+| ACT-26 (backtest M0) | unstarted | ACT-01, ACT-10, ACT-17 | no | XL |
+| ACT-LIP-PNL | unstarted | ACT-23, ACT-LIP-SCORE | no | |
+
+---
+
+## Wave 2 — Quoting refinements
+
+| Action | Status | Deps (canonical) | Deps met? |
+|---|---|---|---|
+| ACT-27 (Heston SV, reduced) | unstarted | ACT-14, ACT-17, ACT-19 | no |
+| ACT-29 (basis tracker, reduced) | unstarted | ACT-17, ACT-20 | no |
+| ACT-32 (event widening, reframed) | unstarted | ACT-18, ACT-19 | no |
+| ACT-33 (measure overlay) | unstarted | ACT-17 | no |
+| ACT-37 (limit-day censorship) | unstarted | ACT-21 | no |
+| ACT-35 (wash-trade, reduced) | unstarted | ACT-22 | no |
+| ACT-LIP-COMPETITOR | unstarted | ACT-LIP-SCORE, ACT-23 | no |
+
+---
+
+## Wave 3 — Capacity
+
+| Action | Status | Deps (canonical) | Deps met? |
+|---|---|---|---|
+| ACT-LIP-MULTI | unstarted | ACT-LIP-POOL | no |
+| ACT-41 (USDA REST, reduced) | unstarted | ACT-18 | no |
+| ACT-32-EXT (stocks-to-use) | unstarted | ACT-32 | no |
+
+---
+
+## Wave 4 — Operational hardening
+
+| Action | Status | Deps (canonical) | Deps met? |
+|---|---|---|---|
+| ACT-50 (logging + summary, reduced) | unstarted | ACT-24 | no |
+| ACT-52 (calibration loop, reduced) | unstarted | ACT-19, ACT-23 | no |
+| ACT-53 (backtest realism, reduced) | unstarted | ACT-26 | no |
+| ACT-54 (Pyth hardening) | unstarted | — | yes |
+| ACT-LIP-RECON | unstarted | ACT-23, ACT-LIP-SCORE | no |
+
+---
+
+## Ready set (deps met, status `unstarted`)
+
+Computed at last audit. Pick from this set to start the next action.
+
+- ACT-01, ACT-02, ACT-07, ACT-14, ACT-15, ACT-54 (latter three not yet
+  in scope until their wave activates)
+
+Active-wave ready set (Wave 0):
+- **ACT-01, ACT-02, ACT-07** — pick any.
+
+---
+
+## Audit history
+
+Maintain a short list of when audits ran:
+
+| Date | Auditor | Result | Notes |
+|---|---|---|---|
+| 2026-04-27 | bootstrap | initial | (this is the seed graph) |
+
+---
+
+## Maintenance notes
+
+- Edit this file on every action's status transition.
+- Run `prompts/08_DEPENDENCY_AUDIT.md` at the end of each wave (and
+  weekly during long-running waves) to catch drift.
+- The graph is sourced from F3 §8 (which inherits F1 §8). When F3 is
+  superseded, regenerate the graph from the new operative plan.

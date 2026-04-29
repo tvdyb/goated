@@ -14,3 +14,17 @@ feeds:
     description: "Pyth WTI crude oil spot aggregate"
     expected_publishers_floor: 5
     max_staleness_ms: 2000
+
+  soy:
+    # SON6 = July 2026 CBOT soybean futures (front month as of Apr 2026).
+    # Pyth publishes per-contract feeds, not a generic "soybean" aggregate.
+    # Update to next front month contract when SON6 expires (2026-07-14).
+    # NOTE: Pyth soy feeds may be inactive (price=0). System falls back to
+    # Kalshi-inferred forward when Pyth is unavailable.
+    feed_id: "0x0d03b648a12b297160e2fdce53cd643d993f7ade4549f8e91ec6e593cc085c21"
+    symbol: "Commodities.SON6/USD"
+    description: "Pyth CBOT soybean Jul-2026 futures"
+    expected_publishers_floor: 5
+    max_staleness_ms: 30000
+    # Pyth soy prices are in cents/bushel (e.g. 1177.5 = $11.775/bu)
+    price_divisor: 100.0

@@ -1,0 +1,80 @@
+# Wave <N> status
+
+**Created.** <YYYY-MM-DD>
+**Last updated.** <YYYY-MM-DD>
+**Operative plan.** `audit/audit_F3_refactor_plan_lip.md` §<wave-section>
+
+---
+
+## Goal
+
+<one-line wave goal copied from operative plan>
+
+---
+
+## Action count
+
+<N>
+
+---
+
+## Critical path
+
+ACT-AA → ACT-BB → ACT-CC → ... → wave gate
+
+| Action | Effort | Cumulative ew |
+|---|---|---|
+| ACT-AA | M | 0.5 |
+| ACT-BB | XL | 3.5 |
+| ... | | |
+
+**Estimated wave-floor wall-clock.** <X> engineer-weeks of critical
+path with <N_orchestrator> parallel agents.
+
+---
+
+## Track assignments
+
+| Track | Actions (in order) | Type | Dependencies |
+|---|---|---|---|
+| T1 | ACT-XX → ACT-YY → ACT-ZZ | serial | (start: deps from prior wave) |
+| T2 | ACT-AA, ACT-BB | parallel within track | independent of T1 |
+| T3 | ACT-CC | parallel | depends on ACT-XX from T1 |
+
+---
+
+## Cross-track sync points
+
+| Sync point | Tracks | Trigger | Merge prompt |
+|---|---|---|---|
+| post-ACT-04 | T1, T3 | T1 reaches ACT-04 | `prompts/05_PARALLEL_MERGE.md` |
+
+---
+
+## External dependencies
+
+- <e.g., IB account approval ETA <date>>
+- <e.g., LIP pool data accumulation needed before ACT-LIP-VIAB>
+
+---
+
+## Wave-end gate
+
+Run `prompts/09_WAVE_GATE.md` when:
+- All actions in this wave are `verified-complete` per
+  `state/dependency_graph.md`.
+- `prompts/08_DEPENDENCY_AUDIT.md` returns CLEAN.
+- Wave-specific gate criteria are met (see `09_WAVE_GATE.md` Step 3).
+
+---
+
+## Risks and escalations
+
+- <risk 1> → escalate to <prompt or human>
+- <risk 2> → ...
+
+---
+
+## Notes
+
+(any wave-specific context that doesn't fit elsewhere)

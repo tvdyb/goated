@@ -1,0 +1,70 @@
+# Digest — <phase name (e.g., wave_0, decision_OD-31)> — <YYYY-MM-DD>
+
+**Author.** <agent-id or human>
+**Phase scope.** <e.g., "Wave 0 of F3 plan", "OD-31 cadence resolution">
+**Calendar duration.** <X> days (<start-date> → <end-date>)
+
+---
+
+## What closed
+
+| Action / decision | One-line summary | Pointer |
+|---|---|---|
+| ACT-XX | new module engine/quoter.py with reservation-price + γ-skew | `state/action_XX/handoff.md` |
+| OD-NN | resolved: <answer> | `state/decisions_log.md` (find OD-NN) |
+
+---
+
+## Decisions resolved during this phase
+
+- **OD-NN:** <one-line summary>
+- ...
+
+---
+
+## Interfaces frozen during this phase
+
+- **`<contract_name>`:** <one-line summary>
+- ...
+
+---
+
+## Lessons (carry forward to later phases)
+
+- **Lesson 1:** <what we tried, what worked or didn't, what to do
+  differently next time>
+- **Lesson 2:** ...
+
+Aim for 3-7 lessons. Less than 3 means the phase was uneventful (fine
+but worth flagging). More than 7 means you're including granular
+details that should live in handoffs, not in the digest.
+
+---
+
+## Open issues for next phase
+
+| Issue | Where it lives | Who can address |
+|---|---|---|
+| <issue> | `path` | <prompt or human> |
+
+---
+
+## Stats
+
+- Action count completed: <N>
+- LoC delta: +<X> / -<Y>
+- Test count delta: +<N>
+- Wall-clock duration: <D> days
+- Engineer-weeks of effort: <ew>
+
+---
+
+## Hand-off to next phase
+
+The next phase planner (`prompts/01_WAVE_PLANNER.md` if a wave is
+closing) should read this digest. Specifically, the next planner
+should:
+- <Action 1, e.g., "verify ACT-LIP-VIAB output before invoking the
+  Wave 1 planner">
+- <Action 2>
+- ...
