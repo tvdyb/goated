@@ -30,6 +30,7 @@ from scipy.special import ndtr
 
 from attribution.pnl import FillRecord, PnLTracker
 from engine.goldman_roll import is_in_roll_window, roll_drift_cents
+from engine.implied_vol import calibrate_vol, extract_strike_mids_from_orderbooks
 from engine.kill import KillSwitch, TriggerResult, batch_cancel_all
 from engine.wasde_density import (
     WASDEAdjustment,
@@ -455,11 +456,14 @@ class MarketMaker:
             logger.info("CYCLE: no active event for %s", series_cfg["ticker_prefix"])
             return
 
-        # 2. Compute fair values — try IBKR RND pipeline, fall back to synthetic
-        bucket_prices = await self._compute_fair_values(kalshi_strikes)
-
-        # 3. Pull orderbooks
+        # 2. Pull orderbooks (needed for vol calibration before fair value)
         event_book = await self._pull_orderbooks(event_ticker, kalshi_strikes)
+
+        # 2b. Calibrate vol from Kalshi orderbook mid-prices
+        self._calibrate_vol_from_orderbooks(event_book)
+
+        # 3. Compute fair values — try IBKR RND pipeline, fall back to synthetic
+        bucket_prices = await self._compute_fair_values(kalshi_strikes)
 
         # 4. Settlement gate
         gate = gate_state(now, series="soy", config=self._sg_config)
@@ -628,6 +632,28 @@ class MarketMaker:
                 )
 
         return self._synthetic_rnd(kalshi_strikes)
+
+    def _calibrate_vol_from_orderbooks(self, event_book: EventBook) -> None:
+        """Calibrate vol from Kalshi orderbook mid-prices on near-ATM strikes."""
+        if self._forward_estimate <= 0 or self._days_to_settlement <= 0:
+            return
+
+        tau = max(0.5, self._days_to_settlement) / 365.0
+        fallback = self._cfg.get("synthetic", {}).get("vol", 0.15)
+
+        strike_mids = [
+            (sb.strike, (sb.best_bid_cents + sb.best_ask_cents) / 200.0)
+            for sb in event_book.strike_books
+            if sb.best_bid_cents > 0 and sb.best_ask_cents < 100
+            and sb.best_bid_cents < sb.best_ask_cents
+        ]
+
+        self._vol_estimate = calibrate_vol(
+            forward=self._forward_estimate,
+            strike_mids=strike_mids,
+            tau=tau,
+            fallback=fallback,
+        )
 
     def _synthetic_rnd(self, kalshi_strikes: np.ndarray) -> BucketPrices:
         """Compute fair values via synthetic GBM (Black-76).

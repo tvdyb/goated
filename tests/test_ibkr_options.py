@@ -5,17 +5,14 @@ All IB interactions are mocked via unittest.mock (no IB Gateway needed).
 
 from __future__ import annotations
 
-import asyncio
-import math
 import sys
 import time
-from datetime import date, datetime
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Mock ib_insync module so tests run without IB Gateway
@@ -52,18 +49,17 @@ _ib_insync_mock = SimpleNamespace(
 # Install mock before importing the module under test
 sys.modules.setdefault("ib_insync", _ib_insync_mock)
 
-from feeds.cme.options_chain import OptionsChain
-from feeds.ibkr.options_chain import (
+from feeds.cme.options_chain import OptionsChain  # noqa: E402
+from feeds.ibkr.options_chain import (  # noqa: E402
     IBKRChainError,
     IBKROptionsChainPuller,
-    _ChainCache,
     _build_float_array,
     _build_int_array,
+    _ChainCache,
     _extract_iv,
     _extract_price,
     _is_valid,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: mock IB objects
@@ -95,7 +91,9 @@ def _make_ticker(
     return t
 
 
-def _make_contract(symbol: str = "ZS", strike: float = 1000.0, right: str = "C", con_id: int = 1) -> SimpleNamespace:
+def _make_contract(
+    symbol: str = "ZS", strike: float = 1000.0, right: str = "C", con_id: int = 1,
+) -> SimpleNamespace:
     """Create a mock ib_insync contract."""
     return SimpleNamespace(
         symbol=symbol,
@@ -322,7 +320,7 @@ class TestIBKROptionsChainPuller:
         ])
 
         # reqMktData — returns a ticker with prices
-        def _req_mkt_data(contract, genericTickList="", snapshot=False):
+        def _req_mkt_data(contract, genericTickList="", snapshot=False):  # noqa: N803
             strike = getattr(contract, "strike", 1050.0)
             right = getattr(contract, "right", None)
             if right == "C":
@@ -346,7 +344,7 @@ class TestIBKROptionsChainPuller:
 
     @pytest.mark.asyncio
     async def test_connect_disconnect(self) -> None:
-        mock_ib = self._setup_mock_ib()
+        self._setup_mock_ib()
 
         with patch("feeds.ibkr.options_chain.IBKROptionsChainPuller.connect") as mock_connect:
             mock_connect.return_value = None
@@ -505,7 +503,7 @@ class TestIBKROptionsChainPuller:
 
         # First call (underlying) returns no price, subsequent calls return prices
         call_count = 0
-        def _req_mkt_no_underlying(contract, genericTickList="", snapshot=False):
+        def _req_mkt_no_underlying(contract, genericTickList="", snapshot=False):  # noqa: N803
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -529,7 +527,7 @@ class TestIBKROptionsChainPuller:
 
 class TestIBKRChainError:
     def test_inherits_from_cme_chain_error(self) -> None:
-        from feeds.cme.errors import CMEChainError
+        from feeds.cme.errors import CMEChainError  # noqa: PLC0415
         err = IBKRChainError("test", source="test")
         assert isinstance(err, CMEChainError)
 

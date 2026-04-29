@@ -28,10 +28,28 @@ app = Flask(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
+import math
+from scipy.special import ndtr as _ndtr
+
 LIP_ELIGIBLE = {1136.99, 1146.99, 1156.99, 1166.99, 1176.99, 1186.99, 1196.99}
 LIP_POOL_PER_MARKET = 15.0  # $/day
 LIP_TARGET = 300
 LIP_DISCOUNT = 0.5
+
+# Theo parameters — keep in sync with config_lip.yaml
+_THEO_FORWARD = 11.8225  # ZSK26 May soybeans
+_THEO_VOL = 0.1629
+
+_MARKOUT_FILE = "state/markout.json"
+
+
+def _compute_theo(strike_cents: float, days_to_settle: float) -> int:
+    """Compute theo in cents for a strike."""
+    k = strike_cents / 100.0
+    tau = max(0.25, days_to_settle) / 365.0
+    sig_sqrt_t = max(_THEO_VOL * math.sqrt(tau), 1e-12)
+    d2 = (math.log(_THEO_FORWARD / k) - 0.5 * _THEO_VOL ** 2 * tau) / sig_sqrt_t
+    return int(round(float(_ndtr(d2)) * 100))
 
 _state: dict = {
     "balance": {},
@@ -41,6 +59,7 @@ _state: dict = {
     "markets": [],
     "orderbooks": {},
     "lip_analysis": [],
+    "markout": [],
     "last_refresh": "",
     "error": "",
 }
@@ -188,6 +207,7 @@ def _analyze_lip(
         "est_daily": est_daily,
         "est_hourly": est_hourly,
         "spread": our_ask_px - our_bid_px if our_bid_px > 0 and our_ask_px > 0 else 0,
+        "theo": 0,  # populated by caller
     }
 
 
@@ -239,9 +259,27 @@ async def _refresh() -> dict:
                         ticker, strike, yes_depth, no_depth,
                         orders_by_ticker.get(ticker, []),
                     )
+                    # Compute theo
+                    exp_time = m.get("expiration_time", "")
+                    days_left = 1.0
+                    if exp_time:
+                        try:
+                            exp_dt = datetime.fromisoformat(exp_time.replace("Z", "+00:00"))
+                            days_left = max(0.25, (exp_dt - datetime.now(exp_dt.tzinfo)).total_seconds() / 86400)
+                        except (ValueError, TypeError):
+                            pass
+                    analysis["theo"] = _compute_theo(strike, days_left)
                     lip_analysis.append(analysis)
                 except Exception:
                     pass
+
+        # Read markout data from shared file (written by lip_mode)
+        markout_data: list[dict] = []
+        try:
+            with open(_MARKOUT_FILE) as mf:
+                markout_data = json.load(mf)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
 
         return {
             "balance": balance,
@@ -250,6 +288,7 @@ async def _refresh() -> dict:
             "event": events[0] if events else {},
             "markets": markets,
             "lip_analysis": lip_analysis,
+            "markout": markout_data,
             "last_refresh": datetime.now(_ET).strftime("%H:%M:%S"),
             "error": "",
         }
@@ -310,6 +349,9 @@ def index() -> str:
 
         strike_label = f"{a['strike']:.2f}"
 
+        theo = a.get("theo", 0)
+        theo_color = "#60a5fa"
+
         lip_rows += f"""
         <tr>
             <td style="font-family:monospace;font-size:12px">{strike_label}</td>
@@ -319,6 +361,7 @@ def index() -> str:
             <td style="text-align:center;color:{headroom_bid_color};font-weight:bold">{a['bid_headroom']}c</td>
             <td style="text-align:center;color:{bid_color}">{a['bid_ahead']:.0f}/{LIP_TARGET} {bid_status}</td>
             <td style="text-align:center">{a['bid_multiplier']:.2f}x</td>
+            <td style="background:#1e293b;text-align:center;font-weight:bold;color:{theo_color}">{theo}c</td>
             <td style="background:#334155;text-align:center;font-weight:bold;color:#94a3b8">{a['spread']}c</td>
             <td style="text-align:center">{a['ask_multiplier']:.2f}x</td>
             <td style="text-align:center;color:{ask_color}">{a['ask_ahead']:.0f}/{LIP_TARGET} {ask_status}</td>
@@ -328,6 +371,30 @@ def index() -> str:
             <td style="text-align:center">{a['best_ask']}c</td>
             <td style="text-align:right">{a['share_pct']:.1f}%</td>
             <td style="text-align:right;color:#4ade80">${a['est_daily']:.2f}</td>
+        </tr>"""
+
+    # --- Markout rows ---
+    markout_rows = ""
+    markout_data = s.get("markout", [])
+    for m in markout_data:
+        ticker = m.get("market_ticker", "")
+        strike_label = ticker.split("-")[-1] if ticker else "?"
+        n = m.get("n_fills", 0)
+        avg_1m = m.get("avg_1m", 0.0)
+        avg_5m = m.get("avg_5m", 0.0)
+        avg_30m = m.get("avg_30m", 0.0)
+        c1 = "#4ade80" if avg_1m >= 0 else "#f87171"
+        c5 = "#4ade80" if avg_5m >= 0 else "#f87171"
+        c30 = "#4ade80" if avg_30m >= 0 else "#f87171"
+        toxic = avg_5m < -2.0 and n >= 2
+        toxic_tag = '<span style="color:#f87171;font-weight:bold"> TOXIC</span>' if toxic else ""
+        markout_rows += f"""
+        <tr>
+            <td style="font-family:monospace;font-size:12px">{strike_label}{toxic_tag}</td>
+            <td style="text-align:right">{n}</td>
+            <td style="text-align:right;color:{c1}">{avg_1m:+.1f}c</td>
+            <td style="text-align:right;color:{c5}">{avg_5m:+.1f}c</td>
+            <td style="text-align:right;color:{c30}">{avg_30m:+.1f}c</td>
         </tr>"""
 
     # --- Positions rows ---
@@ -434,6 +501,7 @@ def index() -> str:
         <tr>
             <th>Strike</th>
             <th colspan="6" style="background:#1e3a2f">BID (Buy Yes) &larr; wider is safer</th>
+            <th>Theo</th>
             <th>Spread</th>
             <th colspan="6" style="background:#3a1e1e">ASK (Sell Yes) &rarr; wider is safer</th>
             <th>Share</th>
@@ -447,6 +515,7 @@ def index() -> str:
             <th style="background:#1e3a2f">Headroom</th>
             <th style="background:#1e3a2f">Queue</th>
             <th style="background:#1e3a2f">Mult</th>
+            <th style="background:#1a2744">Fair</th>
             <th></th>
             <th style="background:#3a1e1e">Mult</th>
             <th style="background:#3a1e1e">Queue</th>
@@ -458,6 +527,18 @@ def index() -> str:
             <th></th>
         </tr>
         {lip_rows if lip_rows else "<tr><td colspan=16 style='color:#64748b;text-align:center'>No LIP data</td></tr>"}
+    </table>
+
+    <h2>Fill Markout (adverse selection)</h2>
+    <table>
+        <tr>
+            <th>Strike</th>
+            <th>Fills</th>
+            <th>1m</th>
+            <th>5m</th>
+            <th>30m</th>
+        </tr>
+        {markout_rows if markout_rows else "<tr><td colspan=5 style='color:#64748b;text-align:center'>No markout data (waiting for fills)</td></tr>"}
     </table>
 
     <h2>Positions</h2>

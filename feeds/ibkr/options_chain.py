@@ -453,6 +453,80 @@ class IBKROptionsChainPuller:
 # ---------------------------------------------------------------------------
 
 
+def _filter_strikes(
+    all_strikes_raw: list[float], underlying_price: float
+) -> list[float]:
+    """Filter strikes to a reasonable range around the money."""
+    all_strikes = sorted(all_strikes_raw)
+    if not all_strikes:
+        raise IBKRChainError(
+            "No strikes available for options",
+            source="ibkr_options_chain",
+        )
+    lo = underlying_price * 0.7
+    hi = underlying_price * 1.3
+    strikes = [s for s in all_strikes if lo <= s <= hi]
+    if len(strikes) < 5:
+        strikes = sorted(
+            all_strikes,
+            key=lambda s: abs(s - underlying_price),
+        )[:60]
+        strikes.sort()
+    return strikes
+
+
+class _ParsedTickerData:
+    """Container for parsed ticker data arrays."""
+
+    __slots__ = (
+        "strikes", "call_prices", "put_prices",
+        "call_ivs", "put_ivs",
+        "call_oi", "put_oi",
+        "call_volume", "put_volume",
+    )
+
+    def __init__(self) -> None:
+        self.strikes: list[float] = []
+        self.call_prices: list[float] = []
+        self.put_prices: list[float] = []
+        self.call_ivs: list[float | None] = []
+        self.put_ivs: list[float | None] = []
+        self.call_oi: list[int | None] = []
+        self.put_oi: list[int | None] = []
+        self.call_volume: list[int | None] = []
+        self.put_volume: list[int | None] = []
+
+
+def _parse_ticker_data(
+    valid_calls: list[Any],
+    call_tickers: list[Any],
+    put_tickers: list[Any],
+) -> _ParsedTickerData:
+    """Parse ticker snapshots into structured data."""
+    parsed = _ParsedTickerData()
+    for i in range(len(valid_calls)):
+        ct = call_tickers[i]
+        pt = put_tickers[i]
+
+        c_price = _extract_price(ct)
+        p_price = _extract_price(pt)
+        if c_price is None or p_price is None:
+            continue
+        if c_price <= 0 or p_price <= 0:
+            continue
+
+        parsed.strikes.append(valid_calls[i].strike)
+        parsed.call_prices.append(c_price)
+        parsed.put_prices.append(p_price)
+        parsed.call_ivs.append(_extract_iv(ct))
+        parsed.put_ivs.append(_extract_iv(pt))
+        parsed.call_oi.append(_extract_int(ct, "openInterest"))
+        parsed.put_oi.append(_extract_int(pt, "openInterest"))
+        parsed.call_volume.append(_extract_int(ct, "volume"))
+        parsed.put_volume.append(_extract_int(pt, "volume"))
+    return parsed
+
+
 def _extract_price(ticker: Any) -> float | None:
     """Extract best available price from an ib_insync Ticker."""
     # Prefer last price, then close, then mid of bid/ask

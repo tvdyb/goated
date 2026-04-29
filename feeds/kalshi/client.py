@@ -357,6 +357,45 @@ class KalshiClient:
             token_cost=CANCEL_REQUEST_COST,
         )
 
+    async def amend_order(
+        self,
+        order_id: str,
+        *,
+        yes_price: int | None = None,
+        no_price: int | None = None,
+        count: int | None = None,
+    ) -> dict[str, Any]:
+        """POST /portfolio/orders/{order_id}/amend -- amend a resting order.
+
+        Amending preserves queue position when only size changes.
+        When price changes, the order moves to the new price level with
+        fresh priority — but uses one API call instead of cancel + place.
+
+        Args:
+            order_id: ID of the resting order to amend.
+            yes_price: New yes price in cents (1-99), or None to keep.
+            no_price: New no price in cents (1-99), or None to keep.
+            count: New contract count, or None to keep.
+
+        Returns:
+            Amend response with updated order details.
+        """
+        body: dict[str, Any] = {}
+        if yes_price is not None:
+            body["yes_price"] = yes_price
+        if no_price is not None:
+            body["no_price"] = no_price
+        if count is not None:
+            body["count"] = count
+        if not body:
+            raise KalshiAPIError("amend_order requires at least one of yes_price, no_price, or count")
+        return await self._request(
+            "POST",
+            f"/portfolio/orders/{order_id}/amend",
+            json_body=body,
+            is_write=True,
+        )
+
     async def batch_cancel_orders(self, order_ids: list[str]) -> dict[str, Any]:
         """DELETE /portfolio/orders/batch -- cancel multiple orders.
 

@@ -32,9 +32,12 @@ import numpy as np
 import yaml
 from scipy.special import ndtr
 
+from engine.implied_vol import calibrate_vol
+from engine.markout import MarkoutTracker
 from engine.wasde_density import WASDEAdjustment, WASDEDensityConfig, create_adjustment
 from feeds.kalshi.auth import KalshiAuth
 from feeds.kalshi.client import KalshiClient
+from feeds.kalshi.errors import KalshiResponseError
 from feeds.pyth.forward import PythForwardProvider, load_pyth_forward_config
 from feeds.usda.wasde_parser import (
     WASDEConsensus,
@@ -47,6 +50,7 @@ from feeds.usda.wasde_parser import (
 logger = logging.getLogger("deploy.lip_mode")
 
 _ET = ZoneInfo("America/New_York")
+LIP_DISCOUNT = 0.5
 
 
 def load_config(path: str) -> dict[str, Any]:
@@ -93,7 +97,8 @@ class LIPMarketMaker:
         # market_ticker -> {"bid_id": str, "bid_px": int, "ask_id": str, "ask_px": int}
         self._resting: dict[str, dict[str, Any]] = {}
         self._market_tickers: dict[float, str] = {}
-        self._forward_estimate: float = 0.0
+        self._forward_override: float = cfg.get("synthetic", {}).get("forward_override", 0.0)
+        self._forward_estimate: float = self._forward_override
         self._days_to_settlement: float = 2.0
 
         # WASDE density adjustment
@@ -110,6 +115,16 @@ class LIPMarketMaker:
             production=wasde_cfg.get("consensus_production"),
             exports=wasde_cfg.get("consensus_exports"),
         )
+
+        # Markout tracker
+        markout_cfg = cfg.get("markout", {})
+        self._markout = MarkoutTracker(
+            rolling_window_s=float(markout_cfg.get("rolling_window_s", 3600.0)),
+            toxic_threshold_cents=float(markout_cfg.get("toxic_threshold_cents", -2.0)),
+        )
+        self._toxic_spread_multiplier = float(markout_cfg.get("toxic_spread_multiplier", 2.0))
+        self._last_theo: dict[str, float] = {}  # market_ticker -> theo_cents
+        self._fill_ids_seen: set[str] = set()
 
         # Pyth forward price provider
         self._pyth_provider: PythForwardProvider | None = None
@@ -197,18 +212,34 @@ class LIPMarketMaker:
                 return
             logger.info("LIP CYCLE: %d eligible strikes", len(kalshi_strikes))
 
-        # 2. Compute target prices (synthetic GBM fair -> best bid/ask strategy)
+        # 2. Pull current orderbooks to know where best bid/ask are
+        orderbooks = await self._pull_orderbooks(kalshi_strikes)
+
+        # 2b. Calibrate vol from orderbook mid-prices
+        self._calibrate_vol_from_orderbooks(kalshi_strikes, orderbooks)
+
+        # 3. Compute target prices (synthetic GBM fair -> best bid/ask strategy)
         targets = self._compute_targets(kalshi_strikes)
 
-        # 3. Pull current orderbooks to know where best bid/ask are
-        orderbooks = await self._pull_orderbooks(kalshi_strikes)
+        # 3b. Store theo values for markout tracking and update tracker
+        now_ts = time.time()
+        for strike, fair_cents in targets.items():
+            ticker = self._market_tickers.get(strike, "")
+            if ticker:
+                self._last_theo[ticker] = float(fair_cents)
+        self._markout.update(now_ts, self._last_theo)
+
+        # 3c. Get toxic strikes
+        toxic_tickers = set(self._markout.get_toxic_strikes())
 
         # 4. For each strike: post at widest spread that:
         #    a) qualifies for LIP top-300
         #    b) stays within max_distance_from_best of the actual best bid/ask
+        #    c) NEVER crosses theo (anti-spoofing defense)
         #
-        #    Rule (b) ensures we always have a meaningful LIP multiplier.
-        #    With max_dist=2: multiplier >= 0.25x. No more 0.00x dead orders.
+        #    Rule (c) is the key defense against spoofing attacks where someone
+        #    places a fake order to move the best price, causing us to move our
+        #    order to an unfavorable price, then they trade against us and cancel.
         final_targets: dict[str, tuple[int, int]] = {}
         lip_target = 300
 
@@ -218,6 +249,8 @@ class LIPMarketMaker:
                 continue
 
             fair = targets.get(strike, 50)
+            is_toxic = ticker in toxic_tickers
+            max_dist = int(self._max_dist * self._toxic_spread_multiplier) if is_toxic else self._max_dist
             ob = orderbooks.get(ticker, {})
             yes_depth = ob.get("yes_depth", [])
             no_depth = ob.get("no_depth", [])
@@ -251,7 +284,7 @@ class LIPMarketMaker:
 
             # --- BID: max_dist cents below best bid, but check LIP ---
             if best_bid > 0:
-                bid = best_bid - self._max_dist
+                bid = best_bid - max_dist
             else:
                 bid = fair - self._max_half_spread
 
@@ -261,12 +294,14 @@ class LIPMarketMaker:
                 for px, sz in yes_depth if px > bid
             )
             if yes_ahead + self._size > lip_target:
-                # Too crowded even at this price — move closer to best
                 bid = best_bid
+
+            # ANTI-SPOOFING: never buy above theo (never bid > fair - 1)
+            bid = min(bid, fair - 1)
 
             # --- ASK: max_dist cents above best ask, but check LIP ---
             if best_ask < 100:
-                ask = best_ask + self._max_dist
+                ask = best_ask + max_dist
             else:
                 ask = fair + self._max_half_spread
 
@@ -279,13 +314,16 @@ class LIPMarketMaker:
             if no_ahead + self._size > lip_target:
                 ask = best_ask
 
+            # ANTI-SPOOFING: never sell below theo (never ask < fair + 1)
+            ask = max(ask, fair + 1)
+
             # Clamp
             bid = max(1, min(99, bid))
             ask = max(1, min(99, ask))
 
             if bid >= ask:
-                bid = best_bid - 1 if best_bid > 1 else 1
-                ask = best_ask + 1 if best_ask < 99 else 99
+                bid = fair - 1
+                ask = fair + 1
 
             bid = max(1, min(99, bid))
             ask = max(1, min(99, ask))
@@ -297,12 +335,13 @@ class LIPMarketMaker:
                 bid_mult = LIP_DISCOUNT ** max(0, bid_dist)
                 ask_mult = LIP_DISCOUNT ** max(0, ask_dist)
                 final_targets[ticker] = (bid, ask)
+                toxic_tag = " [TOXIC]" if is_toxic else ""
                 logger.info(
                     "LIP %s: bid=%dc(%dc from best,%.2fx) "
-                    "ask=%dc(%dc from best,%.2fx) spread=%dc",
+                    "ask=%dc(%dc from best,%.2fx) spread=%dc%s",
                     ticker.split("-")[-1],
                     bid, bid_dist, bid_mult,
-                    ask, ask_dist, ask_mult, spread,
+                    ask, ask_dist, ask_mult, spread, toxic_tag,
                 )
                 logger.debug(
                     "LIP %s: fair=%dc bid=%dc ask=%dc yes_ahead=%.0f no_ahead=%.0f",
@@ -311,10 +350,11 @@ class LIPMarketMaker:
                     sum(sz for _, sz in no_depth),
                 )
 
-        # 5. Smart update: only cancel/replace orders whose price changed
+        # 5. Smart update: amend orders whose price changed (1 API call vs 2)
+        n_amended = 0
         n_placed = 0
         n_kept = 0
-        n_cancelled = 0
+        n_fallback = 0
 
         for ticker, (target_bid, target_ask) in final_targets.items():
             current = self._resting.get(ticker, {})
@@ -325,65 +365,40 @@ class LIPMarketMaker:
 
             # Update bid if price changed
             if cur_bid_px != target_bid:
-                # Cancel old bid
                 if cur_bid_id:
-                    try:
-                        await self._kalshi_client.cancel_order(cur_bid_id)
-                        n_cancelled += 1
-                    except Exception:
-                        pass
-
-                # Place new bid
-                try:
-                    resp = await self._kalshi_client.create_order(
-                        ticker=ticker,
-                        action="buy",
-                        side="yes",
-                        order_type="limit",
-                        count=self._size,
-                        yes_price=target_bid,
-                        post_only=True,
+                    # Try amend first (preserves queue position, 1 API call)
+                    amended = await self._try_amend(
+                        cur_bid_id, yes_price=target_bid, count=self._size,
                     )
-                    order = resp.get("order", {})
-                    oid = order.get("order_id", "")
-                    self._resting.setdefault(ticker, {})["bid_id"] = oid
-                    self._resting[ticker]["bid_px"] = target_bid
+                    if amended:
+                        self._resting.setdefault(ticker, {})["bid_px"] = target_bid
+                        n_amended += 1
+                    else:
+                        # Fallback: cancel + place
+                        n_fallback += 1
+                        await self._cancel_and_place_bid(ticker, target_bid)
+                else:
+                    # No existing order — place new
+                    await self._place_bid(ticker, target_bid)
                     n_placed += 1
-                except Exception as exc:
-                    logger.warning("LIP: failed bid %s @ %dc: %s", ticker, target_bid, exc)
-                    self._resting.setdefault(ticker, {})["bid_id"] = ""
-                    self._resting[ticker]["bid_px"] = 0
             else:
                 n_kept += 1
 
             # Update ask if price changed
             if cur_ask_px != target_ask:
                 if cur_ask_id:
-                    try:
-                        await self._kalshi_client.cancel_order(cur_ask_id)
-                        n_cancelled += 1
-                    except Exception:
-                        pass
-
-                try:
-                    resp = await self._kalshi_client.create_order(
-                        ticker=ticker,
-                        action="sell",
-                        side="yes",
-                        order_type="limit",
-                        count=self._size,
-                        yes_price=target_ask,
-                        post_only=True,
+                    amended = await self._try_amend(
+                        cur_ask_id, yes_price=target_ask, count=self._size,
                     )
-                    order = resp.get("order", {})
-                    oid = order.get("order_id", "")
-                    self._resting.setdefault(ticker, {})["ask_id"] = oid
-                    self._resting[ticker]["ask_px"] = target_ask
+                    if amended:
+                        self._resting.setdefault(ticker, {})["ask_px"] = target_ask
+                        n_amended += 1
+                    else:
+                        n_fallback += 1
+                        await self._cancel_and_place_ask(ticker, target_ask)
+                else:
+                    await self._place_ask(ticker, target_ask)
                     n_placed += 1
-                except Exception as exc:
-                    logger.warning("LIP: failed ask %s @ %dc: %s", ticker, target_ask, exc)
-                    self._resting.setdefault(ticker, {})["ask_id"] = ""
-                    self._resting[ticker]["ask_px"] = 0
             else:
                 n_kept += 1
 
@@ -401,9 +416,97 @@ class LIPMarketMaker:
                             pass
                 del self._resting[ticker]
 
+        # 6. Process fills for markout tracking
+        await self._process_fills_for_markout(now_ts)
+
+        # Log toxic strikes
+        toxic_list = self._markout.get_toxic_strikes()
+        if toxic_list:
+            logger.warning(
+                "LIP CYCLE: TOXIC strikes (widened): %s",
+                [t.split("-")[-1] for t in toxic_list],
+            )
+
+        # Write markout stats to shared file for dashboard
+        self._write_markout_file()
+
         logger.info(
-            "LIP CYCLE: placed=%d kept=%d cancelled=%d resting=%d strikes",
-            n_placed, n_kept, n_cancelled, len(self._resting),
+            "LIP CYCLE: amended=%d placed=%d kept=%d fallback=%d resting=%d strikes "
+            "markout_active=%d markout_done=%d",
+            n_amended, n_placed, n_kept, n_fallback, len(self._resting),
+            self._markout.active_count(), self._markout.completed_count(),
+        )
+
+    async def _process_fills_for_markout(self, now_ts: float) -> None:
+        """Pull recent fills and record them for markout tracking."""
+        assert self._kalshi_client is not None
+        try:
+            resp = await self._kalshi_client.get_fills(limit=50)
+            fills = resp.get("fills", [])
+            for f in fills:
+                fill_id = f.get("trade_id", f.get("fill_id", ""))
+                if not fill_id or fill_id in self._fill_ids_seen:
+                    continue
+                self._fill_ids_seen.add(fill_id)
+
+                ticker = f.get("ticker", "")
+                if not ticker:
+                    continue
+
+                count = int(float(f.get("count", f.get("count_fp", "0"))))
+                if count <= 0:
+                    continue
+
+                yes_price_str = f.get("yes_price", f.get("yes_price_dollars", "0"))
+                price_cents = int(round(float(yes_price_str) * 100)) if "." in str(yes_price_str) else int(yes_price_str)
+
+                action = f.get("action", "buy")
+                side = "buy" if action == "buy" else "sell"
+                theo = self._last_theo.get(ticker, float(price_cents))
+
+                self._markout.record_fill(
+                    timestamp=now_ts,
+                    market_ticker=ticker,
+                    side=side,
+                    fill_price_cents=price_cents,
+                    theo_at_fill_cents=theo,
+                )
+                logger.info(
+                    "MARKOUT: recorded fill %s %s %s @ %dc (theo=%.1fc)",
+                    side, ticker.split("-")[-1], fill_id, price_cents, theo,
+                )
+        except Exception as exc:
+            logger.warning("MARKOUT: failed to process fills: %s", exc)
+
+    def _calibrate_vol_from_orderbooks(
+        self,
+        kalshi_strikes: np.ndarray,
+        orderbooks: dict[str, dict[str, Any]],
+    ) -> None:
+        """Calibrate vol from Kalshi orderbook mid-prices on near-ATM strikes."""
+        if self._forward_estimate <= 0 or self._days_to_settlement <= 0:
+            return
+
+        tau = max(0.5, self._days_to_settlement) / 365.0
+        fallback = self._cfg.get("synthetic", {}).get("vol", 0.15)
+
+        strike_mids: list[tuple[float, float]] = []
+        for strike in kalshi_strikes:
+            ticker = self._market_tickers.get(strike, "")
+            if not ticker:
+                continue
+            ob = orderbooks.get(ticker, {})
+            best_bid = ob.get("best_bid", 0)
+            best_ask = ob.get("best_ask", 100)
+            if best_bid > 0 and best_ask < 100 and best_bid < best_ask:
+                mid_prob = (best_bid + best_ask) / 200.0
+                strike_mids.append((strike, mid_prob))
+
+        self._vol = calibrate_vol(
+            forward=self._forward_estimate,
+            strike_mids=strike_mids,
+            tau=tau,
+            fallback=fallback,
         )
 
     def _compute_targets(self, kalshi_strikes: np.ndarray) -> dict[float, int]:
@@ -462,24 +565,28 @@ class LIPMarketMaker:
                     strikes.append(s)
                     self._market_tickers[s] = t
 
-            # Forward: prefer Pyth real-time ZS, fall back to Kalshi
-            _pf = None
-            if self._pyth_provider is not None and self._pyth_provider.pyth_available:
-                _pf = self._pyth_provider.forward_price
-            if _pf is not None and _pf > 0:
-                self._forward_estimate = _pf
-                logger.info("FORWARD: Pyth ZS=%.4f $/bu", _pf)
+            # Forward: prefer override > Pyth > Kalshi-inferred
+            if self._forward_override > 0:
+                self._forward_estimate = self._forward_override
+                logger.info("FORWARD: override=%.4f $/bu", self._forward_override)
             else:
-                for m in markets:
-                    bid = float(m.get("yes_bid_dollars") or 0)
-                    ask = float(m.get("yes_ask_dollars") or 1)
-                    mid = (bid + ask) / 2
-                    if 0.4 <= mid <= 0.6:
-                        fs = m.get("floor_strike")
-                        if fs:
-                            self._forward_estimate = float(fs) / 100.0
-                            break
-                logger.info("FORWARD: Kalshi=%.4f (Pyth N/A)", self._forward_estimate)
+                _pf = None
+                if self._pyth_provider is not None and self._pyth_provider.pyth_available:
+                    _pf = self._pyth_provider.forward_price
+                if _pf is not None and _pf > 0:
+                    self._forward_estimate = _pf
+                    logger.info("FORWARD: Pyth ZS=%.4f $/bu", _pf)
+                else:
+                    for m in markets:
+                        bid = float(m.get("yes_bid_dollars") or 0)
+                        ask = float(m.get("yes_ask_dollars") or 1)
+                        mid = (bid + ask) / 2
+                        if 0.4 <= mid <= 0.6:
+                            fs = m.get("floor_strike")
+                            if fs:
+                                self._forward_estimate = float(fs) / 100.0
+                                break
+                    logger.info("FORWARD: Kalshi=%.4f (Pyth N/A)", self._forward_estimate)
 
             # Days to settlement
             for m in markets:
@@ -551,6 +658,120 @@ class LIPMarketMaker:
                 }
 
         return result
+
+    @property
+    def markout_tracker(self) -> MarkoutTracker:
+        return self._markout
+
+    def _write_markout_file(self) -> None:
+        """Write markout stats to JSON for dashboard consumption."""
+        import json
+        stats = self._markout.bucket_stats()
+        data = [
+            {
+                "market_ticker": bs.market_ticker,
+                "avg_1m": round(bs.avg_1m, 2),
+                "avg_5m": round(bs.avg_5m, 2),
+                "avg_30m": round(bs.avg_30m, 2),
+                "n_fills": bs.n_fills,
+            }
+            for bs in stats
+        ]
+        try:
+            with open("state/markout.json", "w") as f:
+                json.dump(data, f)
+        except Exception as exc:
+            logger.warning("MARKOUT: failed to write markout file: %s", exc)
+
+    async def _try_amend(
+        self,
+        order_id: str,
+        *,
+        yes_price: int | None = None,
+        no_price: int | None = None,
+        count: int | None = None,
+    ) -> bool:
+        """Try to amend a resting order. Returns True on success, False on failure."""
+        assert self._kalshi_client is not None
+        try:
+            await self._kalshi_client.amend_order(
+                order_id, yes_price=yes_price, no_price=no_price, count=count,
+            )
+            return True
+        except KalshiResponseError as exc:
+            logger.warning("LIP AMEND failed (order=%s): %s — falling back to cancel+place", order_id[:8], exc)
+            return False
+        except Exception as exc:
+            logger.warning("LIP AMEND error (order=%s): %s — falling back to cancel+place", order_id[:8], exc)
+            return False
+
+    async def _cancel_and_place_bid(self, ticker: str, target_bid: int) -> None:
+        """Cancel existing bid and place new one (fallback from amend)."""
+        assert self._kalshi_client is not None
+        cur = self._resting.get(ticker, {})
+        cur_bid_id = cur.get("bid_id", "")
+        if cur_bid_id:
+            try:
+                await self._kalshi_client.cancel_order(cur_bid_id)
+            except Exception:
+                pass
+        await self._place_bid(ticker, target_bid)
+
+    async def _cancel_and_place_ask(self, ticker: str, target_ask: int) -> None:
+        """Cancel existing ask and place new one (fallback from amend)."""
+        assert self._kalshi_client is not None
+        cur = self._resting.get(ticker, {})
+        cur_ask_id = cur.get("ask_id", "")
+        if cur_ask_id:
+            try:
+                await self._kalshi_client.cancel_order(cur_ask_id)
+            except Exception:
+                pass
+        await self._place_ask(ticker, target_ask)
+
+    async def _place_bid(self, ticker: str, target_bid: int) -> None:
+        """Place a new bid order."""
+        assert self._kalshi_client is not None
+        try:
+            resp = await self._kalshi_client.create_order(
+                ticker=ticker,
+                action="buy",
+                side="yes",
+                order_type="limit",
+                count=self._size,
+                yes_price=target_bid,
+                post_only=True,
+            )
+            order = resp.get("order", {})
+            oid = order.get("order_id", "")
+            self._resting.setdefault(ticker, {})["bid_id"] = oid
+            self._resting[ticker]["bid_px"] = target_bid
+        except Exception as exc:
+            logger.warning("LIP: failed bid %s @ %dc: %s", ticker, target_bid, exc)
+            self._resting.setdefault(ticker, {})["bid_id"] = ""
+            self._resting[ticker]["bid_px"] = 0
+
+    async def _place_ask(self, ticker: str, target_ask: int) -> None:
+        """Place a new ask order."""
+        assert self._kalshi_client is not None
+        try:
+            resp = await self._kalshi_client.create_order(
+                ticker=ticker,
+                action="sell",
+                side="yes",
+                order_type="limit",
+                count=self._size,
+                yes_price=target_ask,
+                post_only=True,
+            )
+            order = resp.get("order", {})
+            oid = order.get("order_id", "")
+            self._resting.setdefault(ticker, {})["ask_id"] = oid
+            self._resting[ticker]["ask_px"] = target_ask
+        except Exception as exc:
+            logger.warning("LIP: failed ask %s @ %dc: %s", ticker, target_ask, exc)
+            self._resting.setdefault(ticker, {})["ask_id"] = ""
+            self._resting[ticker]["ask_px"] = 0
 
     async def _cancel_all(self) -> None:
         if not self._kalshi_client:

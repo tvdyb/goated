@@ -21,3 +21,7 @@ logs/
 calibration/params/*.json
 !calibration/params/.gitkeep
 data/
+output/
+state/markout.json
+*.pem
+*.key
