@@ -714,7 +714,37 @@ class LIPMarketMaker:
         toxic_tag = " [TOXIC]" if is_toxic else ""
         regime = "desert" if (bid_is_desert or ask_is_desert) else "active"
 
-        if cur_bid_px != bid:
+        # --- Anti-churn: only reposition if multiplier dropped below 0.25x ---
+        # BUT force a fresh recompute every ~30s to re-penny if competitor relaxed.
+        min_acceptable_mult = 0.25
+        force_refresh = (time.time() % 30) < self._cycle_seconds  # roughly every 30s
+
+        cur_bid_ok = False
+        if cur_bid_px > 0 and best_bid > 0:
+            cur_bid_dist = best_bid - cur_bid_px
+            cur_bid_mult = LIP_DISCOUNT ** max(0, cur_bid_dist)
+            cur_bid_ahead = sum(
+                (sz - self._size if px == cur_bid_px else sz)
+                for px, sz in yes_depth if px > cur_bid_px
+            )
+            cur_bid_in_300 = cur_bid_ahead + self._size <= lip_target
+            cur_bid_ok = cur_bid_in_300 and cur_bid_mult >= min_acceptable_mult
+
+        cur_ask_ok = False
+        if cur_ask_px > 0 and best_ask < 100:
+            cur_ask_dist = cur_ask_px - best_ask
+            cur_ask_mult = LIP_DISCOUNT ** max(0, cur_ask_dist)
+            cur_no_px = 100 - cur_ask_px
+            cur_ask_ahead = sum(
+                (sz - self._size if px == cur_no_px else sz)
+                for px, sz in no_depth if px > cur_no_px
+            )
+            cur_ask_in_300 = cur_ask_ahead + self._size <= lip_target
+            cur_ask_ok = cur_ask_in_300 and cur_ask_mult >= min_acceptable_mult
+
+        # Update bid: reposition if multiplier < 0.25x, no order, or periodic refresh
+        bid_needs_update = (not cur_bid_ok or cur_bid_px == 0 or force_refresh) and cur_bid_px != bid
+        if bid_needs_update:
             if cur_bid_id:
                 amended = await self._try_amend(cur_bid_id, yes_price=bid, count=self._size)
                 if amended:
@@ -724,7 +754,9 @@ class LIPMarketMaker:
             else:
                 await self._place_bid(ticker, bid)
 
-        if cur_ask_px != ask:
+        # Update ask: reposition if multiplier < 0.25x, no order, or periodic refresh
+        ask_needs_update = (not cur_ask_ok or cur_ask_px == 0 or force_refresh) and cur_ask_px != ask
+        if ask_needs_update:
             if cur_ask_id:
                 amended = await self._try_amend(cur_ask_id, yes_price=ask, count=self._size)
                 if amended:
