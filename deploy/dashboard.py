@@ -407,8 +407,9 @@ async def _refresh() -> dict:
         bot_age = time.time() - theo_state.get("ts", 0) if theo_state else 1e9
         live_vol = bot_vol if (bot_vol and bot_age < 120) else None
         for analysis in lip_analysis:
+            # analysis["strike"] is already in Kalshi cents-as-float (e.g. 1186.99)
             analysis["theo"] = _compute_theo(
-                analysis["strike"] * 100, _get_days_to_settle(), vol=live_vol,
+                analysis["strike"], _get_days_to_settle(), vol=live_vol,
             )
 
         total_est_daily = sum(a["est_daily"] for a in lip_analysis)
