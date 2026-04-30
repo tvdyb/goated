@@ -86,6 +86,7 @@ class LIPMarketMaker:
         )
         self._vol = cfg.get("synthetic", {}).get("vol", 0.15)
         self._max_dist = lip.get("max_distance_from_best", 2)
+        self._theo_tolerance = lip.get("theo_tolerance", 2)
 
         # yfinance forward ticker (May soybeans)
         self._yf_ticker = cfg.get("synthetic", {}).get("yf_ticker", "ZSK26.CBT")
@@ -276,11 +277,20 @@ class LIPMarketMaker:
                     break
             best_ask = (100 - best_no_bid) if best_no_bid > 0 else 100
 
-            # --- BID: max_dist cents below best bid, but check LIP ---
+            # --- BID: the higher of (best_bid - max_dist) or (fair - max_half_spread)
+            #     This prevents following a collapsing bid down to nothing.
+            #     If best bid is far below theo, we stay near theo instead.
             if best_bid > 0:
-                bid = best_bid - max_dist
+                bid_follow = best_bid - max_dist
+                bid_theo = fair - self._max_half_spread
+                bid = max(bid_follow, bid_theo)
             else:
                 bid = fair - self._max_half_spread
+
+            # Deep ITM special case: theo >= 97c → penny the best bid
+            # Almost certain to settle Yes, so buying at 96-97c is safe
+            if fair >= 97 and best_bid > 0:
+                bid = max(bid, best_bid + 1)
 
             # Check LIP: would we be in top 300 at this bid?
             yes_ahead = sum(
@@ -290,14 +300,23 @@ class LIPMarketMaker:
             if yes_ahead + self._size > lip_target:
                 bid = best_bid
 
-            # ANTI-SPOOFING: never buy above theo (never bid > fair - 1)
-            bid = min(bid, fair - 1)
+            # ANTI-SPOOFING: never bid too far above theo
+            # Tolerance allows small disagreement with market (our theo isn't perfect)
+            bid = min(bid, fair - 1 + self._theo_tolerance)
 
-            # --- ASK: max_dist cents above best ask, but check LIP ---
+            # --- ASK: the lower of (best_ask + max_dist) or (fair + max_half_spread)
+            #     Same logic: don't follow a collapsing ask up to nothing.
             if best_ask < 100:
-                ask = best_ask + max_dist
+                ask_follow = best_ask + max_dist
+                ask_theo = fair + self._max_half_spread
+                ask = min(ask_follow, ask_theo)
             else:
                 ask = fair + self._max_half_spread
+
+            # Deep OTM special case: theo <= 3c → penny the best ask
+            # Almost certain to settle No, so selling at 3-4c is safe
+            if fair <= 3 and best_ask < 100:
+                ask = min(ask, best_ask - 1)
 
             # Check LIP on No side
             target_no_px = 100 - ask
@@ -308,8 +327,8 @@ class LIPMarketMaker:
             if no_ahead + self._size > lip_target:
                 ask = best_ask
 
-            # ANTI-SPOOFING: never sell below theo (never ask < fair + 1)
-            ask = max(ask, fair + 1)
+            # ANTI-SPOOFING: never sell too far below theo
+            ask = max(ask, fair + 1 - self._theo_tolerance)
 
             # Clamp
             bid = max(1, min(99, bid))

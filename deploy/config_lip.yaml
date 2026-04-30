@@ -16,6 +16,7 @@ lip:
   max_half_spread_cents: 4
   min_half_spread_cents: 2
   max_distance_from_best: 1    # never post more than 1c from best (0.50x floor)
+  theo_tolerance: 2             # allow bids up to theo+2c / asks down to theo-2c
   eligible_strikes:
     - 1136.99
     - 1146.99
