@@ -27,7 +27,8 @@ lip:
 
 synthetic:
   vol: 0.1629
-  forward_override: 11.8225  # ZSK26 (May) last=1182-2 from Barchart Apr 29 2026. Kalshi settles against front month.
+  forward_override: 0        # disabled — yfinance auto-pulls now
+  yf_ticker: ZSK26.CBT       # May soybeans (front month Kalshi settles against)
 
 loop:
   cycle_seconds: 20    # balance: fast enough to track best, slow enough to avoid 429s

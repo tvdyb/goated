@@ -87,6 +87,12 @@ class LIPMarketMaker:
         self._vol = cfg.get("synthetic", {}).get("vol", 0.15)
         self._max_dist = lip.get("max_distance_from_best", 2)
 
+        # yfinance forward ticker (May soybeans)
+        self._yf_ticker = cfg.get("synthetic", {}).get("yf_ticker", "ZSK26.CBT")
+        self._yf_cache: float | None = None
+        self._yf_cache_time: float = 0.0
+        self._yf_cache_ttl: float = 60.0  # refresh every 60s
+
         # LIP-eligible strikes (floor_strike values from Kalshi)
         raw_eligible = lip.get("eligible_strikes", [])
         self._eligible_strikes: set[float] = {
@@ -565,8 +571,12 @@ class LIPMarketMaker:
                     strikes.append(s)
                     self._market_tickers[s] = t
 
-            # Forward: prefer override > Pyth > Kalshi-inferred
-            if self._forward_override > 0:
+            # Forward: prefer yfinance > override > Pyth > Kalshi-inferred
+            yf_fwd = self._pull_yfinance_forward()
+            if yf_fwd is not None and yf_fwd > 0:
+                self._forward_estimate = yf_fwd / 100.0  # cents to dollars
+                logger.info("FORWARD: yfinance ZSK26=%.4f $/bu (%.1fc)", self._forward_estimate, yf_fwd)
+            elif self._forward_override > 0:
                 self._forward_estimate = self._forward_override
                 logger.info("FORWARD: override=%.4f $/bu", self._forward_override)
             else:
@@ -586,7 +596,7 @@ class LIPMarketMaker:
                             if fs:
                                 self._forward_estimate = float(fs) / 100.0
                                 break
-                    logger.info("FORWARD: Kalshi=%.4f (Pyth N/A)", self._forward_estimate)
+                    logger.info("FORWARD: Kalshi=%.4f (yfinance/Pyth N/A)", self._forward_estimate)
 
             # Days to settlement
             for m in markets:
@@ -772,6 +782,31 @@ class LIPMarketMaker:
             logger.warning("LIP: failed ask %s @ %dc: %s", ticker, target_ask, exc)
             self._resting.setdefault(ticker, {})["ask_id"] = ""
             self._resting[ticker]["ask_px"] = 0
+
+    def _pull_yfinance_forward(self) -> float | None:
+        """Pull ZS front-month price from yfinance. Returns price in cents or None."""
+        now = time.time()
+        if self._yf_cache is not None and (now - self._yf_cache_time) < self._yf_cache_ttl:
+            return self._yf_cache
+
+        try:
+            import yfinance as yf
+            tk = yf.Ticker(self._yf_ticker)
+            hist = tk.history(period="1d")
+            if hist.empty:
+                logger.warning("YFINANCE: no data for %s", self._yf_ticker)
+                return self._yf_cache  # return stale cache if available
+            close = float(hist["Close"].iloc[-1])
+            # Sanity check: soybean price should be 800-2000 cents/bushel
+            if close < 500 or close > 2500:
+                logger.warning("YFINANCE: price %.1f outside sanity range", close)
+                return self._yf_cache
+            self._yf_cache = close
+            self._yf_cache_time = now
+            return close
+        except Exception as exc:
+            logger.warning("YFINANCE: failed to pull %s: %s", self._yf_ticker, exc)
+            return self._yf_cache
 
     async def _cancel_all(self) -> None:
         if not self._kalshi_client:
