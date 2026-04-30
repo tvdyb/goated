@@ -132,16 +132,8 @@ class LIPMarketMaker:
         self._last_theo: dict[str, float] = {}  # market_ticker -> theo_cents
         self._fill_ids_seen: set[str] = set()
 
-        # Pyth forward price provider
+        # Pyth forward disabled — yfinance handles forward now
         self._pyth_provider: PythForwardProvider | None = None
-        pyth_cfg_path = cfg.get("pyth_feeds_config", "config/pyth_feeds.yaml")
-        try:
-            with open(pyth_cfg_path) as f:
-                pyth_cfg = yaml.safe_load(f)
-            pyth_fwd_cfg = load_pyth_forward_config(pyth_cfg)
-            self._pyth_provider = PythForwardProvider(pyth_fwd_cfg)
-        except Exception as exc:
-            logger.warning("Pyth forward not configured: %s", exc)
 
     async def startup(self) -> None:
         api_key = os.environ.get("KALSHI_API_KEY", "")
@@ -158,15 +150,6 @@ class LIPMarketMaker:
         await self._kalshi_client.open()
         logger.info("STARTUP: connected to Kalshi")
 
-        # Pyth forward provider
-        if self._pyth_provider is not None:
-            try:
-                await self._pyth_provider.start()
-                logger.info("STARTUP: Pyth forward provider started")
-            except Exception as exc:
-                logger.warning("STARTUP: Pyth forward start failed: %s", exc)
-                self._pyth_provider = None
-
         # Cancel any existing orders to start clean
         await self._cancel_all()
         logger.info("STARTUP: complete")
@@ -174,11 +157,6 @@ class LIPMarketMaker:
     async def shutdown(self) -> None:
         logger.info("SHUTDOWN: cancelling all orders")
         await self._cancel_all()
-        if self._pyth_provider is not None:
-            try:
-                await self._pyth_provider.stop()
-            except Exception:
-                pass
         if self._kalshi_client:
             await self._kalshi_client.close()
         logger.info("SHUTDOWN: complete")
