@@ -497,7 +497,14 @@ def _bg_refresh() -> None:
             result = asyncio.run(_refresh())
             with _lock:
                 _state = result
-            _update_lip_history(result.get("total_est_hourly", 0.0))
+            # Only accrue LIP history when the bot is actively trading.
+            # Skip if (a) bot in maintenance mode (cancelled orders, idle), or
+            # (b) bot heartbeat stale >2min (process down or unresponsive).
+            ts = result.get("theo_state", {})
+            bot_age = time.time() - ts.get("ts", 0) if ts else 1e9
+            in_maintenance = ts.get("maintenance_active", False)
+            if not in_maintenance and bot_age < 120:
+                _update_lip_history(result.get("total_est_hourly", 0.0))
         except Exception as exc:
             with _lock:
                 _state["error"] = str(exc)
