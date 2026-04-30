@@ -120,6 +120,7 @@ class LIPMarketMaker:
         self._forward_override: float = cfg.get("synthetic", {}).get("forward_override", 0.0)
         self._forward_estimate: float = self._forward_override
         self._days_to_settlement: float = 2.0
+        self._last_forward_source: str = "unknown"
 
         # WASDE density adjustment
         wasde_cfg = cfg.get("wasde", {})
@@ -837,32 +838,55 @@ class LIPMarketMaker:
                     strikes.append(s)
                     self._market_tickers[s] = t
 
-            # Forward: prefer yfinance > override > Pyth > Kalshi-inferred
-            yf_fwd = self._pull_yfinance_forward()
-            if yf_fwd is not None and yf_fwd > 0:
-                self._forward_estimate = yf_fwd / 100.0  # cents to dollars
-                logger.info("FORWARD: yfinance ZSK26=%.4f $/bu (%.1fc)", self._forward_estimate, yf_fwd)
-            elif self._forward_override > 0:
+            # Forward priority:
+            #   1. config override (manual)
+            #   2. Trading Economics (canonical — Kalshi resolves against this)
+            #   3. yfinance (CBOT, can be stale during overnight session)
+            #   4. Pyth (currently dead for soy, kept for future)
+            #   5. Kalshi-inferred ATM heuristic (last resort)
+            self._last_forward_source = "unknown"
+            if self._forward_override > 0:
                 self._forward_estimate = self._forward_override
+                self._last_forward_source = "config override"
                 logger.info("FORWARD: override=%.4f $/bu", self._forward_override)
             else:
-                _pf = None
-                if self._pyth_provider is not None and self._pyth_provider.pyth_available:
-                    _pf = self._pyth_provider.forward_price
-                if _pf is not None and _pf > 0:
-                    self._forward_estimate = _pf
-                    logger.info("FORWARD: Pyth ZS=%.4f $/bu", _pf)
+                te_fwd_cents = None
+                try:
+                    from feeds.tradingeconomics.soybean import get_soybean_price
+                    te_fwd_cents = get_soybean_price()
+                except Exception as exc:
+                    logger.warning("FORWARD: TE fetch failed: %s", exc)
+
+                if te_fwd_cents is not None and te_fwd_cents > 0:
+                    self._forward_estimate = te_fwd_cents / 100.0
+                    self._last_forward_source = "Trading Economics"
+                    logger.info("FORWARD: TradingEconomics=%.4f $/bu (%.2fc)", self._forward_estimate, te_fwd_cents)
                 else:
-                    for m in markets:
-                        bid = float(m.get("yes_bid_dollars") or 0)
-                        ask = float(m.get("yes_ask_dollars") or 1)
-                        mid = (bid + ask) / 2
-                        if 0.4 <= mid <= 0.6:
-                            fs = m.get("floor_strike")
-                            if fs:
-                                self._forward_estimate = float(fs) / 100.0
-                                break
-                    logger.info("FORWARD: Kalshi=%.4f (yfinance/Pyth N/A)", self._forward_estimate)
+                    yf_fwd = self._pull_yfinance_forward()
+                    if yf_fwd is not None and yf_fwd > 0:
+                        self._forward_estimate = yf_fwd / 100.0
+                        self._last_forward_source = f"yfinance ({self._yf_ticker})"
+                        logger.info("FORWARD: yfinance %s=%.4f $/bu (%.1fc) [TE unavailable]", self._yf_ticker, self._forward_estimate, yf_fwd)
+                    else:
+                        _pf = None
+                        if self._pyth_provider is not None and self._pyth_provider.pyth_available:
+                            _pf = self._pyth_provider.forward_price
+                        if _pf is not None and _pf > 0:
+                            self._forward_estimate = _pf
+                            self._last_forward_source = "Pyth"
+                            logger.info("FORWARD: Pyth ZS=%.4f $/bu [TE+yfinance unavailable]", _pf)
+                        else:
+                            for m in markets:
+                                bid = float(m.get("yes_bid_dollars") or 0)
+                                ask = float(m.get("yes_ask_dollars") or 1)
+                                mid = (bid + ask) / 2
+                                if 0.4 <= mid <= 0.6:
+                                    fs = m.get("floor_strike")
+                                    if fs:
+                                        self._forward_estimate = float(fs) / 100.0
+                                        break
+                            self._last_forward_source = "Kalshi ATM-heuristic"
+                            logger.warning("FORWARD: Kalshi=%.4f (TE/yfinance/Pyth all unavailable)", self._forward_estimate)
 
             # Days to settlement: prefer override > Kalshi expiration_time
             if self._settlement_override is not None:
@@ -986,11 +1010,7 @@ class LIPMarketMaker:
                 "half_life_hours": half_life_h,
             }
 
-        forward_source = "kalshi-inferred"
-        if self._yf_cache is not None and self._yf_cache > 0:
-            forward_source = f"yfinance ({self._yf_ticker})"
-        elif self._forward_override > 0:
-            forward_source = "config override"
+        forward_source = self._last_forward_source or "unknown"
 
         data = {
             "ts": now,

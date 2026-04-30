@@ -29,7 +29,7 @@ app = Flask(__name__)
 _ET = ZoneInfo("America/New_York")
 
 import math
-from scipy.special import ndtr as _ndtr
+from scipy.special import ndtr as _ndtr, ndtri as _ndtri
 
 LIP_ELIGIBLE = {1136.99, 1146.99, 1156.99, 1166.99, 1176.99, 1186.99, 1196.99}
 LIP_POOL_PER_MARKET = 15.0  # $/day
@@ -83,13 +83,65 @@ def _get_days_to_settle() -> float:
         return 1.0
 
 
-def _compute_theo(strike_cents: float, days_to_settle: float, vol: float | None = None) -> int:
-    """Compute theo in cents for a strike. Uses bot's calibrated vol if provided."""
-    fwd_cents = _get_yf_forward()
-    if fwd_cents <= 0:
-        return 0
+def _kalshi_implied_forward(lip_analysis: list[dict], vol: float, days_to_settle: float) -> float:
+    """Back out forward from Kalshi orderbook Yes mids.
+
+    For each strike with reasonable mid (5%-95%) and spread (<30c), invert
+    Black-76 to solve for F given the supplied vol. Return median across strikes.
+
+    Returns 0.0 if no valid strikes.
+    """
+    if vol <= 0 or days_to_settle <= 0:
+        return 0.0
+    tau = max(0.001, days_to_settle) / 365.0
+    sig_sqrt_t = max(vol * math.sqrt(tau), 1e-12)
+
+    forwards: list[float] = []
+    for a in lip_analysis:
+        best_bid = a.get("best_bid", 0)
+        best_ask = a.get("best_ask", 100)
+        strike = a.get("strike", 0)
+        if strike <= 0 or best_bid <= 0 or best_ask >= 100 or best_bid >= best_ask:
+            continue
+        if (best_ask - best_bid) > 30:
+            continue
+        yes_mid_prob = (best_bid + best_ask) / 200.0  # 0..1
+        if not (0.05 <= yes_mid_prob <= 0.95):
+            continue
+        try:
+            d2 = float(_ndtri(yes_mid_prob))
+        except Exception:
+            continue
+        strike_dollars = strike / 100.0
+        F = strike_dollars * math.exp(d2 * sig_sqrt_t + 0.5 * vol * vol * tau)
+        if 5.0 < F < 30.0:  # sanity bound for soybeans ($5-$30/bu)
+            forwards.append(F)
+
+    if not forwards:
+        return 0.0
+    forwards.sort()
+    return forwards[len(forwards) // 2]
+
+
+def _compute_theo(
+    strike_cents: float,
+    days_to_settle: float,
+    vol: float | None = None,
+    forward_dollars: float | None = None,
+) -> int:
+    """Compute theo in cents for a strike.
+
+    Uses bot's calibrated vol and bot's forward when provided. Falls back to
+    yfinance + hardcoded vol only when bot data is stale/missing.
+    """
+    if forward_dollars is not None and forward_dollars > 0:
+        forward = forward_dollars
+    else:
+        fwd_cents = _get_yf_forward()
+        if fwd_cents <= 0:
+            return 0
+        forward = fwd_cents / 100.0
     sigma = vol if (vol is not None and vol > 0) else _THEO_VOL_FALLBACK
-    forward = fwd_cents / 100.0
     k = strike_cents / 100.0
     tau = max(0.1, days_to_settle) / 365.0
     sig_sqrt_t = max(sigma * math.sqrt(tau), 1e-12)
@@ -402,14 +454,22 @@ async def _refresh() -> dict:
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
-        # Backfill theo using bot's live vol (if it's a fresh write)
-        bot_vol = theo_state.get("vol_calibrated") if theo_state else None
+        # Backfill theo using bot's live vol + forward (when fresh)
         bot_age = time.time() - theo_state.get("ts", 0) if theo_state else 1e9
-        live_vol = bot_vol if (bot_vol and bot_age < 120) else None
+        live_vol = None
+        live_fwd = None
+        if theo_state and bot_age < 120:
+            v = theo_state.get("vol_calibrated")
+            if v and v > 0:
+                live_vol = v
+            f = theo_state.get("forward_dollars")
+            if f and f > 0:
+                live_fwd = f
         for analysis in lip_analysis:
             # analysis["strike"] is already in Kalshi cents-as-float (e.g. 1186.99)
             analysis["theo"] = _compute_theo(
-                analysis["strike"], _get_days_to_settle(), vol=live_vol,
+                analysis["strike"], _get_days_to_settle(),
+                vol=live_vol, forward_dollars=live_fwd,
             )
 
         total_est_daily = sum(a["est_daily"] for a in lip_analysis)
@@ -646,6 +706,25 @@ def index() -> str:
         size_jit = ts.get("size_jitter", 0)
         size_last = ts.get("size_last", 0)
 
+        # Sanity check: derive forward from Kalshi orderbook
+        kalshi_fwd = _kalshi_implied_forward(lip, vol_cal, days)
+        fwd_diff_c = (fwd - kalshi_fwd) * 100 if kalshi_fwd > 0 else 0.0
+        fwd_diff_color = "#4ade80" if abs(fwd_diff_c) < 3 else "#f59e0b" if abs(fwd_diff_c) < 8 else "#f87171"
+        if kalshi_fwd > 0:
+            kalshi_fwd_card = f"""
+            <div class="stat" style="background:{'#3a1e1e' if abs(fwd_diff_c) >= 8 else '#1e293b'}">
+                <div class="stat-label">Kalshi-implied fwd</div>
+                <div class="stat-value" style="color:#a78bfa">${kalshi_fwd:.4f}</div>
+                <div style="font-size:10px;color:#94a3b8;margin-top:2px">yf vs Kalshi: <span style="color:{fwd_diff_color};font-weight:bold">{fwd_diff_c:+.1f}c</span></div>
+            </div>"""
+        else:
+            kalshi_fwd_card = """
+            <div class="stat">
+                <div class="stat-label">Kalshi-implied fwd</div>
+                <div class="stat-value" style="color:#64748b">N/A</div>
+                <div style="font-size:10px;color:#94a3b8;margin-top:2px">no usable strikes</div>
+            </div>"""
+
         wasde = ts.get("wasde", {})
         if wasde.get("active"):
             shift = wasde.get("current_shift_cents", 0.0)
@@ -684,6 +763,7 @@ def index() -> str:
             <div class="stat-value" style="color:#60a5fa">${fwd:.4f}</div>
             <div style="font-size:10px;color:#94a3b8;margin-top:2px">{fwd_src}</div>
         </div>
+        {kalshi_fwd_card}
         <div class="stat">
             <div class="stat-label">τ to settlement</div>
             <div class="stat-value">{days*24:.1f}h</div>
