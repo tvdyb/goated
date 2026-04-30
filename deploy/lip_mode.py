@@ -373,6 +373,9 @@ class LIPMarketMaker:
             elif fair <= 3:
                 # Deep OTM: match best ask (safe, will profit at settlement)
                 ask = best_ask
+            elif fair >= 97:
+                # Deep ITM: match best ask (safe, any fill profits 2c+)
+                ask = best_ask
             else:
                 # Active market: stay 1c behind best
                 ask = best_ask + max_dist
@@ -673,6 +676,10 @@ class LIPMarketMaker:
         elif ask_is_desert:
             ask = best_ask - 1
         elif fair <= 3:
+            # Deep OTM: match best ask (safe, settles No)
+            ask = best_ask
+        elif fair >= 97:
+            # Deep ITM: match best ask (safe, any fill profits 2c+)
             ask = best_ask
         else:
             ask = best_ask + max_dist

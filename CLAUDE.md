@@ -4,7 +4,7 @@
 
 Asymmetric market-making system on Kalshi commodity monthly markets (`KXSOYBEANMON` first), priced against a synthetic GBM (with IBKR-sourced RND pipeline as upgrade path), hedged on Interactive Brokers (when available). Operating under strategic frame **F4** (see `prompts/build/PREMISE.md`).
 
-**Status: LIVE.** First deployment on KXSOYBEANMON completed 2026-04-28. Running with synthetic RND (no CME data yet), no hedge (no IBKR yet). IBKR account opened, pending market data subscription + IB Gateway setup.
+**Status: LIVE on Mac Mini.** LIP-optimized mode running on KXSOYBEANMON since 2026-04-28. Forward from yfinance (ZSK26.CBT), vol from Kalshi-implied calibration with 16.29% fallback. Theo stack 13/18 phases complete. IBKR account opened, pending IB Gateway + CME data subscription.
 
 ## Quick start
 
@@ -24,13 +24,25 @@ ruff check .                 # lint (config in pyproject.toml)
 export KALSHI_API_KEY="your-key"
 export KALSHI_PRIVATE_KEY_PATH="/path/to/private_key.pem"
 
-# Run market maker ($50 test config)
+# Run LIP-optimized mode (primary)
+python -m deploy.lip_mode --config deploy/config_lip.yaml
+
+# Run spread-capture mode (alternative)
 python -m deploy.main --config deploy/config_test.yaml
 
 # Run dashboard (separate terminal, same env vars)
 python -m deploy.dashboard
 # Opens at http://localhost:5050
 ```
+
+## Mac Mini deployment (production)
+
+Bot runs on Mac Mini via Tailscale. Access from anywhere:
+- Dashboard: `http://100.95.127.115:5050`
+- SSH: `ssh efloyal@100.95.127.115`
+- Bot screen: `screen -r bot`
+- Dashboard screen: `screen -r dash`
+- Detach: Ctrl+A, release, D
 
 ## Repo layout
 
@@ -66,15 +78,16 @@ mm-setup-main/ Friend's reference MM implementation
 
 ## Current state
 
-- **Phase 80 complete**: live deployment wired and tested on real Kalshi API.
-- **848 tests passing** across all modules.
-- **First live run**: 2026-04-28 on KXSOYBEANMON-26APR3017. Got fills, positions tracked, kill switch fired correctly.
-- **Pricing**: synthetic GBM (forward from Kalshi quotes, 15% vol). Upgrade to IBKR-sourced CME options chain pending.
+- **Phase 80 complete + theo stack 13/18 phases done.**
+- **1053 tests passing** across all modules.
+- **LIP mode LIVE** on Mac Mini since 2026-04-28. Earning ~$13-26/day estimated LIP revenue.
+- **Pricing**: synthetic GBM with yfinance forward (ZSK26.CBT, auto-updates every 60s) + Kalshi-implied vol calibration (16.29% fallback). Settlement time override for correct tau.
+- **Theo stack built**: Pyth (dead for soy), implied vol, seasonal vol, markout tracker, WASDE density, weather skew, Goldman roll, IBKR chain puller (not connected).
 - **Hedge**: not active (IBKR account opened, IB Gateway not yet configured).
-- **LIP**: 0.5x liquidity incentives just launched for KXSOYBEANMON.
-- **Key learning**: adverse selection is real without proper data source. Need real IV surface from IBKR.
+- **LIP**: 0.5x liquidity incentives active on 7 KXSOYBEANMON strikes. Competitive — other bots penny war.
+- **Key learnings**: Kalshi settles against front-month ZS (May ZSK26, NOT July ZSN26). Settlement time ≠ expiration time. Anti-spoofing must always be on. Desert markets need special handling.
 - See `state/PROJECT_CONTEXT.md` for full history.
-- See `state/action_live_deploy/handoff.md` for deployment details.
+- See `prompts/theo/README.md` for theo stack status.
 
 ## Main loop (deploy/main.py)
 
@@ -101,7 +114,10 @@ Every 30 seconds:
 - **Prices**: dollars as strings (e.g. `"0.4500"`) in responses, cents as integers in order creation (`yes_price: 45`)
 - **Positions**: `position_fp` is a float string (e.g. `"11.00"`), not integer
 - **Batch cancel**: `DELETE /portfolio/orders/batch` returns 404 — endpoint may not exist. Use individual cancels.
-- **Rate limiting**: hits 429 after ~22 rapid POST requests. 1s backoff resolves it.
+- **Rate limiting**: Basic tier = 200 read tokens/sec, 100 write tokens/sec (10 tokens/request). 20 reads/sec, 10 writes/sec effective.
+- **Amend endpoint**: `POST /portfolio/orders/{id}/amend` returns 400. Fallback to cancel+place.
+- **Settlement vs expiration**: `expiration_time` in market data is NOT settlement time. Settlement is earlier (e.g., April 30 5pm EDT vs May 7 expiration). Must use settlement override.
+- **Front month**: Kalshi KXSOYBEANMON settles against the front-month ZS contract (currently ZSK26 May), NOT the next month (ZSN26 July). 14c spread between them.
 
 ## Key paths
 
@@ -119,18 +135,29 @@ Every 30 seconds:
 
 ## Module status
 
-**Live (deployed, tested against real Kalshi API):**
-- `deploy/main.py` — main trading loop, synthetic RND, order management
-- `deploy/dashboard.py` — Flask web dashboard
-- `attribution/pnl.py` — PnL attribution tracker
+**Live (deployed on Mac Mini):**
+- `deploy/lip_mode.py` — LIP-optimized market maker with desert/active modes, anti-spoofing, anti-churn, size jitter, yfinance forward, rotational processing
+- `deploy/main.py` — spread-capture market maker with full theo stack wired
+- `deploy/dashboard.py` — Flask LIP dashboard with per-bucket positioning, markout, expandable orderbooks
 - `engine/quoter.py` — adaptive spread-capture quoter (penny-inside)
+- `engine/implied_vol.py` — Kalshi-implied vol calibration from ATM bid/ask
+- `engine/markout.py` — per-bucket fill markout tracker (1m/5m/30m adverse selection)
+- `engine/seasonal_vol.py` — monthly vol regime overlay
 - `engine/settlement_gate.py` — USDA event calendar + gate
 - `engine/taker_imbalance.py` — rolling-window taker-imbalance detector
+- `engine/wasde_density.py` — post-WASDE density mean-shift (sensitivity 1.5c/Mbu)
+- `engine/weather_skew.py` — GEFS weather → distribution skew (growing season only)
+- `engine/goldman_roll.py` — Goldman roll window detection + drift
 - `engine/kill.py` — kill-switch with risk + PnL drawdown triggers
 - `engine/risk.py` — risk gates (delta cap, per-Event, max-loss)
 - `state/positions.py` — position store with fill dedup + reconciliation
-- `feeds/kalshi/client.py` — REST client with RSA-PSS auth, rate limiter, retry
+- `feeds/kalshi/client.py` — REST client with RSA-PSS auth, rate limiter, retry, amend
+- `feeds/pyth/forward.py` — Pyth forward provider (soy feeds dead, WTI works)
+- `feeds/usda/wasde_parser.py` — WASDE PDF/JSON parser
+- `feeds/weather/gefs_client.py` — NOAA GEFS weather data client
+- `feeds/ibkr/options_chain.py` — IBKR options chain puller (needs IB Gateway)
 - `fees/kalshi_fees.py` — fee model
+- `attribution/pnl.py` — PnL attribution tracker
 - `feeds/pyth/client.py` — Pyth Hermes REST client for real-time ZS futures price
 - `feeds/pyth/forward.py` — forward price provider (polls Pyth, falls back to Kalshi-inferred)
 
@@ -155,12 +182,14 @@ Every 30 seconds:
 
 ## Next steps (priority order)
 
-1. **IBKR IB Gateway setup** — connect, subscribe to CME ag data (~$10/mo), pull real ZS options chain
-2. **Replace synthetic RND with IBKR-sourced pipeline** — real IV surface → accurate fair values
-3. **Auto-calibrate vol from Kalshi quotes** — interim improvement before IBKR data flows
-4. **Paper-trade hedge leg** — validate delta hedging on IBKR paper account
-5. **Fix duplicate order accumulation** — resolved but needs monitoring
-6. **Multi-series** — add KXCORNMON once soy is stable
+1. **IBKR IB Gateway setup** — connect, subscribe to CME ag data (~$10/mo), pull real ZS options chain (T-45)
+2. **Wire IBKR options chain → full RND pipeline** — real IV surface → accurate fair values (T-50)
+3. **Validate RND vs synthetic on live fills** — prove RND reduces adverse selection (T-55)
+4. **Update config for new contract** — when current KXSOYBEANMON settles, update `settlement_time`, `eligible_strikes`, `yf_ticker` (if month rolls)
+5. **Merge LIP + spread-capture modes** — unified system that does MM normally and switches to LIP-optimized when incentives are active
+6. **Explore other commodity markets** — KXCORNMON, expand LIP farming across more markets
+7. **Full orderbook depth on dashboard** — expandable per-strike view (partially done)
+8. **Theo stack integration test** (T-90) — validate all components work together
 
 ## Kill criteria (F4)
 

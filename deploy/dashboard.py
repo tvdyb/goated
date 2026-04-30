@@ -245,6 +245,8 @@ def _analyze_lip(
         "est_hourly": est_hourly,
         "spread": our_ask_px - our_bid_px if our_bid_px > 0 and our_ask_px > 0 else 0,
         "theo": 0,  # populated by caller
+        "yes_depth": yes_depth,  # full orderbook depth
+        "no_depth": no_depth,
     }
 
 
@@ -387,9 +389,53 @@ def index() -> str:
         theo = a.get("theo", 0)
         theo_color = "#60a5fa"
 
+        # Build orderbook depth HTML
+        yes_depth = a.get("yes_depth", [])
+        no_depth = a.get("no_depth", [])
+        our_bid = a["our_bid"]
+        our_ask = a["our_ask"]
+
+        depth_rows = ""
+        # Combine yes (bids) and no (asks) into a unified view
+        # Left side: Yes bids (highest first)
+        # Right side: No bids = Yes asks (highest No bid = lowest Yes ask first)
+        max_depth = max(len(yes_depth), len(no_depth), 1)
+        for i in range(min(max_depth, 12)):  # cap at 12 levels
+            # Yes bid level
+            if i < len(yes_depth):
+                ypx, ysz = yes_depth[i]
+                ycolor = "#60a5fa" if ypx == our_bid else "#e2e8f0"
+                ybold = "font-weight:bold;" if ypx == our_bid else ""
+                ytag = " ◄" if ypx == our_bid else ""
+                ycell = f'<td style="text-align:right;color:{ycolor};{ybold}">{ypx}c{ytag}</td><td style="text-align:right;color:{ycolor}">{ysz:.0f}</td>'
+            else:
+                ycell = '<td></td><td></td>'
+
+            # No bid level (= Yes ask)
+            if i < len(no_depth):
+                npx, nsz = no_depth[i]
+                yes_ask_equiv = 100 - npx
+                ncolor = "#f59e0b" if yes_ask_equiv == our_ask else "#e2e8f0"
+                nbold = "font-weight:bold;" if yes_ask_equiv == our_ask else ""
+                ntag = " ►" if yes_ask_equiv == our_ask else ""
+                ncell = f'<td style="text-align:left;color:{ncolor};{nbold}">{nsz:.0f}</td><td style="text-align:left;color:{ncolor};{nbold}">{npx}c No ({yes_ask_equiv}c Yes){ntag}</td>'
+            else:
+                ncell = '<td></td><td></td>'
+
+            depth_rows += f'<tr style="font-size:11px">{ycell}<td style="width:10px"></td>{ncell}</tr>'
+
         lip_rows += f"""
         <tr>
-            <td style="font-family:monospace;font-size:12px">{strike_label}</td>
+            <td style="font-family:monospace;font-size:12px">
+                <details><summary style="cursor:pointer">{strike_label}</summary>
+                <table style="margin:4px 0;background:#0f172a;border:1px solid #334155;width:100%">
+                    <tr style="font-size:10px;color:#64748b">
+                        <th>Bid</th><th>Size</th><th></th><th>Size</th><th>Ask (No)</th>
+                    </tr>
+                    {depth_rows}
+                </table>
+                </details>
+            </td>
             <td style="text-align:center">{a['best_bid']}c</td>
             <td style="text-align:center;font-weight:bold">{a['our_bid']}c</td>
             <td style="text-align:center">{a['lip_cutoff_bid']}c</td>
@@ -476,6 +522,9 @@ def index() -> str:
         .refresh {{ color: #64748b; font-size: 12px; }}
         .live {{ background: #16a34a; color: white; font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: bold; }}
         .section-header {{ display: flex; align-items: center; gap: 8px; }}
+        details summary {{ color: #60a5fa; }}
+        details summary:hover {{ color: #93c5fd; }}
+        details[open] summary {{ color: #4ade80; }}
     </style>
 </head>
 <body>
