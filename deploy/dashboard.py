@@ -783,11 +783,16 @@ def index() -> str:
             theo_payoff_dollars = qty * (theo_yes_c / 100.0)
             side_label = "Yes"
             mtm_px = best_yes_bid_c
+            theo_held_side = theo_yes_c
         else:
             mtm_dollars = abs(qty) * (best_no_bid_c / 100.0)
             theo_payoff_dollars = abs(qty) * ((100 - theo_yes_c) / 100.0)
             side_label = "No"
             mtm_px = best_no_bid_c
+            theo_held_side = 100 - theo_yes_c
+
+        avg_cost_c = (exposure / abs(qty)) * 100.0 if abs(qty) > 0 else 0.0
+        edge_per_contract_c = theo_held_side - avg_cost_c
 
         unrealized = mtm_dollars - exposure
         expected_settle = theo_payoff_dollars - exposure
@@ -797,12 +802,16 @@ def index() -> str:
         pnl_color = "#4ade80" if realized >= 0 else "#f87171"
         unr_color = "#4ade80" if unrealized >= 0 else "#f87171"
         exp_color = "#4ade80" if expected_settle >= 0 else "#f87171"
+        edge_color = "#4ade80" if edge_per_contract_c > 0 else "#f87171"
         strike_label = ticker.split("-")[-1] if ticker else ticker
         pos_rows += f"""
             <tr>
                 <td style="font-family:monospace;font-size:12px">{strike_label}</td>
                 <td style="text-align:right">{abs(qty):.0f} {side_label}</td>
                 <td style="text-align:right">${exposure:.2f}</td>
+                <td style="text-align:right">{avg_cost_c:.1f}c</td>
+                <td style="text-align:right;color:#60a5fa">{theo_held_side}c</td>
+                <td style="text-align:right;color:{edge_color};font-weight:bold">{edge_per_contract_c:+.1f}c</td>
                 <td style="text-align:right">{mtm_px}c</td>
                 <td style="text-align:right">${mtm_dollars:.2f}</td>
                 <td style="text-align:right;color:{unr_color}">${unrealized:+.2f}</td>
@@ -1012,7 +1021,10 @@ def index() -> str:
         <tr>
             <th>Market</th>
             <th style="text-align:right">Qty</th>
-            <th style="text-align:right">Cost</th>
+            <th style="text-align:right">Total Cost</th>
+            <th style="text-align:right">Avg Cost</th>
+            <th style="text-align:right">Theo (held)</th>
+            <th style="text-align:right">Edge/contract</th>
             <th style="text-align:right">Mark</th>
             <th style="text-align:right">MTM Value</th>
             <th style="text-align:right">Unrealized</th>
@@ -1020,7 +1032,7 @@ def index() -> str:
             <th style="text-align:right">Realized</th>
             <th style="text-align:right">Fees</th>
         </tr>
-        {pos_rows if pos_rows else "<tr><td colspan=9 style='color:#64748b;text-align:center'>No open positions</td></tr>"}
+        {pos_rows if pos_rows else "<tr><td colspan=12 style='color:#64748b;text-align:center'>No open positions</td></tr>"}
     </table>
 </body>
 </html>"""
