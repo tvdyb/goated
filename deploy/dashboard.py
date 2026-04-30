@@ -397,14 +397,15 @@ def _read_theo_state_file() -> dict:
 def _is_scheduled_maintenance() -> bool:
     """Kalshi's scheduled weekly maintenance: Thursday 3-5 AM ET.
 
-    Empirically can start ~50 min early (saw 503s at 02:10 ET on Thursday),
-    so we treat 02:00-05:00 ET on Thursdays as the maintenance window.
+    Timezone-aware (always evaluates in America/New_York), so Mac Mini's
+    local timezone doesn't matter. User in CT sees this as 2-4 AM local.
+    Includes a 5-minute pre-cancel buffer.
     """
     now = datetime.now(_ET)
     if now.weekday() != 3:  # Thursday
         return False
     mins = now.hour * 60 + now.minute
-    return (2 * 60) <= mins < (5 * 60)
+    return (2 * 60 + 55) <= mins < (5 * 60)
 
 
 def _maintenance_state(extra_flag: bool = False) -> dict:
