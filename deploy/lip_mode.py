@@ -179,10 +179,13 @@ class LIPMarketMaker:
     def _scheduled_maintenance_window(self, now: datetime | None = None) -> bool:
         """Kalshi's scheduled weekly maintenance: Thursday 3-5 AM ET.
 
-        Empirically Kalshi can start the window ~50 minutes early (we've seen
-        503s on /exchange/status as early as 02:10 ET on a Thursday). Buffer
-        is set to 02:00 ET start to cover early starts without being overly
-        aggressive on other days/times.
+        Note: this check is timezone-aware (uses America/New_York). Mac Mini's
+        local timezone (e.g. CT) doesn't matter — datetime.now(_ET) always
+        returns the time in ET. The user is in Chicago, so they observe this
+        as 2-4 AM CT, but the bot evaluates 3-5 AM ET correctly.
+
+        5-minute pre-cancel buffer included so we cancel orders before the
+        exchange goes down rather than racing the deadline.
         """
         if now is None:
             now = datetime.now(_ET)
@@ -190,7 +193,7 @@ class LIPMarketMaker:
         if now.weekday() != 3:
             return False
         mins = now.hour * 60 + now.minute
-        return (2 * 60) <= mins < (5 * 60)
+        return (2 * 60 + 55) <= mins < (5 * 60)
 
     async def _check_maintenance(self) -> tuple[bool, str]:
         """Returns (is_maintenance, reason).
