@@ -927,6 +927,30 @@ def index() -> str:
         best_yes_bid = a.get("best_bid", 0)
         market_lookup[ticker] = (a.get("theo", 50), best_yes_bid, best_no_bid)
 
+    # Build lookup: ticker -> resting (bid_size, bid_px, ask_size, ask_px)
+    resting_by_ticker: dict[str, dict[str, float]] = {}
+    for o in s.get("orders", []):
+        t = o.get("ticker", "")
+        if not t:
+            continue
+        try:
+            sz = float(o.get("remaining_count_fp", "0"))
+        except (TypeError, ValueError):
+            sz = 0.0
+        try:
+            px = int(round(float(o.get("yes_price_dollars", "0")) * 100))
+        except (TypeError, ValueError):
+            px = 0
+        bucket = resting_by_ticker.setdefault(
+            t, {"bid_sz": 0.0, "bid_px": 0, "ask_sz": 0.0, "ask_px": 0}
+        )
+        if o.get("action") == "buy":
+            bucket["bid_sz"] += sz
+            bucket["bid_px"] = px
+        elif o.get("action") == "sell":
+            bucket["ask_sz"] += sz
+            bucket["ask_px"] = px
+
     total_realized = 0.0
     total_unrealized = 0.0
     total_expected_settle = 0.0
@@ -991,10 +1015,26 @@ def index() -> str:
         exp_color = "#4ade80" if expected_settle >= 0 else "#f87171"
         edge_color = "#4ade80" if edge_per_contract_c > 0 else "#f87171"
         strike_label = ticker.split("-")[-1] if ticker else ticker
+
+        rest = resting_by_ticker.get(ticker, {"bid_sz": 0.0, "bid_px": 0, "ask_sz": 0.0, "ask_px": 0})
+        bid_sz = rest["bid_sz"]
+        ask_sz = rest["ask_sz"]
+        bid_px = rest["bid_px"]
+        ask_px = rest["ask_px"]
+        if bid_sz > 0 and ask_sz > 0:
+            resting_label = f'<span style="color:#4ade80">{bid_sz:.0f}@{bid_px}c</span> / <span style="color:#f87171">{ask_sz:.0f}@{ask_px}c</span>'
+        elif bid_sz > 0:
+            resting_label = f'<span style="color:#4ade80">{bid_sz:.0f}@{bid_px}c</span> / <span style="color:#64748b">—</span>'
+        elif ask_sz > 0:
+            resting_label = f'<span style="color:#64748b">—</span> / <span style="color:#f87171">{ask_sz:.0f}@{ask_px}c</span>'
+        else:
+            resting_label = '<span style="color:#64748b">none</span>'
+
         pos_rows += f"""
             <tr>
                 <td style="font-family:monospace;font-size:12px">{strike_label}</td>
                 <td style="text-align:right">{abs(qty):.0f} {side_label}</td>
+                <td style="text-align:center;font-size:11px">{resting_label}</td>
                 <td style="text-align:right">${exposure:.2f}</td>
                 <td style="text-align:right">{avg_cost_c:.1f}c</td>
                 <td style="text-align:right;color:#60a5fa">{theo_held_side}c</td>
@@ -1209,6 +1249,7 @@ def index() -> str:
         <tr>
             <th>Market</th>
             <th style="text-align:right">Qty</th>
+            <th style="text-align:center">Resting (bid / ask)</th>
             <th style="text-align:right">Total Cost</th>
             <th style="text-align:right">Avg Cost</th>
             <th style="text-align:right">Theo (held)</th>
@@ -1220,7 +1261,7 @@ def index() -> str:
             <th style="text-align:right">Realized</th>
             <th style="text-align:right">Fees</th>
         </tr>
-        {pos_rows if pos_rows else "<tr><td colspan=12 style='color:#64748b;text-align:center'>No open positions</td></tr>"}
+        {pos_rows if pos_rows else "<tr><td colspan=13 style='color:#64748b;text-align:center'>No open positions</td></tr>"}
     </table>
 </body>
 </html>"""
