@@ -484,3 +484,13 @@ class KalshiClient:
         if cursor:
             params["cursor"] = cursor
         return await self._request("GET", "/portfolio/settlements", params=params)
+
+    async def get_exchange_status(self) -> dict[str, Any]:
+        """GET /exchange/status -- maintenance/trading status.
+
+        Returns dict with:
+            exchange_active: bool — False if exchange is under maintenance.
+            trading_active: bool — False outside trading hours.
+            exchange_estimated_resume_time: ISO8601 (only during maintenance).
+        """
+        return await self._request("GET", "/exchange/status")

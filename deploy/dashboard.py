@@ -550,6 +550,17 @@ def index() -> str:
     if s["error"]:
         error_html = f'<div style="background:#991b1b;padding:8px;border-radius:4px;margin-bottom:16px">{s["error"]}</div>'
 
+    # Maintenance banner (Kalshi weekly 3-5 AM ET)
+    maintenance_html = ""
+    if s.get("theo_state", {}).get("maintenance_active"):
+        maintenance_html = (
+            '<div style="background:#854d0e;padding:12px;border-radius:4px;margin-bottom:16px;'
+            'font-weight:bold;color:#fde68a">'
+            '⏸ KALSHI MAINTENANCE WINDOW (3–5 AM ET) — bot has cancelled orders and is idling. '
+            'Will resume automatically after 5 AM ET.'
+            '</div>'
+        )
+
     event_ticker = s["event"].get("event_ticker", "none")
 
     # --- LIP per-bucket rows ---
@@ -1005,6 +1016,7 @@ def index() -> str:
     </div>
 
     {error_html}
+    {maintenance_html}
 
     <div class="stats">
         <div class="stat">

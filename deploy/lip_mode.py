@@ -176,15 +176,89 @@ class LIPMarketMaker:
             await self._kalshi_client.close()
         logger.info("SHUTDOWN: complete")
 
+    def _scheduled_maintenance_window(self, now: datetime | None = None) -> bool:
+        """Kalshi's scheduled weekly maintenance: Thursday 3-5 AM ET.
+
+        Used as a fallback when the /exchange/status API call fails (e.g.,
+        because maintenance has taken the API itself down). Includes a 5-min
+        pre-cancel buffer.
+        """
+        if now is None:
+            now = datetime.now(_ET)
+        # weekday() returns Mon=0..Sun=6, so Thursday=3
+        if now.weekday() != 3:
+            return False
+        mins = now.hour * 60 + now.minute
+        return (2 * 60 + 55) <= mins < (5 * 60)
+
+    async def _check_maintenance(self) -> tuple[bool, str]:
+        """Returns (is_maintenance, reason).
+
+        Prefers the live /exchange/status API. Falls back to the scheduled
+        Thursday 3-5 AM ET window only if the API is unreachable AND we are
+        inside that window — so we don't spuriously pause on unrelated API
+        hiccups.
+        """
+        assert self._kalshi_client is not None
+        try:
+            status = await self._kalshi_client.get_exchange_status()
+            exchange_active = bool(status.get("exchange_active", True))
+            trading_active = bool(status.get("trading_active", True))
+            if not exchange_active:
+                return True, f"API: exchange_active=false (resume {status.get('exchange_estimated_resume_time', 'unknown')})"
+            if not trading_active:
+                return True, "API: trading_active=false (outside trading hours)"
+            return False, "API: exchange+trading both active"
+        except Exception as exc:
+            # API call failed. Use scheduled-window heuristic only — don't pause
+            # on transient errors outside the known maintenance window.
+            if self._scheduled_maintenance_window():
+                return True, f"API unreachable + inside scheduled Thu 3-5am ET window: {exc}"
+            return False, f"API status check failed but outside scheduled window: {exc}"
+
+    # Legacy alias kept for _write_theo_state's status field
+    def _in_maintenance_window(self) -> bool:
+        return self._scheduled_maintenance_window()
+
     async def run(self) -> None:
         self._running = True
         logger.info("LIP MODE: starting (fast cycle=%ds, size=%d)", self._cycle_seconds, self._size_base)
 
         cycle_count = 0
+        maintenance_active = False
 
         while self._running:
             cycle_start = time.monotonic()
             try:
+                # --- Maintenance gate (Kalshi /exchange/status, fallback to schedule) ---
+                in_maint, maint_reason = await self._check_maintenance()
+                if in_maint:
+                    if not maintenance_active:
+                        logger.warning("MAINTENANCE: entering — %s", maint_reason)
+                        try:
+                            await self._cancel_all()
+                        except Exception as exc:
+                            logger.warning("MAINTENANCE: cancel failed: %s", exc)
+                        maintenance_active = True
+                    # Keep dashboard heartbeat alive during idle
+                    self._write_theo_state()
+                    # Re-check status every 60s during maintenance
+                    await asyncio.sleep(60)
+                    continue
+                elif maintenance_active:
+                    logger.info("MAINTENANCE: window ended — %s", maint_reason)
+                    # Flush any stragglers Kalshi may still have from before
+                    # maintenance — covers the case where pre-maintenance
+                    # cancel_all silently failed because the API was already
+                    # going down. Internal _resting is cleared, but Kalshi's
+                    # state might not be.
+                    try:
+                        await self._cancel_all()
+                        logger.info("MAINTENANCE: post-resume flush complete")
+                    except Exception as exc:
+                        logger.warning("MAINTENANCE: post-resume flush failed: %s", exc)
+                    maintenance_active = False
+
                 # Get active event + strikes (cached by _get_active_event)
                 event_ticker, all_strikes = await self._get_active_event()
                 if event_ticker is None:
@@ -1023,6 +1097,7 @@ class LIPMarketMaker:
             "size_jitter": self._size_jitter,
             "size_last": self._size,
             "wasde": wasde_state,
+            "maintenance_active": self._in_maintenance_window(),
         }
         try:
             with open("state/theo_state.json", "w") as f:
