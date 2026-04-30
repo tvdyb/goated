@@ -21,6 +21,7 @@ import asyncio
 import logging
 import math
 import os
+import random
 import signal
 import time
 from datetime import datetime
@@ -77,7 +78,9 @@ class LIPMarketMaker:
         self._kalshi_client: KalshiClient | None = None
 
         lip = cfg.get("lip", {})
-        self._size = lip.get("contracts_per_side", 50)
+        self._size_base = lip.get("contracts_per_side", 50)
+        self._size_jitter = lip.get("size_jitter", 4)  # randomize ± this amount
+        self._size = self._size_base  # current size (re-randomized per strike)
         self._max_half_spread = lip.get("max_half_spread_cents", 4)
         self._min_half_spread = lip.get("min_half_spread_cents", 2)
         self._cycle_seconds = cfg.get("loop", {}).get("cycle_seconds", 30)
@@ -174,19 +177,80 @@ class LIPMarketMaker:
 
     async def run(self) -> None:
         self._running = True
-        logger.info("LIP MODE: starting (cycle=%ds, size=%d)", self._cycle_seconds, self._size)
+        logger.info("LIP MODE: starting (rotational, size=%d)", self._size)
+
+        # Cache event/strikes/targets — refresh every full rotation
+        cached_strikes: np.ndarray = np.array([])
+        cached_targets: dict[float, int] = {}
+        strike_index = 0
+        rotation_count = 0
 
         while self._running:
-            cycle_start = time.monotonic()
+            tick_start = time.monotonic()
             try:
-                await self._cycle()
-            except Exception as exc:
-                logger.error("LIP CYCLE error: %s", exc, exc_info=True)
+                # Refresh event + strikes + forward + vol every full rotation
+                if strike_index == 0 or len(cached_strikes) == 0:
+                    event_ticker, all_strikes = await self._get_active_event()
+                    if event_ticker is None:
+                        await asyncio.sleep(5)
+                        continue
 
-            elapsed = time.monotonic() - cycle_start
-            sleep_time = max(0.0, self._cycle_seconds - elapsed)
-            if sleep_time > 0:
-                await asyncio.sleep(sleep_time)
+                    if self._eligible_strikes:
+                        all_strikes = np.array([
+                            s for s in all_strikes if s in self._eligible_strikes
+                        ], dtype=np.float64)
+
+                    if len(all_strikes) == 0:
+                        await asyncio.sleep(5)
+                        continue
+
+                    cached_strikes = all_strikes
+
+                    # Calibrate vol from all orderbooks (once per rotation)
+                    if rotation_count % 3 == 0:  # every 3rd rotation
+                        all_obs = await self._pull_orderbooks(cached_strikes)
+                        self._calibrate_vol_from_orderbooks(cached_strikes, all_obs)
+
+                    cached_targets = self._compute_targets(cached_strikes)
+
+                    # Store theo for markout
+                    now_ts = time.time()
+                    for strike, fair_cents in cached_targets.items():
+                        ticker = self._market_tickers.get(strike, "")
+                        if ticker:
+                            self._last_theo[ticker] = float(fair_cents)
+                    self._markout.update(now_ts, self._last_theo)
+
+                    rotation_count += 1
+
+                # Process one strike
+                if strike_index < len(cached_strikes):
+                    strike = float(cached_strikes[strike_index])
+                    await self._process_single_strike(strike, cached_targets)
+
+                # Advance to next strike (or wrap around)
+                strike_index += 1
+                if strike_index >= len(cached_strikes):
+                    # End of rotation — process fills + markout
+                    await self._process_fills_for_markout(time.time())
+                    self._write_markout_file()
+
+                    toxic_list = self._markout.get_toxic_strikes()
+                    if toxic_list:
+                        logger.warning(
+                            "LIP ROTATION: TOXIC strikes: %s",
+                            [t.split("-")[-1] for t in toxic_list],
+                        )
+
+                    strike_index = 0
+
+            except Exception as exc:
+                logger.error("LIP TICK error: %s", exc, exc_info=True)
+                strike_index = 0  # reset on error
+
+            # Sleep ~1 second between strikes
+            elapsed = time.monotonic() - tick_start
+            await asyncio.sleep(max(0.1, 1.0 - elapsed))
 
     async def _cycle(self) -> None:
         assert self._kalshi_client is not None
@@ -523,6 +587,165 @@ class LIPMarketMaker:
             strike_mids=strike_mids,
             tau=tau,
             fallback=fallback,
+        )
+
+    async def _process_single_strike(
+        self, strike: float, targets: dict[float, int]
+    ) -> None:
+        """Process one strike: pull orderbook, compute target, update orders."""
+        assert self._kalshi_client is not None
+        ticker = self._market_tickers.get(strike, "")
+        if not ticker:
+            return
+
+        # Randomize size to reduce bot fingerprint
+        self._size = max(1, self._size_base + random.randint(
+            -self._size_jitter, self._size_jitter
+        ))
+
+        fair = targets.get(strike, 50)
+        toxic_tickers = set(self._markout.get_toxic_strikes())
+        is_toxic = ticker in toxic_tickers
+        max_dist = int(self._max_dist * self._toxic_spread_multiplier) if is_toxic else self._max_dist
+        lip_target = 300
+
+        # Pull orderbook for this strike
+        ob_dict = await self._pull_orderbooks(np.array([strike]))
+        ob = ob_dict.get(ticker, {})
+        yes_depth = ob.get("yes_depth", [])
+        no_depth = ob.get("no_depth", [])
+
+        cur = self._resting.get(ticker, {})
+        our_bid_px = cur.get("bid_px", 0)
+        our_ask_px = cur.get("ask_px", 0)
+
+        # Find best bid/ask (excluding our own orders)
+        best_bid = 0
+        for px, sz in yes_depth:
+            if px == our_bid_px:
+                if sz - self._size > 0.5:
+                    best_bid = px
+                    break
+            else:
+                best_bid = px
+                break
+
+        best_no_bid = 0
+        our_no_px = 100 - our_ask_px if our_ask_px > 0 else 0
+        for px, sz in no_depth:
+            if px == our_no_px:
+                if sz - self._size > 0.5:
+                    best_no_bid = px
+                    break
+            else:
+                best_no_bid = px
+                break
+        best_ask = (100 - best_no_bid) if best_no_bid > 0 else 100
+
+        # --- Determine market regime ---
+        # Desert = best price is far from theo. Use proportional threshold:
+        # >10c OR >30% of fair value (catches low-priced strikes like 9c theo)
+        desert_threshold = 10
+        bid_is_desert = best_bid > 0 and (
+            abs(fair - best_bid) > desert_threshold
+            or (fair > 0 and abs(fair - best_bid) / max(fair, 1) > 0.3)
+        )
+        ask_is_desert = best_ask < 100 and (
+            abs(best_ask - fair) > desert_threshold
+            or (fair > 0 and abs(best_ask - fair) / max(100 - fair, 1) > 0.3)
+        )
+
+        # --- BID ---
+        if best_bid <= 0:
+            bid = fair - self._max_half_spread
+        elif bid_is_desert:
+            bid = best_bid + 1
+        elif fair >= 97:
+            bid = best_bid
+        else:
+            bid = best_bid - max_dist
+
+        yes_ahead = sum(
+            (sz - self._size if px == our_bid_px else sz)
+            for px, sz in yes_depth if px > bid
+        )
+        if yes_ahead + self._size > lip_target:
+            bid = best_bid
+
+        if not bid_is_desert:
+            bid = min(bid, fair - 1 + self._theo_tolerance)
+
+        # --- ASK ---
+        if best_ask >= 100:
+            ask = fair + self._max_half_spread
+        elif ask_is_desert:
+            ask = best_ask - 1
+        elif fair <= 3:
+            ask = best_ask
+        else:
+            ask = best_ask + max_dist
+
+        target_no_px = 100 - ask
+        no_ahead = sum(
+            (sz - self._size if px == our_no_px else sz)
+            for px, sz in no_depth if px > target_no_px
+        )
+        if no_ahead + self._size > lip_target:
+            ask = best_ask
+
+        if not ask_is_desert:
+            ask = max(ask, fair + 1 - self._theo_tolerance)
+
+        # Clamp
+        bid = max(1, min(99, bid))
+        ask = max(1, min(99, ask))
+
+        if bid >= ask:
+            bid = fair - 1
+            ask = fair + 1
+        bid = max(1, min(99, bid))
+        ask = max(1, min(99, ask))
+
+        if bid >= ask:
+            return
+
+        # --- Update orders ---
+        cur_bid_px = cur.get("bid_px", 0)
+        cur_ask_px = cur.get("ask_px", 0)
+        cur_bid_id = cur.get("bid_id", "")
+        cur_ask_id = cur.get("ask_id", "")
+
+        bid_dist = best_bid - bid if best_bid > 0 else 0
+        ask_dist = ask - best_ask if best_ask < 100 else 0
+        bid_mult = LIP_DISCOUNT ** max(0, bid_dist)
+        ask_mult = LIP_DISCOUNT ** max(0, ask_dist)
+        toxic_tag = " [TOXIC]" if is_toxic else ""
+        regime = "desert" if (bid_is_desert or ask_is_desert) else "active"
+
+        if cur_bid_px != bid:
+            if cur_bid_id:
+                amended = await self._try_amend(cur_bid_id, yes_price=bid, count=self._size)
+                if amended:
+                    self._resting.setdefault(ticker, {})["bid_px"] = bid
+                else:
+                    await self._cancel_and_place_bid(ticker, bid)
+            else:
+                await self._place_bid(ticker, bid)
+
+        if cur_ask_px != ask:
+            if cur_ask_id:
+                amended = await self._try_amend(cur_ask_id, yes_price=ask, count=self._size)
+                if amended:
+                    self._resting.setdefault(ticker, {})["ask_px"] = ask
+                else:
+                    await self._cancel_and_place_ask(ticker, ask)
+            else:
+                await self._place_ask(ticker, ask)
+
+        logger.info(
+            "LIP %s [%s]: bid=%dc(%.2fx) ask=%dc(%.2fx) spread=%dc fair=%dc%s",
+            ticker.split("-")[-1], regime,
+            bid, bid_mult, ask, ask_mult, ask - bid, fair, toxic_tag,
         )
 
     def _compute_targets(self, kalshi_strikes: np.ndarray) -> dict[float, int]:

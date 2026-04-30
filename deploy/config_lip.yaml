@@ -13,6 +13,7 @@ series:
 
 lip:
   contracts_per_side: 15
+  size_jitter: 4                  # randomize size ±4 (range 11-19)
   max_half_spread_cents: 4
   min_half_spread_cents: 2
   max_distance_from_best: 1    # never post more than 1c from best (0.50x floor)
@@ -33,7 +34,7 @@ synthetic:
   settlement_time: "2026-04-30T17:00:00-04:00"  # April 30 5pm EDT
 
 loop:
-  cycle_seconds: 20    # balance: fast enough to track best, slow enough to avoid 429s
+  cycle_seconds: 10    # fast rebalancing, most cycles are kept=14 (zero writes)
 
 wasde:
   sensitivity_cents_per_mbu: 1.5    # T-65 review: was 18.0, actual ~1.4
