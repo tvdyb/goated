@@ -37,11 +37,18 @@ LIP_TARGET = 300
 LIP_DISCOUNT = 0.5
 
 # Theo parameters
-_THEO_VOL = 0.1629
+_THEO_VOL_FALLBACK = 0.1629  # used only if bot hasn't written theo_state yet
 _YF_TICKER = "ZSK26.CBT"
 _SETTLE_TIME = "2026-04-30T17:00:00-04:00"
 
 _MARKOUT_FILE = "state/markout.json"
+_LIP_HISTORY_FILE = "state/lip_history.json"
+_THEO_STATE_FILE = "state/theo_state.json"
+
+# Bin edges for the $/hr histogram. Bin i covers [edges[i], edges[i+1]); the
+# final bin captures everything >= the last edge.
+_LIP_BIN_EDGES = [0.0, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 2.50, 3.00, 4.00]
+_LIP_N_BINS = len(_LIP_BIN_EDGES)  # last edge is the overflow boundary
 
 # yfinance cache
 _yf_price: float = 0.0
@@ -76,16 +83,17 @@ def _get_days_to_settle() -> float:
         return 1.0
 
 
-def _compute_theo(strike_cents: float, days_to_settle: float) -> int:
-    """Compute theo in cents for a strike."""
+def _compute_theo(strike_cents: float, days_to_settle: float, vol: float | None = None) -> int:
+    """Compute theo in cents for a strike. Uses bot's calibrated vol if provided."""
     fwd_cents = _get_yf_forward()
     if fwd_cents <= 0:
         return 0
+    sigma = vol if (vol is not None and vol > 0) else _THEO_VOL_FALLBACK
     forward = fwd_cents / 100.0
     k = strike_cents / 100.0
     tau = max(0.1, days_to_settle) / 365.0
-    sig_sqrt_t = max(_THEO_VOL * math.sqrt(tau), 1e-12)
-    d2 = (math.log(forward / k) - 0.5 * _THEO_VOL ** 2 * tau) / sig_sqrt_t
+    sig_sqrt_t = max(sigma * math.sqrt(tau), 1e-12)
+    d2 = (math.log(forward / k) - 0.5 * sigma ** 2 * tau) / sig_sqrt_t
     return int(round(float(_ndtr(d2)) * 100))
 
 _state: dict = {
@@ -97,10 +105,84 @@ _state: dict = {
     "orderbooks": {},
     "lip_analysis": [],
     "markout": [],
+    "theo_state": {},
     "last_refresh": "",
     "error": "",
+    "total_est_hourly": 0.0,
 }
 _lock = threading.Lock()
+
+
+def _default_lip_history() -> dict:
+    return {
+        "start_ts": time.time(),
+        "last_ts": 0.0,
+        "total_dollars": 0.0,
+        "total_runtime_s": 0.0,
+        "n_samples": 0,
+        "max_hourly": 0.0,
+        "bins": [0] * _LIP_N_BINS,
+    }
+
+
+def _load_lip_history() -> dict:
+    try:
+        with open(_LIP_HISTORY_FILE) as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return _default_lip_history()
+
+    defaults = _default_lip_history()
+    for k, v in defaults.items():
+        data.setdefault(k, v)
+    if len(data.get("bins", [])) != _LIP_N_BINS:
+        data["bins"] = [0] * _LIP_N_BINS
+    return data
+
+
+def _save_lip_history(h: dict) -> None:
+    Path("state").mkdir(exist_ok=True)
+    try:
+        with open(_LIP_HISTORY_FILE, "w") as f:
+            json.dump(h, f)
+    except Exception:
+        pass
+
+
+_lip_history: dict = _load_lip_history()
+_lip_lock = threading.Lock()
+
+
+def _bin_index_for(hourly: float) -> int:
+    """Return the bin index for a $/hr value. Last bin is the overflow."""
+    for i in range(_LIP_N_BINS - 1):
+        if _LIP_BIN_EDGES[i] <= hourly < _LIP_BIN_EDGES[i + 1]:
+            return i
+    return _LIP_N_BINS - 1  # overflow
+
+
+def _update_lip_history(hourly: float) -> None:
+    """Accrue runtime + dollars + histogram bin for this sample.
+
+    Caps inter-sample dt at 60s so a paused dashboard doesn't inflate totals.
+    """
+    if hourly < 0 or not math.isfinite(hourly):
+        return
+    now = time.time()
+    with _lip_lock:
+        last = _lip_history.get("last_ts", 0.0) or 0.0
+        if last > 0:
+            dt = now - last
+            if 0 < dt < 60:
+                _lip_history["total_dollars"] += hourly * (dt / 3600.0)
+                _lip_history["total_runtime_s"] += dt
+        _lip_history["last_ts"] = now
+        _lip_history["n_samples"] = int(_lip_history.get("n_samples", 0)) + 1
+        if hourly > _lip_history.get("max_hourly", 0.0):
+            _lip_history["max_hourly"] = hourly
+        idx = _bin_index_for(hourly)
+        _lip_history["bins"][idx] += 1
+        _save_lip_history(_lip_history)
 
 
 def _get_client() -> tuple[KalshiAuth, str]:
@@ -312,6 +394,26 @@ async def _refresh() -> dict:
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
+        # Read theo state from shared file (written by lip_mode)
+        theo_state: dict = {}
+        try:
+            with open(_THEO_STATE_FILE) as tf:
+                theo_state = json.load(tf)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+        # Backfill theo using bot's live vol (if it's a fresh write)
+        bot_vol = theo_state.get("vol_calibrated") if theo_state else None
+        bot_age = time.time() - theo_state.get("ts", 0) if theo_state else 1e9
+        live_vol = bot_vol if (bot_vol and bot_age < 120) else None
+        for analysis in lip_analysis:
+            analysis["theo"] = _compute_theo(
+                analysis["strike"] * 100, _get_days_to_settle(), vol=live_vol,
+            )
+
+        total_est_daily = sum(a["est_daily"] for a in lip_analysis)
+        total_est_hourly = total_est_daily / 24 if total_est_daily > 0 else 0.0
+
         return {
             "balance": balance,
             "orders": orders_resp.get("orders", []),
@@ -320,8 +422,10 @@ async def _refresh() -> dict:
             "markets": markets,
             "lip_analysis": lip_analysis,
             "markout": markout_data,
+            "theo_state": theo_state,
             "last_refresh": datetime.now(_ET).strftime("%H:%M:%S"),
             "error": "",
+            "total_est_hourly": total_est_hourly,
         }
 
 
@@ -332,6 +436,7 @@ def _bg_refresh() -> None:
             result = asyncio.run(_refresh())
             with _lock:
                 _state = result
+            _update_lip_history(result.get("total_est_hourly", 0.0))
         except Exception as exc:
             with _lock:
                 _state["error"] = str(exc)
@@ -454,6 +559,150 @@ def index() -> str:
             <td style="text-align:right;color:#4ade80">${a['est_daily']:.2f}</td>
         </tr>"""
 
+    # --- LIP history (since inception) ---
+    with _lip_lock:
+        h = dict(_lip_history)
+        h_bins = list(h.get("bins", [0] * _LIP_N_BINS))
+    runtime_s = h.get("total_runtime_s", 0.0)
+    runtime_hr = runtime_s / 3600.0
+    total_dollars = h.get("total_dollars", 0.0)
+    avg_hourly_inception = (total_dollars / runtime_hr) if runtime_hr > 0 else 0.0
+    max_hourly_inception = h.get("max_hourly", 0.0)
+    n_samples = h.get("n_samples", 0)
+
+    if runtime_hr >= 1:
+        runtime_label = f"{runtime_hr:.1f}h"
+    elif runtime_s >= 60:
+        runtime_label = f"{runtime_s/60:.0f}m"
+    else:
+        runtime_label = f"{runtime_s:.0f}s"
+
+    max_bin_count = max(h_bins) if h_bins and max(h_bins) > 0 else 1
+    hist_rows = ""
+    for i, count in enumerate(h_bins):
+        lo = _LIP_BIN_EDGES[i]
+        if i + 1 < _LIP_N_BINS:
+            hi = _LIP_BIN_EDGES[i + 1]
+            label = f"${lo:.2f}–${hi:.2f}"
+        else:
+            label = f"${lo:.2f}+"
+        bar_w = int(round(count / max_bin_count * 240)) if max_bin_count > 0 else 0
+        pct = (count / n_samples * 100) if n_samples > 0 else 0
+        hist_rows += f"""
+        <tr>
+            <td style="font-family:monospace;font-size:11px;color:#94a3b8;width:90px">{label}</td>
+            <td style="width:260px"><div style="background:#4ade80;height:14px;width:{bar_w}px;border-radius:2px"></div></td>
+            <td style="text-align:right;font-size:11px;color:#94a3b8;width:80px">{count} ({pct:.1f}%)</td>
+        </tr>"""
+
+    history_section = f"""
+    <h2>Estimated LIP Earnings — Since Inception</h2>
+    <div class="stats">
+        <div class="stat">
+            <div class="stat-label">Runtime</div>
+            <div class="stat-value">{runtime_label}</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Total Earned (est)</div>
+            <div class="stat-value green">${total_dollars:.2f}</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Avg $/hr (time-wt)</div>
+            <div class="stat-value green">${avg_hourly_inception:.2f}</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Peak $/hr</div>
+            <div class="stat-value">${max_hourly_inception:.2f}</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Samples</div>
+            <div class="stat-value">{n_samples}</div>
+        </div>
+    </div>
+    <table style="margin-top:8px">
+        <tr><th style="text-align:left">$/hr Bucket</th><th style="text-align:left">Distribution</th><th style="text-align:right">Count</th></tr>
+        {hist_rows}
+    </table>
+    """
+
+    # --- Theo inputs (live from bot) ---
+    ts = s.get("theo_state", {})
+    if ts:
+        bot_age_s = time.time() - ts.get("ts", 0)
+        bot_age_color = "#4ade80" if bot_age_s < 30 else "#f59e0b" if bot_age_s < 120 else "#f87171"
+        bot_age_label = f"{bot_age_s:.0f}s ago" if bot_age_s < 60 else f"{bot_age_s/60:.1f}m ago"
+
+        vol_cal = ts.get("vol_calibrated", 0.0)
+        vol_fb = ts.get("vol_fallback", 0.0)
+        vol_delta = vol_cal - vol_fb
+        vol_delta_str = f"{vol_delta*100:+.2f}pp"
+        vol_delta_color = "#4ade80" if abs(vol_delta) < 0.02 else "#f59e0b" if abs(vol_delta) < 0.05 else "#f87171"
+
+        fwd = ts.get("forward_dollars", 0.0)
+        fwd_src = ts.get("forward_source", "?")
+        days = ts.get("days_to_settlement", 0.0)
+        size_base = ts.get("size_base", 0)
+        size_jit = ts.get("size_jitter", 0)
+        size_last = ts.get("size_last", 0)
+
+        wasde = ts.get("wasde", {})
+        if wasde.get("active"):
+            shift = wasde.get("current_shift_cents", 0.0)
+            shift_color = "#4ade80" if shift > 0 else "#f87171"
+            init_shift = wasde.get("initial_shift_cents", 0.0)
+            elapsed_h = wasde.get("elapsed_hours", 0.0)
+            half_life_h = wasde.get("half_life_hours", 6.0)
+            decay_pct = (1 - abs(shift) / abs(init_shift)) * 100 if init_shift else 0
+            wasde_card = f"""
+            <div class="stat" style="background:#3a2a1e">
+                <div class="stat-label">WASDE shift</div>
+                <div class="stat-value" style="color:{shift_color}">{shift:+.1f}c</div>
+                <div style="font-size:10px;color:#94a3b8;margin-top:2px">init {init_shift:+.1f}c &bull; {elapsed_h:.1f}h elapsed &bull; t½ {half_life_h:.1f}h &bull; decayed {decay_pct:.0f}%</div>
+            </div>"""
+        else:
+            wasde_card = """
+            <div class="stat">
+                <div class="stat-label">WASDE shift</div>
+                <div class="stat-value" style="color:#64748b">inactive</div>
+            </div>"""
+
+        theo_inputs_section = f"""
+    <h2>Theo Inputs (live from bot)</h2>
+    <div class="stats">
+        <div class="stat">
+            <div class="stat-label">Bot heartbeat</div>
+            <div class="stat-value" style="color:{bot_age_color}">{bot_age_label}</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Calibrated vol</div>
+            <div class="stat-value" style="color:#60a5fa">{vol_cal*100:.2f}%</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px">fb {vol_fb*100:.2f}% &bull; <span style="color:{vol_delta_color}">{vol_delta_str}</span></div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Forward (bot)</div>
+            <div class="stat-value" style="color:#60a5fa">${fwd:.4f}</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px">{fwd_src}</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">τ to settlement</div>
+            <div class="stat-value">{days*24:.1f}h</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px">{days:.3f}d</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Size jitter</div>
+            <div class="stat-value">{size_last}</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px">base {size_base} ±{size_jit}</div>
+        </div>
+        {wasde_card}
+    </div>
+        """
+    else:
+        theo_inputs_section = """
+    <h2>Theo Inputs (live from bot)</h2>
+    <div style="background:#1e293b;padding:12px;border-radius:8px;color:#64748b">
+        Waiting for bot to write state/theo_state.json — start lip_mode and refresh.
+    </div>"""
+
     # --- Markout rows ---
     markout_rows = ""
     markout_data = s.get("markout", [])
@@ -478,24 +727,142 @@ def index() -> str:
             <td style="text-align:right;color:{c30}">{avg_30m:+.1f}c</td>
         </tr>"""
 
-    # --- Positions rows ---
+    # --- PnL aggregation ---
+    # Build lookup: ticker -> (theo_yes_cents, best_yes_bid, best_no_bid)
+    market_lookup: dict[str, tuple[int, int, int]] = {}
+    for a in lip:
+        ticker = a.get("ticker", "")
+        if not ticker:
+            continue
+        no_depth = a.get("no_depth", [])
+        best_no_bid = no_depth[0][0] if no_depth else 0
+        best_yes_bid = a.get("best_bid", 0)
+        market_lookup[ticker] = (a.get("theo", 50), best_yes_bid, best_no_bid)
+
+    total_realized = 0.0
+    total_unrealized = 0.0
+    total_expected_settle = 0.0
+    total_fees = 0.0
+    total_exposure = 0.0
     pos_rows = ""
+
     for p in s.get("positions", []):
         ticker = p.get("ticker", "")
-        qty = p.get("position_fp", "0")
-        pnl = p.get("realized_pnl_dollars", "0")
-        exposure = p.get("market_exposure_dollars", "0")
-        fees = p.get("fees_paid_dollars", "0")
-        if float(qty) != 0:
-            pnl_color = "#4ade80" if float(pnl) >= 0 else "#f87171"
-            pos_rows += f"""
+        try:
+            qty = float(p.get("position_fp", "0"))
+        except (TypeError, ValueError):
+            qty = 0.0
+        try:
+            exposure = float(p.get("market_exposure_dollars", "0"))
+        except (TypeError, ValueError):
+            exposure = 0.0
+        try:
+            realized = float(p.get("realized_pnl_dollars", "0"))
+        except (TypeError, ValueError):
+            realized = 0.0
+        try:
+            fees = float(p.get("fees_paid_dollars", "0"))
+        except (TypeError, ValueError):
+            fees = 0.0
+
+        total_realized += realized
+        total_fees += fees
+
+        if qty == 0:
+            continue
+
+        total_exposure += exposure
+
+        theo_yes_c, best_yes_bid_c, best_no_bid_c = market_lookup.get(ticker, (50, 0, 0))
+
+        # Mark-to-market: sell into the bid for the side you hold.
+        # Kalshi convention: positive qty = long YES, negative qty = long NO.
+        if qty > 0:
+            mtm_dollars = qty * (best_yes_bid_c / 100.0)
+            theo_payoff_dollars = qty * (theo_yes_c / 100.0)
+            side_label = "Yes"
+            mtm_px = best_yes_bid_c
+        else:
+            mtm_dollars = abs(qty) * (best_no_bid_c / 100.0)
+            theo_payoff_dollars = abs(qty) * ((100 - theo_yes_c) / 100.0)
+            side_label = "No"
+            mtm_px = best_no_bid_c
+
+        unrealized = mtm_dollars - exposure
+        expected_settle = theo_payoff_dollars - exposure
+        total_unrealized += unrealized
+        total_expected_settle += expected_settle
+
+        pnl_color = "#4ade80" if realized >= 0 else "#f87171"
+        unr_color = "#4ade80" if unrealized >= 0 else "#f87171"
+        exp_color = "#4ade80" if expected_settle >= 0 else "#f87171"
+        strike_label = ticker.split("-")[-1] if ticker else ticker
+        pos_rows += f"""
             <tr>
-                <td style="font-family:monospace;font-size:12px">{ticker}</td>
-                <td style="text-align:right">{qty}</td>
-                <td style="text-align:right">${exposure}</td>
-                <td style="text-align:right;color:{pnl_color}">${pnl}</td>
-                <td style="text-align:right">${fees}</td>
+                <td style="font-family:monospace;font-size:12px">{strike_label}</td>
+                <td style="text-align:right">{abs(qty):.0f} {side_label}</td>
+                <td style="text-align:right">${exposure:.2f}</td>
+                <td style="text-align:right">{mtm_px}c</td>
+                <td style="text-align:right">${mtm_dollars:.2f}</td>
+                <td style="text-align:right;color:{unr_color}">${unrealized:+.2f}</td>
+                <td style="text-align:right;color:{exp_color}">${expected_settle:+.2f}</td>
+                <td style="text-align:right;color:{pnl_color}">${realized:.2f}</td>
+                <td style="text-align:right">${fees:.2f}</td>
             </tr>"""
+
+    net_now = total_realized + total_unrealized - total_fees
+    net_expected = total_realized + total_expected_settle - total_fees
+    net_with_lip = net_now + total_dollars  # total_dollars is LIP earnings since inception
+
+    realized_color = "#4ade80" if total_realized >= 0 else "#f87171"
+    unrealized_color = "#4ade80" if total_unrealized >= 0 else "#f87171"
+    expected_color = "#4ade80" if total_expected_settle >= 0 else "#f87171"
+    net_now_color = "#4ade80" if net_now >= 0 else "#f87171"
+    net_exp_color = "#4ade80" if net_expected >= 0 else "#f87171"
+    net_lip_color = "#4ade80" if net_with_lip >= 0 else "#f87171"
+
+    pnl_summary_section = f"""
+    <h2>PnL Summary</h2>
+    <div class="stats">
+        <div class="stat">
+            <div class="stat-label">Realized PnL</div>
+            <div class="stat-value" style="color:{realized_color}">${total_realized:+.2f}</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Unrealized (MTM)</div>
+            <div class="stat-value" style="color:{unrealized_color}">${total_unrealized:+.2f}</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px">at current best bid</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Expected @ Settle</div>
+            <div class="stat-value" style="color:{expected_color}">${total_expected_settle:+.2f}</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px">qty × theo − cost</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Fees</div>
+            <div class="stat-value" style="color:#f87171">−${total_fees:.2f}</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Open Exposure</div>
+            <div class="stat-value">${total_exposure:.2f}</div>
+        </div>
+        <div class="stat" style="background:#1e3a2f">
+            <div class="stat-label">Net Now (MTM)</div>
+            <div class="stat-value" style="color:{net_now_color}">${net_now:+.2f}</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px">realized + unrealized − fees</div>
+        </div>
+        <div class="stat" style="background:#1e3a2f">
+            <div class="stat-label">Net @ Settle (est)</div>
+            <div class="stat-value" style="color:{net_exp_color}">${net_expected:+.2f}</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px">realized + expected − fees</div>
+        </div>
+        <div class="stat" style="background:#1a2744">
+            <div class="stat-label">Net + LIP earned</div>
+            <div class="stat-value" style="color:{net_lip_color}">${net_with_lip:+.2f}</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px">net now + LIP since inception</div>
+        </div>
+    </div>
+    """
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -588,6 +955,8 @@ def index() -> str:
         </div>
     </div>
 
+    {theo_inputs_section}
+
     <h2>LIP Positioning (per bucket)</h2>
     <table>
         <tr>
@@ -621,6 +990,8 @@ def index() -> str:
         {lip_rows if lip_rows else "<tr><td colspan=16 style='color:#64748b;text-align:center'>No LIP data</td></tr>"}
     </table>
 
+    {history_section}
+
     <h2>Fill Markout (adverse selection)</h2>
     <table>
         <tr>
@@ -633,10 +1004,22 @@ def index() -> str:
         {markout_rows if markout_rows else "<tr><td colspan=5 style='color:#64748b;text-align:center'>No markout data (waiting for fills)</td></tr>"}
     </table>
 
+    {pnl_summary_section}
+
     <h2>Positions</h2>
     <table>
-        <tr><th>Market</th><th>Qty</th><th>Exposure</th><th>Realized PnL</th><th>Fees</th></tr>
-        {pos_rows if pos_rows else "<tr><td colspan=5 style='color:#64748b;text-align:center'>No open positions</td></tr>"}
+        <tr>
+            <th>Market</th>
+            <th style="text-align:right">Qty</th>
+            <th style="text-align:right">Cost</th>
+            <th style="text-align:right">Mark</th>
+            <th style="text-align:right">MTM Value</th>
+            <th style="text-align:right">Unrealized</th>
+            <th style="text-align:right">Expected @ Settle</th>
+            <th style="text-align:right">Realized</th>
+            <th style="text-align:right">Fees</th>
+        </tr>
+        {pos_rows if pos_rows else "<tr><td colspan=9 style='color:#64748b;text-align:center'>No open positions</td></tr>"}
     </table>
 </body>
 </html>"""

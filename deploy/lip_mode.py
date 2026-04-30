@@ -237,6 +237,8 @@ class LIPMarketMaker:
                             [t.split("-")[-1] for t in toxic_list],
                         )
 
+                self._write_theo_state()
+
                 cycle_count += 1
 
             except Exception as exc:
@@ -965,6 +967,48 @@ class LIPMarketMaker:
                 json.dump(data, f)
         except Exception as exc:
             logger.warning("MARKOUT: failed to write markout file: %s", exc)
+
+    def _write_theo_state(self) -> None:
+        """Write current theo inputs to JSON for dashboard consumption."""
+        import json
+
+        now = time.time()
+        wasde_state: dict[str, Any] = {"active": False}
+        if self._wasde_adjustment is not None and not self._wasde_adjustment.is_expired(now):
+            shift = self._wasde_adjustment.current_shift_cents(now)
+            elapsed_h = (now - self._wasde_adjustment.release_timestamp) / 3600.0
+            half_life_h = self._wasde_adjustment.decay_half_life_s / 3600.0
+            wasde_state = {
+                "active": True,
+                "current_shift_cents": shift,
+                "initial_shift_cents": self._wasde_adjustment.mean_shift_cents,
+                "elapsed_hours": elapsed_h,
+                "half_life_hours": half_life_h,
+            }
+
+        forward_source = "kalshi-inferred"
+        if self._yf_cache is not None and self._yf_cache > 0:
+            forward_source = f"yfinance ({self._yf_ticker})"
+        elif self._forward_override > 0:
+            forward_source = "config override"
+
+        data = {
+            "ts": now,
+            "vol_calibrated": self._vol,
+            "vol_fallback": self._cfg.get("synthetic", {}).get("vol", 0.15),
+            "forward_dollars": self._forward_estimate,
+            "forward_source": forward_source,
+            "days_to_settlement": self._days_to_settlement,
+            "size_base": self._size_base,
+            "size_jitter": self._size_jitter,
+            "size_last": self._size,
+            "wasde": wasde_state,
+        }
+        try:
+            with open("state/theo_state.json", "w") as f:
+                json.dump(data, f)
+        except Exception as exc:
+            logger.warning("THEO STATE: failed to write: %s", exc)
 
     async def _try_amend(
         self,

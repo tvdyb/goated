@@ -23,5 +23,7 @@ calibration/params/*.json
 data/
 output/
 state/markout.json
+state/lip_history.json
+state/theo_state.json
 *.pem
 *.key
