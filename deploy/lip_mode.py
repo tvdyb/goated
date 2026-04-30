@@ -177,88 +177,74 @@ class LIPMarketMaker:
 
     async def run(self) -> None:
         self._running = True
-        logger.info("LIP MODE: starting (rotational, size=%d)", self._size)
+        logger.info("LIP MODE: starting (fast cycle=%ds, size=%d)", self._cycle_seconds, self._size_base)
 
-        # Cache event/strikes/targets — refresh every full rotation
-        cached_strikes: np.ndarray = np.array([])
-        cached_targets: dict[float, int] = {}
-        strike_index = 0
-        rotation_count = 0
+        cycle_count = 0
 
         while self._running:
-            tick_start = time.monotonic()
+            cycle_start = time.monotonic()
             try:
-                # Refresh event + strikes + forward + vol every full rotation
-                if strike_index == 0 or len(cached_strikes) == 0:
-                    event_ticker, all_strikes = await self._get_active_event()
-                    if event_ticker is None:
-                        await asyncio.sleep(5)
-                        continue
+                # Get active event + strikes (cached by _get_active_event)
+                event_ticker, all_strikes = await self._get_active_event()
+                if event_ticker is None:
+                    await asyncio.sleep(5)
+                    continue
 
-                    if self._eligible_strikes:
-                        all_strikes = np.array([
-                            s for s in all_strikes if s in self._eligible_strikes
-                        ], dtype=np.float64)
+                if self._eligible_strikes:
+                    all_strikes = np.array([
+                        s for s in all_strikes if s in self._eligible_strikes
+                    ], dtype=np.float64)
 
-                    if len(all_strikes) == 0:
-                        await asyncio.sleep(5)
-                        continue
+                if len(all_strikes) == 0:
+                    await asyncio.sleep(5)
+                    continue
 
-                    cached_strikes = all_strikes
+                # Wait for yfinance before placing any orders
+                yf_fwd = self._pull_yfinance_forward()
+                if yf_fwd is None or yf_fwd <= 0:
+                    logger.warning("LIP: waiting for yfinance forward")
+                    await asyncio.sleep(5)
+                    continue
 
-                    # Wait for yfinance before placing any orders
-                    # (prevents wrong theo on first rotation)
-                    yf_fwd = self._pull_yfinance_forward()
-                    if yf_fwd is None or yf_fwd <= 0:
-                        logger.warning("LIP: waiting for yfinance forward before quoting")
-                        await asyncio.sleep(5)
-                        continue
+                # Recalibrate vol every 10th cycle (~30s)
+                if cycle_count % 10 == 0:
+                    all_obs = await self._pull_orderbooks(all_strikes)
+                    self._calibrate_vol_from_orderbooks(all_strikes, all_obs)
 
-                    # Calibrate vol from all orderbooks (once per rotation)
-                    if rotation_count % 3 == 0:  # every 3rd rotation
-                        all_obs = await self._pull_orderbooks(cached_strikes)
-                        self._calibrate_vol_from_orderbooks(cached_strikes, all_obs)
+                # Compute targets
+                targets = self._compute_targets(all_strikes)
 
-                    cached_targets = self._compute_targets(cached_strikes)
+                # Store theo for markout
+                now_ts = time.time()
+                for strike, fair_cents in targets.items():
+                    ticker = self._market_tickers.get(strike, "")
+                    if ticker:
+                        self._last_theo[ticker] = float(fair_cents)
+                self._markout.update(now_ts, self._last_theo)
 
-                    # Store theo for markout
-                    now_ts = time.time()
-                    for strike, fair_cents in cached_targets.items():
-                        ticker = self._market_tickers.get(strike, "")
-                        if ticker:
-                            self._last_theo[ticker] = float(fair_cents)
-                    self._markout.update(now_ts, self._last_theo)
+                # Process ALL strikes — pull orderbook + reposition each
+                for strike in all_strikes:
+                    await self._process_single_strike(float(strike), targets)
 
-                    rotation_count += 1
-
-                # Process one strike
-                if strike_index < len(cached_strikes):
-                    strike = float(cached_strikes[strike_index])
-                    await self._process_single_strike(strike, cached_targets)
-
-                # Advance to next strike (or wrap around)
-                strike_index += 1
-                if strike_index >= len(cached_strikes):
-                    # End of rotation — process fills + markout
+                # Process fills + markout every 5th cycle (~15s)
+                if cycle_count % 5 == 0:
                     await self._process_fills_for_markout(time.time())
                     self._write_markout_file()
-
                     toxic_list = self._markout.get_toxic_strikes()
                     if toxic_list:
                         logger.warning(
-                            "LIP ROTATION: TOXIC strikes: %s",
+                            "LIP CYCLE: TOXIC strikes: %s",
                             [t.split("-")[-1] for t in toxic_list],
                         )
 
-                    strike_index = 0
+                cycle_count += 1
 
             except Exception as exc:
-                logger.error("LIP TICK error: %s", exc, exc_info=True)
-                strike_index = 0  # reset on error
+                logger.error("LIP CYCLE error: %s", exc, exc_info=True)
 
-            # Sleep ~1 second between strikes
-            elapsed = time.monotonic() - tick_start
-            await asyncio.sleep(max(0.1, 1.0 - elapsed))
+            elapsed = time.monotonic() - cycle_start
+            sleep_time = max(0.1, self._cycle_seconds - elapsed)
+            await asyncio.sleep(sleep_time)
 
     async def _cycle(self) -> None:
         assert self._kalshi_client is not None

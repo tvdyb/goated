@@ -34,7 +34,7 @@ synthetic:
   settlement_time: "2026-04-30T17:00:00-04:00"  # April 30 5pm EDT
 
 loop:
-  cycle_seconds: 10    # fast rebalancing, most cycles are kept=14 (zero writes)
+  cycle_seconds: 3     # LIP war: check all strikes every 3s, reposition immediately
 
 wasde:
   sensitivity_cents_per_mbu: 1.5    # T-65 review: was 18.0, actual ~1.4
