@@ -286,9 +286,8 @@ class LIPMarketMaker:
             if best_bid <= 0:
                 bid = fair - self._max_half_spread
             elif bid_is_desert:
-                # Desert: post halfway between theo and best bid
-                # We become the new best, earn 1.0x LIP, any fill has big edge
-                bid = (fair + best_bid) // 2
+                # Desert: penny the best bid (1.0x LIP, any fill has huge edge)
+                bid = best_bid + 1
             elif fair >= 97:
                 # Deep ITM: match best bid (safe, will profit at settlement)
                 bid = best_bid
@@ -312,8 +311,8 @@ class LIPMarketMaker:
             if best_ask >= 100:
                 ask = fair + self._max_half_spread
             elif ask_is_desert:
-                # Desert: post halfway between theo and best ask
-                ask = (fair + best_ask + 1) // 2
+                # Desert: penny the best ask (1.0x LIP, any fill has huge edge)
+                ask = best_ask - 1
             elif fair <= 3:
                 # Deep OTM: match best ask (safe, will profit at settlement)
                 ask = best_ask
