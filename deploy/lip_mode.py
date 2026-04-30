@@ -33,8 +33,10 @@ import numpy as np
 import yaml
 from scipy.special import ndtr
 
+from engine.decision_logger import DecisionLogger, _utc_iso, trim_depth
 from engine.implied_vol import calibrate_vol
 from engine.markout import MarkoutTracker
+from engine.sticky_quote import StickyConfig, StickyQuoter
 from engine.wasde_density import WASDEAdjustment, WASDEDensityConfig, create_adjustment
 from feeds.kalshi.auth import KalshiAuth
 from feeds.kalshi.client import KalshiClient
@@ -150,6 +152,25 @@ class LIPMarketMaker:
         # Pyth forward disabled — yfinance handles forward now
         self._pyth_provider: PythForwardProvider | None = None
 
+        # Sticky-quote state machine for LIP drag-defense
+        sticky_cfg = lip.get("sticky", {})
+        self._sticky_enabled = bool(sticky_cfg.get("enabled", True))
+        self._sticky = StickyQuoter(StickyConfig(
+            desert_jump_cents=int(sticky_cfg.get("desert_jump_cents", 5)),
+            min_distance_from_theo=int(sticky_cfg.get("min_distance_from_theo", 15)),
+            snapshots_at_1x_required=int(sticky_cfg.get("snapshots_at_1x_required", 15)),
+            theo_stability_cents=float(sticky_cfg.get("theo_stability_cents", 2.0)),
+            theo_range_cents=float(sticky_cfg.get("theo_range_cents", 3.0)),
+            relax_total_steps=int(sticky_cfg.get("relax_total_steps", 10)),
+            max_aggressive_duration_seconds=float(sticky_cfg.get("max_aggressive_duration_seconds", 300.0)),
+            cooldown_seconds=float(sticky_cfg.get("cooldown_seconds", 600.0)),
+        ))
+
+        # Structured decision logger (JSONL) for post-hoc analysis and LLM review.
+        # One record per call to _process_single_strike. See engine/decision_logger.py.
+        self._decision_logger = DecisionLogger()
+        self._cycle_id: int = 0
+
     async def startup(self) -> None:
         api_key = os.environ.get("KALSHI_API_KEY", "")
         private_key_path = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "")
@@ -174,6 +195,10 @@ class LIPMarketMaker:
         await self._cancel_all()
         if self._kalshi_client:
             await self._kalshi_client.close()
+        try:
+            self._decision_logger.close()
+        except Exception:
+            pass
         logger.info("SHUTDOWN: complete")
 
     def _scheduled_maintenance_window(self, now: datetime | None = None) -> bool:
@@ -672,13 +697,90 @@ class LIPMarketMaker:
             fallback=fallback,
         )
 
+    def _new_decision_record(self, strike: float) -> dict[str, Any]:
+        """Build an empty decision-log record with stable schema. Populate
+        progressively in _process_single_strike_impl; logged in finally."""
+        self._cycle_id += 1
+        return {
+            "cycle_id": self._cycle_id,
+            "ticker": None,
+            "market_meta": {
+                "underlying": "soybean",
+                "strike": float(strike),
+                "expiry_utc": (
+                    self._settlement_override.astimezone(ZoneInfo("UTC")).isoformat()
+                    if self._settlement_override else None
+                ),
+                "seconds_to_expiry": (
+                    int(self._days_to_settlement * 86400)
+                    if self._days_to_settlement else None
+                ),
+            },
+            "inputs": {
+                "forward_price": float(self._forward_estimate),
+                "vol": float(self._vol),
+                "theo_yes_cents": None,
+                "theo_yes_raw": None,
+                "best_bid": None,
+                "best_ask": None,
+                "bid_depth": None,
+                "ask_depth": None,
+                "spread_cents": None,
+                "is_desert_bid": None,
+                "is_desert_ask": None,
+            },
+            "our_state": {
+                "cur_bid_id": None, "cur_bid_px": None, "cur_bid_size": None, "cur_bid_mult": None,
+                "cur_ask_id": None, "cur_ask_px": None, "cur_ask_size": None, "cur_ask_mult": None,
+            },
+            "sticky_state": {"bid": None, "ask": None},
+            "decision": {
+                "natural_bid": None, "natural_ask": None,
+                "sticky_bid": None, "sticky_ask": None,
+                "final_bid": None, "final_ask": None,
+                "bid_skip": False, "ask_skip": False,
+                "bid_action": "no_change", "ask_action": "no_change",
+                "bid_reason": None, "ask_reason": None,
+                "early_return_reason": None,
+            },
+            "transitions": [],
+            "outcome": {
+                "bid_amend_attempted": False, "bid_amend_succeeded": None, "bid_amend_latency_ms": None,
+                "ask_amend_attempted": False, "ask_amend_succeeded": None, "ask_amend_latency_ms": None,
+            },
+        }
+
     async def _process_single_strike(
         self, strike: float, targets: dict[float, int]
     ) -> None:
-        """Process one strike: pull orderbook, compute target, update orders."""
+        """Process one strike: pull orderbook, compute target, update orders.
+
+        Thin wrapper that builds the decision-log record, calls the impl, and
+        ensures the record is logged on every exit path (including early
+        returns and exceptions).
+        """
+        record = self._new_decision_record(strike)
+        try:
+            await self._process_single_strike_impl(strike, targets, record)
+        except Exception as exc:
+            record["decision"]["early_return_reason"] = f"exception: {exc!r}"
+            raise
+        finally:
+            try:
+                self._decision_logger.log(record)
+            except Exception:
+                pass
+
+    async def _process_single_strike_impl(
+        self, strike: float, targets: dict[float, int],
+        record: dict[str, Any],
+    ) -> None:
+        """Inner implementation. Populates `record` as values become available."""
         assert self._kalshi_client is not None
         ticker = self._market_tickers.get(strike, "")
+        record["ticker"] = ticker
         if not ticker:
+            record["decision"]["early_return_reason"] = "no ticker for strike"
             return
 
         # Randomize size to reduce bot fingerprint
@@ -687,6 +789,8 @@ class LIPMarketMaker:
         ))
 
         fair = targets.get(strike, 50)
+        record["inputs"]["theo_yes_cents"] = int(fair)
+        record["inputs"]["theo_yes_raw"] = float(fair)
         toxic_tickers = set(self._markout.get_toxic_strikes())
         is_toxic = ticker in toxic_tickers
         max_dist = int(self._max_dist * self._toxic_spread_multiplier) if is_toxic else self._max_dist
@@ -697,10 +801,18 @@ class LIPMarketMaker:
         ob = ob_dict.get(ticker, {})
         yes_depth = ob.get("yes_depth", [])
         no_depth = ob.get("no_depth", [])
+        record["inputs"]["bid_depth"] = trim_depth(yes_depth)
+        record["inputs"]["ask_depth"] = trim_depth(no_depth)
 
         cur = self._resting.get(ticker, {})
         our_bid_px = cur.get("bid_px", 0)
         our_ask_px = cur.get("ask_px", 0)
+        record["our_state"]["cur_bid_id"] = cur.get("bid_id") or None
+        record["our_state"]["cur_bid_px"] = int(our_bid_px) if our_bid_px else None
+        record["our_state"]["cur_ask_id"] = cur.get("ask_id") or None
+        record["our_state"]["cur_ask_px"] = int(our_ask_px) if our_ask_px else None
+        record["our_state"]["cur_bid_size"] = int(self._size) if our_bid_px else None
+        record["our_state"]["cur_ask_size"] = int(self._size) if our_ask_px else None
 
         # Find best bid/ask (excluding our own orders)
         best_bid = 0
@@ -724,6 +836,9 @@ class LIPMarketMaker:
                 best_no_bid = px
                 break
         best_ask = (100 - best_no_bid) if best_no_bid > 0 else 100
+        record["inputs"]["best_bid"] = int(best_bid)
+        record["inputs"]["best_ask"] = int(best_ask)
+        record["inputs"]["spread_cents"] = int(best_ask - best_bid) if (best_bid > 0 and best_ask < 100) else None
 
         # --- Determine market regime ---
         # Desert = best price is far from theo. Use proportional threshold:
@@ -737,6 +852,8 @@ class LIPMarketMaker:
             abs(best_ask - fair) > desert_threshold
             or (fair > 0 and abs(best_ask - fair) / max(100 - fair, 1) > 0.3)
         )
+        record["inputs"]["is_desert_bid"] = bool(bid_is_desert)
+        record["inputs"]["is_desert_ask"] = bool(ask_is_desert)
 
         # --- BID ---
         if best_bid <= 0:
@@ -783,6 +900,95 @@ class LIPMarketMaker:
         # ANTI-SPOOFING: ALWAYS floor at theo - tolerance (even in desert)
         ask = max(ask, fair + 1 - self._theo_tolerance)
 
+        record["decision"]["natural_bid"] = int(bid)
+        record["decision"]["natural_ask"] = int(ask)
+
+        # --- Sticky-quote state machine (LIP drag-defense) ---
+        # Wraps the natural bid/ask above with hysteresis: races aggressively
+        # when pennied, then locks position and only relaxes after sustained
+        # 1.0x with theo stability. See engine/sticky_quote.py.
+        ask_skip = False
+        bid_skip = False
+        if self._sticky_enabled:
+            # Snapshot sticky state pre-compute via public API, for transition detection
+            pre_ask = self._sticky.snapshot(ticker, "ask")
+            pre_bid = self._sticky.snapshot(ticker, "bid")
+            ask_state_pre = pre_ask["state"]
+            bid_state_pre = pre_bid["state"]
+            now_ts = time.time()
+            sticky_ask, ask_state, ask_transitions = self._sticky.compute(
+                ticker=ticker,
+                side="ask",
+                natural_target=int(ask),
+                best_relevant=int(best_ask) if best_ask < 100 else 99,
+                our_current=int(our_ask_px),
+                fair=float(fair),
+                now=now_ts,
+            )
+            if ask_state == "COOLDOWN":
+                ask_skip = True
+            else:
+                ask = sticky_ask
+            sticky_bid, bid_state, bid_transitions = self._sticky.compute(
+                ticker=ticker,
+                side="bid",
+                natural_target=int(bid),
+                best_relevant=int(best_bid) if best_bid > 0 else 1,
+                our_current=int(our_bid_px),
+                fair=float(fair),
+                now=now_ts,
+            )
+            if bid_state == "COOLDOWN":
+                bid_skip = True
+            else:
+                bid = sticky_bid
+
+            # Capture sticky state post-compute via public API. ISO conversion
+            # is a logging concern, applied here at the call site (not in the
+            # state machine).
+            ask_snap = self._sticky.snapshot(ticker, "ask")
+            bid_snap = self._sticky.snapshot(ticker, "bid")
+            record["sticky_state"]["ask"] = {
+                "state": ask_snap["state"],
+                "consecutive_1x_count": ask_snap["consecutive_1x_count"],
+                "current_price": ask_snap["current_price"],
+                "relax_step": ask_snap["relax_step"],
+                "aggressive_entered_at": (
+                    _utc_iso(ask_snap["aggressive_entered_at"])
+                    if ask_snap["aggressive_entered_at"] else None
+                ),
+                "theo_buffer": [round(x, 2) for x in ask_snap["theo_buffer"]],
+                "cooldown_until": (
+                    _utc_iso(ask_snap["cooldown_until"])
+                    if ask_snap["cooldown_until"] else None
+                ),
+            }
+            record["sticky_state"]["bid"] = {
+                "state": bid_snap["state"],
+                "consecutive_1x_count": bid_snap["consecutive_1x_count"],
+                "current_price": bid_snap["current_price"],
+                "relax_step": bid_snap["relax_step"],
+                "aggressive_entered_at": (
+                    _utc_iso(bid_snap["aggressive_entered_at"])
+                    if bid_snap["aggressive_entered_at"] else None
+                ),
+                "theo_buffer": [round(x, 2) for x in bid_snap["theo_buffer"]],
+                "cooldown_until": (
+                    _utc_iso(bid_snap["cooldown_until"])
+                    if bid_snap["cooldown_until"] else None
+                ),
+            }
+            record["decision"]["sticky_ask"] = int(sticky_ask)
+            record["decision"]["sticky_bid"] = int(sticky_bid)
+            record["decision"]["ask_skip"] = ask_skip
+            record["decision"]["bid_skip"] = bid_skip
+            # Rich transition records from compute(), with structured reason data.
+            # Tag each with "side" so consumers can filter by side.
+            for tr in ask_transitions:
+                record["transitions"].append({"side": "ask", **tr})
+            for tr in bid_transitions:
+                record["transitions"].append({"side": "bid", **tr})
+
         # Clamp
         bid = max(1, min(99, bid))
         ask = max(1, min(99, ask))
@@ -793,7 +999,11 @@ class LIPMarketMaker:
         bid = max(1, min(99, bid))
         ask = max(1, min(99, ask))
 
-        if bid >= ask:
+        record["decision"]["final_bid"] = int(bid)
+        record["decision"]["final_ask"] = int(ask)
+
+        if bid >= ask and not (bid_skip or ask_skip):
+            record["decision"]["early_return_reason"] = f"bid({bid}) >= ask({ask}) without skip"
             return
 
         # --- Update orders ---
@@ -808,6 +1018,12 @@ class LIPMarketMaker:
         ask_mult = LIP_DISCOUNT ** max(0, ask_dist)
         toxic_tag = " [TOXIC]" if is_toxic else ""
         regime = "desert" if (bid_is_desert or ask_is_desert) else "active"
+
+        # Multipliers for the existing-order-at-current-price view (post-cycle accounting)
+        if cur_bid_px > 0 and best_bid > 0:
+            record["our_state"]["cur_bid_mult"] = round(LIP_DISCOUNT ** max(0, best_bid - cur_bid_px), 4)
+        if cur_ask_px > 0 and best_ask < 100:
+            record["our_state"]["cur_ask_mult"] = round(LIP_DISCOUNT ** max(0, cur_ask_px - best_ask), 4)
 
         # --- Anti-churn: only reposition if multiplier dropped below 0.25x ---
         # BUT force a fresh recompute every ~30s to re-penny if competitor relaxed.
@@ -837,29 +1053,99 @@ class LIPMarketMaker:
             cur_ask_in_300 = cur_ask_ahead + self._size <= lip_target
             cur_ask_ok = cur_ask_in_300 and cur_ask_mult >= min_acceptable_mult
 
-        # Update bid: reposition if multiplier < 0.25x, no order, or periodic refresh
-        bid_needs_update = (not cur_bid_ok or cur_bid_px == 0 or force_refresh) and cur_bid_px != bid
-        if bid_needs_update:
+        # If sticky state is COOLDOWN for a side: cancel any existing order,
+        # don't place new. Bot resumes after cooldown_seconds.
+        if bid_skip:
+            record["decision"]["bid_action"] = "cooldown_cancel"
+            record["decision"]["bid_reason"] = "sticky COOLDOWN — pulling bid"
             if cur_bid_id:
-                amended = await self._try_amend(cur_bid_id, yes_price=bid, count=self._size)
-                if amended:
-                    self._resting.setdefault(ticker, {})["bid_px"] = bid
+                try:
+                    await self._kalshi_client.cancel_order(cur_bid_id)
+                    logger.info(
+                        "STICKY %s bid: COOLDOWN cancel of %s",
+                        ticker, cur_bid_id[:8],
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "STICKY %s bid: COOLDOWN cancel failed: %s",
+                        ticker, exc,
+                    )
+                self._resting.setdefault(ticker, {})["bid_id"] = ""
+                self._resting[ticker]["bid_px"] = 0
+        else:
+            # Update bid: reposition if multiplier < 0.25x, no order, or periodic refresh
+            bid_needs_update = (not cur_bid_ok or cur_bid_px == 0 or force_refresh) and cur_bid_px != bid
+            if bid_needs_update:
+                t0 = time.time()
+                if cur_bid_id:
+                    record["outcome"]["bid_amend_attempted"] = True
+                    amended = await self._try_amend(cur_bid_id, yes_price=bid, count=self._size)
+                    record["outcome"]["bid_amend_succeeded"] = bool(amended)
+                    record["outcome"]["bid_amend_latency_ms"] = int((time.time() - t0) * 1000)
+                    if amended:
+                        record["decision"]["bid_action"] = "amend"
+                        record["decision"]["bid_reason"] = f"amend bid to {bid}c"
+                        self._resting.setdefault(ticker, {})["bid_px"] = bid
+                    else:
+                        record["decision"]["bid_action"] = "cancel_and_replace"
+                        record["decision"]["bid_reason"] = f"amend failed, replace at {bid}c"
+                        await self._cancel_and_place_bid(ticker, bid)
                 else:
-                    await self._cancel_and_place_bid(ticker, bid)
+                    record["decision"]["bid_action"] = "place_new"
+                    record["decision"]["bid_reason"] = f"new bid at {bid}c"
+                    await self._place_bid(ticker, bid)
             else:
-                await self._place_bid(ticker, bid)
+                record["decision"]["bid_action"] = "no_change"
+                record["decision"]["bid_reason"] = (
+                    f"current bid {cur_bid_px}c matches target ({bid}c)" if cur_bid_px == bid
+                    else f"anti-churn hold at {cur_bid_px}c"
+                )
 
-        # Update ask: reposition if multiplier < 0.25x, no order, or periodic refresh
-        ask_needs_update = (not cur_ask_ok or cur_ask_px == 0 or force_refresh) and cur_ask_px != ask
-        if ask_needs_update:
+        if ask_skip:
+            record["decision"]["ask_action"] = "cooldown_cancel"
+            record["decision"]["ask_reason"] = "sticky COOLDOWN — pulling ask"
             if cur_ask_id:
-                amended = await self._try_amend(cur_ask_id, yes_price=ask, count=self._size)
-                if amended:
-                    self._resting.setdefault(ticker, {})["ask_px"] = ask
+                try:
+                    await self._kalshi_client.cancel_order(cur_ask_id)
+                    logger.info(
+                        "STICKY %s ask: COOLDOWN cancel of %s",
+                        ticker, cur_ask_id[:8],
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "STICKY %s ask: COOLDOWN cancel failed: %s",
+                        ticker, exc,
+                    )
+                self._resting.setdefault(ticker, {})["ask_id"] = ""
+                self._resting[ticker]["ask_px"] = 0
+        else:
+            # Update ask: reposition if multiplier < 0.25x, no order, or periodic refresh
+            ask_needs_update = (not cur_ask_ok or cur_ask_px == 0 or force_refresh) and cur_ask_px != ask
+            if ask_needs_update:
+                t0 = time.time()
+                if cur_ask_id:
+                    record["outcome"]["ask_amend_attempted"] = True
+                    amended = await self._try_amend(cur_ask_id, yes_price=ask, count=self._size)
+                    record["outcome"]["ask_amend_succeeded"] = bool(amended)
+                    record["outcome"]["ask_amend_latency_ms"] = int((time.time() - t0) * 1000)
+                    if amended:
+                        record["decision"]["ask_action"] = "amend"
+                        record["decision"]["ask_reason"] = f"amend ask to {ask}c"
+                        self._resting.setdefault(ticker, {})["ask_px"] = ask
+                    else:
+                        record["decision"]["ask_action"] = "cancel_and_replace"
+                        record["decision"]["ask_reason"] = f"amend failed, replace at {ask}c"
+                        await self._cancel_and_place_ask(ticker, ask)
                 else:
-                    await self._cancel_and_place_ask(ticker, ask)
+                    record["decision"]["ask_action"] = "place_new"
+                    record["decision"]["ask_reason"] = f"new ask at {ask}c"
+                    await self._place_ask(ticker, ask)
             else:
-                await self._place_ask(ticker, ask)
+                record["decision"]["ask_action"] = "no_change"
+                record["decision"]["ask_reason"] = (
+                    f"current ask {cur_ask_px}c matches target ({ask}c)" if cur_ask_px == ask
+                    else f"anti-churn hold at {cur_ask_px}c"
+                )
 
         logger.info(
             "LIP %s [%s]: bid=%dc(%.2fx) ask=%dc(%.2fx) spread=%dc fair=%dc%s",
@@ -1236,11 +1522,50 @@ class LIPMarketMaker:
             return
         try:
             resp = await self._kalshi_client.get_orders(status="resting", limit=200)
-            for o in resp.get("orders", []):
-                try:
-                    await self._kalshi_client.cancel_order(o["order_id"])
-                except Exception:
-                    pass
+            order_ids = [
+                o["order_id"] for o in resp.get("orders", []) if o.get("order_id")
+            ]
+            if not order_ids:
+                self._resting.clear()
+                return
+            # Try batch first (1 API call vs N). On any error, fall back to
+            # individual cancels — covers the case where the batched endpoint
+            # rejects the request, format drift, or partial-success silently.
+            batch_ok = False
+            try:
+                await self._kalshi_client.batch_cancel_orders(order_ids)
+                batch_ok = True
+                logger.info("CANCEL_ALL: batch cancelled %d orders", len(order_ids))
+            except Exception as exc:
+                logger.warning(
+                    "CANCEL_ALL: batch failed (%s), falling back to individual",
+                    exc,
+                )
+            if not batch_ok:
+                for oid in order_ids:
+                    try:
+                        await self._kalshi_client.cancel_order(oid)
+                    except Exception:
+                        pass
+            # Verify: re-pull resting orders. If any remain after batch, run
+            # individual cancels on the leftovers (catches silent partial success).
+            try:
+                check = await self._kalshi_client.get_orders(status="resting", limit=200)
+                leftover = [
+                    o["order_id"] for o in check.get("orders", []) if o.get("order_id")
+                ]
+                if leftover:
+                    logger.warning(
+                        "CANCEL_ALL: %d orders survived batch, cancelling individually",
+                        len(leftover),
+                    )
+                    for oid in leftover:
+                        try:
+                            await self._kalshi_client.cancel_order(oid)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         except Exception:
             pass
         self._resting.clear()

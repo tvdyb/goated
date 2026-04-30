@@ -399,15 +399,19 @@ class KalshiClient:
         )
 
     async def batch_cancel_orders(self, order_ids: list[str]) -> dict[str, Any]:
-        """DELETE /portfolio/orders/batch -- cancel multiple orders.
+        """DELETE /portfolio/orders/batched -- cancel multiple orders.
+
+        Path is `/batched` (not `/batch`); body uses `{"orders": [{"order_id": ...}]}`
+        format. Discovered via pykalshi reference implementation. Call sites should
+        wrap this in try/except and fall back to per-order cancels on failure.
 
         Note: batch requests are NOT discounted; cost = len(order_ids) * CANCEL_REQUEST_COST.
         """
         total_cost = float(len(order_ids) * CANCEL_REQUEST_COST)
         return await self._request(
             "DELETE",
-            "/portfolio/orders/batch",
-            json_body={"order_ids": order_ids},
+            "/portfolio/orders/batched",
+            json_body={"orders": [{"order_id": oid} for oid in order_ids]},
             is_write=True,
             token_cost=total_cost,
         )

@@ -27,6 +27,21 @@ lip:
     - 1186.99
     - 1196.99
 
+  # Sticky-quote state machine: defends against LIP drag attacks where an
+  # attacker layers thin stacks to ratchet our quote toward theo, then pulls.
+  # Bot races aggressively when pennied, locks position, only relaxes after
+  # sustained 1.0x mult AND theo stability. See engine/sticky_quote.py.
+  sticky:
+    enabled: true
+    desert_jump_cents: 5                       # jump 5c inside best when racing
+    min_distance_from_theo: 15                 # floor: ask >= theo+15, bid <= theo-15
+    snapshots_at_1x_required: 10               # ~30s at 3s cycle before relax (tuned from 15)
+    theo_stability_cents: 2.0                  # theo can't drift > 2c during lock
+    theo_range_cents: 3.0                      # theo range over buffer < 3c
+    relax_total_steps: 10                      # geometric walk-back over 10 cycles
+    max_aggressive_duration_seconds: 300.0     # circuit breaker: 5 min cap
+    cooldown_seconds: 600.0                    # 10 min idle if circuit fires
+
 synthetic:
   vol: 0.1629
   forward_override: 0        # disabled — yfinance auto-pulls now

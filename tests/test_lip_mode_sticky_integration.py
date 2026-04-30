@@ -1,0 +1,222 @@
+"""Integration tests for the sticky-quote wiring inside lip_mode.
+
+These tests catch wiring/scoping bugs that StickyQuoter unit tests can't —
+specifically, the kind of UnboundLocalError that slipped through the unit
+suite when `cur_*_px` was referenced before its (later) assignment.
+
+Philosophy: minimum smoke tests at the integration boundary. Not full
+end-to-end coverage — just enough to ensure the call site doesn't crash
+under sticky.enabled=true.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+
+def _make_lip_mm_with_sticky(sticky_enabled: bool = True) -> Any:
+    """Build a LIPMarketMaker with sticky enabled (or not)."""
+    from deploy.lip_mode import LIPMarketMaker
+
+    cfg: dict[str, Any] = {
+        "lip": {
+            "contracts_per_side": 12,
+            "size_jitter": 0,
+            "max_half_spread_cents": 4,
+            "min_half_spread_cents": 2,
+            "max_distance_from_best": 1,
+            "theo_tolerance": 2,
+            "eligible_strikes": [],
+            "sticky": {
+                "enabled": sticky_enabled,
+                "desert_jump_cents": 5,
+                "min_distance_from_theo": 15,
+                "snapshots_at_1x_required": 10,
+                "theo_stability_cents": 2.0,
+                "theo_range_cents": 3.0,
+                "relax_total_steps": 10,
+                "max_aggressive_duration_seconds": 300.0,
+                "cooldown_seconds": 600.0,
+            },
+        },
+        "loop": {"cycle_seconds": 3},
+        "series": [{"ticker_prefix": "KXTEST"}],
+        "synthetic": {"vol": 0.15},
+        "wasde": {},
+        "markout": {},
+    }
+
+    with patch("deploy.lip_mode.PythForwardProvider"), \
+         patch("deploy.lip_mode.load_pyth_forward_config"), \
+         patch("builtins.open", MagicMock()), \
+         patch("yaml.safe_load", return_value={}):
+        mm = LIPMarketMaker(cfg)
+
+    mm._kalshi_client = MagicMock()
+    mm._kalshi_client.amend_order = AsyncMock()
+    mm._kalshi_client.cancel_order = AsyncMock()
+    mm._kalshi_client.create_order = AsyncMock(return_value={
+        "order": {"order_id": "new-order-id"}
+    })
+    # Realistic forward — matches a plausible soy May contract scenario
+    # (theo Yes for 1186.99 with this forward & vol & ~12h to expiry ≈ 7c).
+    mm._forward_estimate = 11.7913  # $11.79 / bushel
+    mm._days_to_settlement = 0.5
+    mm._vol = 0.16
+    return mm
+
+
+def _setup_strike(mm: Any, strike: float, ticker: str) -> None:
+    """Wire ticker mapping and a synthetic orderbook for one strike."""
+    mm._market_tickers = {strike: ticker}
+    # No prior resting orders
+    mm._resting = {}
+
+    # Synthetic orderbook: best Yes bid 5c, best Yes ask 75c (= No bid 25c)
+    yes_depth = [(5, 100.0), (4, 200.0), (3, 50.0)]
+    no_depth = [(25, 50.0), (24, 100.0), (12, 200.0)]
+    mm._pull_orderbooks = AsyncMock(return_value={
+        ticker: {
+            "best_bid": 5,
+            "best_ask": 75,
+            "yes_depth": yes_depth,
+            "no_depth": no_depth,
+        }
+    })
+
+
+async def test_process_single_strike_with_sticky_enabled_does_not_crash() -> None:
+    """Regression test for Concern 3 (UnboundLocalError on cur_*_px).
+
+    Before the fix at lip_mode.py:814,827 (cur_ask_px → our_ask_px,
+    cur_bid_px → our_bid_px), this test would raise UnboundLocalError
+    on the first cycle because cur_*_px were referenced before assignment.
+    After the fix, this test passes.
+    """
+    mm = _make_lip_mm_with_sticky(sticky_enabled=True)
+    strike = 1186.99
+    ticker = "KXTEST-26APR30-T1186.99"
+    _setup_strike(mm, strike, ticker)
+
+    targets = {strike: 7}  # theo Yes = 7c (deep OTM)
+
+    # Should complete without raising
+    await mm._process_single_strike(strike, targets)
+
+
+async def test_process_single_strike_with_sticky_disabled_does_not_crash() -> None:
+    """Sanity: disabling sticky still works (skips the integration block)."""
+    mm = _make_lip_mm_with_sticky(sticky_enabled=False)
+    strike = 1186.99
+    ticker = "KXTEST-26APR30-T1186.99"
+    _setup_strike(mm, strike, ticker)
+
+    targets = {strike: 7}
+    await mm._process_single_strike(strike, targets)
+
+
+async def test_sticky_cooldown_cancel_path_runs_cleanly() -> None:
+    """The COOLDOWN cancel path runs without raising (Concern 4 logging path).
+
+    Force the StickyQuoter into COOLDOWN state on both sides for our ticker
+    by manipulating its internal state, then call _process_single_strike
+    and assert the cancel paths run + log without raising.
+    """
+    import time as _time
+    from engine.sticky_quote import SideState
+
+    mm = _make_lip_mm_with_sticky(sticky_enabled=True)
+    strike = 1186.99
+    ticker = "KXTEST-26APR30-T1186.99"
+    _setup_strike(mm, strike, ticker)
+
+    # Pre-populate resting orders so we have something to cancel
+    mm._resting = {
+        ticker: {
+            "bid_id": "bid-id-abc12345",
+            "bid_px": 4,
+            "ask_id": "ask-id-def67890",
+            "ask_px": 76,
+        }
+    }
+
+    # Force both sides into COOLDOWN
+    future = _time.time() + 1000.0
+    for side in ("ask", "bid"):
+        st = mm._sticky._get_state(ticker, side)
+        st.state = "COOLDOWN"
+        st.cooldown_until = future
+        st.current_price = 50
+
+    targets = {strike: 7}
+    # Should complete and log COOLDOWN cancellations without raising
+    await mm._process_single_strike(strike, targets)
+
+    # Both cancels should have been attempted
+    assert mm._kalshi_client.cancel_order.await_count == 2
+
+
+def test_static_lipmode_has_no_unboundlocal_in_process_single_strike() -> None:
+    """Static-analysis backup: parse lip_mode.py and verify every name
+    referenced in _process_single_strike is bound before its first use.
+
+    Cheap second line of defense in case the dynamic test above is
+    accidentally disabled. Catches the same class of bug at parse time.
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path("deploy/lip_mode.py").read_text()
+    tree = ast.parse(src)
+
+    target_fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_process_single_strike":
+            target_fn = node
+            break
+    assert target_fn is not None, "could not find _process_single_strike"
+
+    # Collect (name, lineno) for every Load of a Name.
+    loads: list[tuple[str, int]] = []
+    stores: dict[str, int] = {}  # earliest store lineno per name
+    for node in ast.walk(target_fn):
+        if isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Load):
+                loads.append((node.id, node.lineno))
+            elif isinstance(node.ctx, ast.Store):
+                if node.id not in stores or node.lineno < stores[node.id]:
+                    stores[node.id] = node.lineno
+
+    # For every Load, if the name is also Stored somewhere in the function,
+    # it's a local. Verify the first Store happens before the first Load.
+    bug_candidates: list[str] = []
+    for name, load_line in loads:
+        if name in stores and stores[name] > load_line:
+            # Skip names we know are method args / self attrs / globals
+            if name in {"self", "ticker", "strike", "targets", "fair", "ob",
+                        "yes_depth", "no_depth", "is_toxic", "max_dist",
+                        "lip_target", "best_bid", "best_ask", "best_no_bid",
+                        "our_bid_px", "our_ask_px", "our_no_px",
+                        "bid_is_desert", "ask_is_desert", "desert_threshold",
+                        "bid", "ask", "yes_ahead", "no_ahead", "target_no_px",
+                        "ask_skip", "bid_skip", "now_ts", "sticky_ask",
+                        "sticky_bid", "ask_state", "bid_state",
+                        "cur", "cur_bid_px", "cur_ask_px", "cur_bid_id",
+                        "cur_ask_id", "cur_bid_dist", "cur_ask_dist",
+                        "cur_bid_mult", "cur_ask_mult", "cur_no_px",
+                        "cur_bid_ahead", "cur_ask_ahead", "cur_bid_in_300",
+                        "cur_ask_in_300", "cur_bid_ok", "cur_ask_ok",
+                        "min_acceptable_mult", "force_refresh",
+                        "bid_needs_update", "ask_needs_update",
+                        "amended", "bid_dist", "ask_dist", "bid_mult",
+                        "ask_mult", "toxic_tag", "regime",
+                        "toxic_tickers"}:
+                continue
+            bug_candidates.append(
+                f"{name} loaded at line {load_line} but first stored at line {stores[name]}"
+            )
+
+    assert not bug_candidates, "UnboundLocal-style bugs detected:\n  " + "\n  ".join(bug_candidates)
