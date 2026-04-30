@@ -99,6 +99,16 @@ class LIPMarketMaker:
             float(s) / 100.0 for s in raw_eligible
         } if raw_eligible else set()
 
+        # Settlement time override (use instead of Kalshi expiration_time)
+        settle_str = cfg.get("synthetic", {}).get("settlement_time", "")
+        self._settlement_override: datetime | None = None
+        if settle_str:
+            try:
+                self._settlement_override = datetime.fromisoformat(settle_str)
+                logger.info("SETTLEMENT: override=%s", self._settlement_override)
+            except (ValueError, TypeError) as exc:
+                logger.warning("SETTLEMENT: invalid override %r: %s", settle_str, exc)
+
         # State: what we currently have resting
         # market_ticker -> {"bid_id": str, "bid_px": int, "ask_id": str, "ask_px": int}
         self._resting: dict[str, dict[str, Any]] = {}
@@ -471,7 +481,7 @@ class LIPMarketMaker:
         if self._forward_estimate <= 0 or self._days_to_settlement <= 0:
             return
 
-        tau = max(0.5, self._days_to_settlement) / 365.0
+        tau = max(0.1, self._days_to_settlement) / 365.0
         fallback = self._cfg.get("synthetic", {}).get("vol", 0.15)
 
         strike_mids: list[tuple[float, float]] = []
@@ -515,7 +525,7 @@ class LIPMarketMaker:
                 )
 
         sigma = self._vol
-        tau = max(0.5, self._days_to_settlement) / 365.0
+        tau = max(0.1, self._days_to_settlement) / 365.0
         sig_sqrt_t = max(sigma * math.sqrt(tau), 1e-12)
 
         targets: dict[float, int] = {}
@@ -576,17 +586,26 @@ class LIPMarketMaker:
                                 break
                     logger.info("FORWARD: Kalshi=%.4f (yfinance/Pyth N/A)", self._forward_estimate)
 
-            # Days to settlement
-            for m in markets:
-                et = m.get("expiration_time", "")
-                if et:
-                    try:
-                        exp_dt = datetime.fromisoformat(et.replace("Z", "+00:00"))
-                        days = (exp_dt - datetime.now(exp_dt.tzinfo)).total_seconds() / 86400
-                        self._days_to_settlement = max(0.5, days)
-                    except (ValueError, TypeError):
-                        pass
-                    break
+            # Days to settlement: prefer override > Kalshi expiration_time
+            if self._settlement_override is not None:
+                now_aware = datetime.now(self._settlement_override.tzinfo)
+                days = (self._settlement_override - now_aware).total_seconds() / 86400
+                self._days_to_settlement = max(0.1, days)
+                logger.info(
+                    "SETTLEMENT: %.1f hours to settle (override)",
+                    self._days_to_settlement * 24,
+                )
+            else:
+                for m in markets:
+                    et = m.get("expiration_time", "")
+                    if et:
+                        try:
+                            exp_dt = datetime.fromisoformat(et.replace("Z", "+00:00"))
+                            days = (exp_dt - datetime.now(exp_dt.tzinfo)).total_seconds() / 86400
+                            self._days_to_settlement = max(0.5, days)
+                        except (ValueError, TypeError):
+                            pass
+                        break
 
             if not strikes:
                 return None, np.array([])

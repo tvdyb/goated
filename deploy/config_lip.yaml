@@ -29,6 +29,7 @@ synthetic:
   vol: 0.1629
   forward_override: 0        # disabled — yfinance auto-pulls now
   yf_ticker: ZSK26.CBT       # May soybeans (front month Kalshi settles against)
+  settlement_time: "2026-04-30T17:00:00-04:00"  # April 30 5pm EDT
 
 loop:
   cycle_seconds: 20    # balance: fast enough to track best, slow enough to avoid 429s
