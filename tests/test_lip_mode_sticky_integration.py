@@ -17,14 +17,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-def _make_lip_mm_with_sticky(sticky_enabled: bool = True) -> Any:
-    """Build a LIPMarketMaker with sticky enabled (or not)."""
+def _make_lip_mm_with_sticky(sticky_enabled: bool = True, dollars_per_side: float = 0.0) -> Any:
+    """Build a LIPMarketMaker with sticky enabled (or not).
+
+    dollars_per_side > 0 enables per-dollar sizing (the new default in
+    config_lip.yaml). dollars_per_side = 0 uses legacy contracts_per_side.
+    """
     from deploy.lip_mode import LIPMarketMaker
 
     cfg: dict[str, Any] = {
         "lip": {
             "contracts_per_side": 12,
             "size_jitter": 0,
+            "dollars_per_side": dollars_per_side,
+            "min_contracts": 5,
+            "max_contracts": 300,
             "max_half_spread_cents": 4,
             "min_half_spread_cents": 2,
             "max_distance_from_best": 1,
@@ -297,3 +304,78 @@ def test_static_lipmode_has_no_unboundlocal_in_process_single_strike() -> None:
             )
 
     assert not bug_candidates, "UnboundLocal-style bugs detected:\n  " + "\n  ".join(bug_candidates)
+
+
+# ── Per-dollar sizing tests ──────────────────────────────────────
+
+
+def test_size_for_quote_legacy_when_dollars_zero() -> None:
+    """When dollars_per_side <= 0, falls back to legacy single jittered size."""
+    mm = _make_lip_mm_with_sticky(sticky_enabled=False, dollars_per_side=0.0)
+    # contracts_per_side=12, size_jitter=0 → always 12
+    assert mm._size_for_quote(1, "bid") == 12
+    assert mm._size_for_quote(50, "bid") == 12
+    assert mm._size_for_quote(99, "ask") == 12
+
+
+def test_size_for_quote_per_dollar_bid_side() -> None:
+    """At $1 budget on bid side: contracts = 100/quote, clamped [5, 300]."""
+    mm = _make_lip_mm_with_sticky(sticky_enabled=False, dollars_per_side=1.0)
+    # 1c quote: 100/1 = 100 contracts
+    assert mm._size_for_quote(1, "bid") == 100
+    # 2c: 100/2 = 50
+    assert mm._size_for_quote(2, "bid") == 50
+    # 5c: 100/5 = 20
+    assert mm._size_for_quote(5, "bid") == 20
+    # 50c: 100/50 = 2 → floor to min_contracts=5
+    assert mm._size_for_quote(50, "bid") == 5
+    # 99c: 100/99 = 1 → floor to 5
+    assert mm._size_for_quote(99, "bid") == 5
+
+
+def test_size_for_quote_per_dollar_ask_side() -> None:
+    """At $1 budget on ask side: cost = 100 - quote, contracts = 100/cost."""
+    mm = _make_lip_mm_with_sticky(sticky_enabled=False, dollars_per_side=1.0)
+    # 99c ask: cost = 1 → 100 contracts
+    assert mm._size_for_quote(99, "ask") == 100
+    # 95c ask: cost = 5 → 20
+    assert mm._size_for_quote(95, "ask") == 20
+    # 50c ask: cost = 50 → 2 → floor to 5
+    assert mm._size_for_quote(50, "ask") == 5
+    # 1c ask: cost = 99 → 1 → floor to 5
+    assert mm._size_for_quote(1, "ask") == 5
+
+
+def test_size_for_quote_max_cap_at_300() -> None:
+    """Even with absurd budget, never exceed max_contracts=300."""
+    from deploy.lip_mode import LIPMarketMaker
+    from unittest.mock import MagicMock, patch
+    cfg = {
+        "lip": {
+            "contracts_per_side": 12, "size_jitter": 0,
+            "dollars_per_side": 100.0,  # absurd
+            "min_contracts": 5, "max_contracts": 300,
+            "eligible_strikes": [],
+        },
+        "loop": {"cycle_seconds": 3},
+        "series": [{"ticker_prefix": "KXTEST"}],
+        "synthetic": {"vol": 0.15}, "wasde": {}, "markout": {},
+    }
+    with patch("deploy.lip_mode.PythForwardProvider"), \
+         patch("deploy.lip_mode.load_pyth_forward_config"), \
+         patch("builtins.open", MagicMock()), \
+         patch("yaml.safe_load", return_value={}):
+        mm = LIPMarketMaker(cfg)
+    # 1c with $100 budget would compute 10000 contracts; clamped to 300
+    assert mm._size_for_quote(1, "bid") == 300
+    # 99c ask, cost=1, $100 budget → 10000 → 300
+    assert mm._size_for_quote(99, "ask") == 300
+
+
+def test_size_for_quote_invalid_input_returns_min() -> None:
+    """Out-of-range quote → min_contracts."""
+    mm = _make_lip_mm_with_sticky(sticky_enabled=False, dollars_per_side=1.0)
+    assert mm._size_for_quote(0, "bid") == 5      # invalid (< 1)
+    assert mm._size_for_quote(100, "bid") == 5    # invalid (> 99)
+    assert mm._size_for_quote(50, "invalid") == 5 # bad side
+

@@ -12,8 +12,17 @@ series:
     cme_symbol: ZS
 
 lip:
-  contracts_per_side: 12
-  size_jitter: 3                  # randomize size ±3 (range 9-15)
+  contracts_per_side: 12          # legacy fallback (used only when dollars_per_side <= 0)
+  size_jitter: 3                  # randomize size ±3 (around computed target)
+
+  # Per-dollar sizing: contracts = dollars_per_side × 100 / cost_per_contract_cents
+  # where cost_per_contract = bid_price (for bids) or 100 - ask_price (for asks).
+  # On 1c quotes: $1 budget → 100 contracts. On 50c quotes: $1 budget → 2 → floor.
+  # Total max risk per cycle ≈ dollars_per_side × 2 sides × N strikes.
+  # Set dollars_per_side: 0 to disable and use legacy contracts_per_side.
+  dollars_per_side: 1.00          # $1 capital risk per fill at limit price
+  min_contracts: 5                # below this, LIP scoring barely moves
+  max_contracts: 300              # LIP top-300 cap; beyond is wasted
   max_half_spread_cents: 4
   min_half_spread_cents: 2
   max_distance_from_best: 1    # never post more than 1c from best (0.50x floor)

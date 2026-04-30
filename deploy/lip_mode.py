@@ -82,7 +82,15 @@ class LIPMarketMaker:
         lip = cfg.get("lip", {})
         self._size_base = lip.get("contracts_per_side", 50)
         self._size_jitter = lip.get("size_jitter", 4)  # randomize ± this amount
-        self._size = self._size_base  # current size (re-randomized per strike)
+        self._size = self._size_base  # legacy single-size fallback
+        # Per-dollar sizing (preferred over fixed contracts_per_side).
+        # When dollars_per_side > 0, the bot computes per-side contract counts
+        # such that capital risk per fill at the limit price ≈ dollars_per_side.
+        # On deep wings (1c quotes), this scales to top-300; on mid strikes
+        # (50c quotes), it falls back to min_contracts to stay LIP-relevant.
+        self._dollars_per_side = float(lip.get("dollars_per_side", 0.0))
+        self._min_contracts = int(lip.get("min_contracts", 5))
+        self._max_contracts = int(lip.get("max_contracts", 300))
         self._max_half_spread = lip.get("max_half_spread_cents", 4)
         self._min_half_spread = lip.get("min_half_spread_cents", 2)
         self._cycle_seconds = cfg.get("loop", {}).get("cycle_seconds", 30)
@@ -700,6 +708,41 @@ class LIPMarketMaker:
             fallback=fallback,
         )
 
+    def _size_for_quote(self, quote_cents: int, side: str) -> int:
+        """Compute contracts to post for a given side at a given quote price.
+
+        When `dollars_per_side` is configured, sizes by capital budget:
+        cost_per_contract = quote (for bid) or 100 - quote (for ask), in cents.
+        contracts = dollars_per_side × 100 / cost_per_contract, clamped to
+        [min_contracts, max_contracts] and jittered.
+
+        Falls back to legacy single-size behavior if dollars_per_side <= 0.
+
+        side: "bid" or "ask"
+        """
+        if self._dollars_per_side <= 0:
+            # Legacy: single jittered size for the whole strike
+            return max(1, self._size_base + random.randint(
+                -self._size_jitter, self._size_jitter
+            ))
+
+        if quote_cents < 1 or quote_cents > 99:
+            # Out-of-range quote; return min so we don't compute against zero
+            return self._min_contracts
+
+        # Cost per contract in cents at the limit price
+        if side == "bid":
+            cost_cents = quote_cents
+        elif side == "ask":
+            cost_cents = max(1, 100 - quote_cents)
+        else:
+            return self._min_contracts
+
+        raw = int(self._dollars_per_side * 100 / cost_cents)
+        target = max(self._min_contracts, min(self._max_contracts, raw))
+        jitter = random.randint(-self._size_jitter, self._size_jitter)
+        return max(self._min_contracts, target + jitter)
+
     def _new_decision_record(self, strike: float) -> dict[str, Any]:
         """Build an empty decision-log record with stable schema. Populate
         progressively in _process_single_strike_impl; logged in finally."""
@@ -786,7 +829,8 @@ class LIPMarketMaker:
             record["decision"]["early_return_reason"] = "no ticker for strike"
             return
 
-        # Randomize size to reduce bot fingerprint
+        # Legacy single-size assignment, kept for any code path that still
+        # reads self._size (mostly the legacy contracts_per_side fallback).
         self._size = max(1, self._size_base + random.randint(
             -self._size_jitter, self._size_jitter
         ))
@@ -810,18 +854,24 @@ class LIPMarketMaker:
         cur = self._resting.get(ticker, {})
         our_bid_px = cur.get("bid_px", 0)
         our_ask_px = cur.get("ask_px", 0)
+        # Sizes of currently-resting orders (tracked per-side now). Used for
+        # depth-exclusion logic — we need to know the size we previously placed,
+        # which can differ from the new target size under per-dollar sizing.
+        cur_bid_size_resting = int(cur.get("bid_size", self._size))
+        cur_ask_size_resting = int(cur.get("ask_size", self._size))
         record["our_state"]["cur_bid_id"] = cur.get("bid_id") or None
         record["our_state"]["cur_bid_px"] = int(our_bid_px) if our_bid_px else None
         record["our_state"]["cur_ask_id"] = cur.get("ask_id") or None
         record["our_state"]["cur_ask_px"] = int(our_ask_px) if our_ask_px else None
-        record["our_state"]["cur_bid_size"] = int(self._size) if our_bid_px else None
-        record["our_state"]["cur_ask_size"] = int(self._size) if our_ask_px else None
+        record["our_state"]["cur_bid_size"] = cur_bid_size_resting if our_bid_px else None
+        record["our_state"]["cur_ask_size"] = cur_ask_size_resting if our_ask_px else None
 
-        # Find best bid/ask (excluding our own orders)
+        # Find best bid/ask (excluding our own orders) — use the SIZE OF THE
+        # CURRENTLY RESTING order at our level, not the new target.
         best_bid = 0
         for px, sz in yes_depth:
             if px == our_bid_px:
-                if sz - self._size > 0.5:
+                if sz - cur_bid_size_resting > 0.5:
                     best_bid = px
                     break
             else:
@@ -832,7 +882,7 @@ class LIPMarketMaker:
         our_no_px = 100 - our_ask_px if our_ask_px > 0 else 0
         for px, sz in no_depth:
             if px == our_no_px:
-                if sz - self._size > 0.5:
+                if sz - cur_ask_size_resting > 0.5:
                     best_no_bid = px
                     break
             else:
@@ -868,12 +918,17 @@ class LIPMarketMaker:
         else:
             bid = best_bid - max_dist
 
+        # Compute prospective bid size based on the bid we'd post.
+        # For exclusion at our_bid_px level we use the resting size; for the
+        # new size we'd add to top-of-300, we use the prospective size.
+        prospective_bid_size = self._size_for_quote(int(bid), "bid")
         yes_ahead = sum(
-            (sz - self._size if px == our_bid_px else sz)
+            (sz - cur_bid_size_resting if px == our_bid_px else sz)
             for px, sz in yes_depth if px > bid
         )
-        if yes_ahead + self._size > lip_target:
+        if yes_ahead + prospective_bid_size > lip_target:
             bid = best_bid
+            prospective_bid_size = self._size_for_quote(int(bid), "bid")
 
         # ANTI-SPOOFING: ALWAYS cap at theo + tolerance (even in desert)
         bid = min(bid, fair - 1 + self._theo_tolerance)
@@ -892,13 +947,15 @@ class LIPMarketMaker:
         else:
             ask = best_ask + max_dist
 
+        prospective_ask_size = self._size_for_quote(int(ask), "ask")
         target_no_px = 100 - ask
         no_ahead = sum(
-            (sz - self._size if px == our_no_px else sz)
+            (sz - cur_ask_size_resting if px == our_no_px else sz)
             for px, sz in no_depth if px > target_no_px
         )
-        if no_ahead + self._size > lip_target:
+        if no_ahead + prospective_ask_size > lip_target:
             ask = best_ask
+            prospective_ask_size = self._size_for_quote(int(ask), "ask")
 
         # ANTI-SPOOFING: ALWAYS floor at theo - tolerance (even in desert)
         ask = max(ask, fair + 1 - self._theo_tolerance)
@@ -1050,11 +1107,12 @@ class LIPMarketMaker:
         if cur_bid_px > 0 and best_bid > 0:
             cur_bid_dist = best_bid - cur_bid_px
             cur_bid_mult = LIP_DISCOUNT ** max(0, cur_bid_dist)
+            # Use the resting size for "would current order still qualify"
             cur_bid_ahead = sum(
-                (sz - self._size if px == cur_bid_px else sz)
+                (sz - cur_bid_size_resting if px == cur_bid_px else sz)
                 for px, sz in yes_depth if px > cur_bid_px
             )
-            cur_bid_in_300 = cur_bid_ahead + self._size <= lip_target
+            cur_bid_in_300 = cur_bid_ahead + cur_bid_size_resting <= lip_target
             cur_bid_ok = cur_bid_in_300 and cur_bid_mult >= min_acceptable_mult
 
         cur_ask_ok = False
@@ -1063,10 +1121,10 @@ class LIPMarketMaker:
             cur_ask_mult = LIP_DISCOUNT ** max(0, cur_ask_dist)
             cur_no_px = 100 - cur_ask_px
             cur_ask_ahead = sum(
-                (sz - self._size if px == cur_no_px else sz)
+                (sz - cur_ask_size_resting if px == cur_no_px else sz)
                 for px, sz in no_depth if px > cur_no_px
             )
-            cur_ask_in_300 = cur_ask_ahead + self._size <= lip_target
+            cur_ask_in_300 = cur_ask_ahead + cur_ask_size_resting <= lip_target
             cur_ask_ok = cur_ask_in_300 and cur_ask_mult >= min_acceptable_mult
 
         # If sticky state is COOLDOWN for a side: cancel any existing order,
@@ -1093,23 +1151,26 @@ class LIPMarketMaker:
             bid_needs_update = (not cur_bid_ok or cur_bid_px == 0 or force_refresh) and cur_bid_px != bid
             if bid_needs_update:
                 t0 = time.time()
+                # Recompute size for the FINAL bid price (sticky may have moved it)
+                new_bid_size = self._size_for_quote(int(bid), "bid")
                 if cur_bid_id:
                     record["outcome"]["bid_amend_attempted"] = True
-                    amended = await self._try_amend(cur_bid_id, yes_price=bid, count=self._size)
+                    amended = await self._try_amend(cur_bid_id, yes_price=bid, count=new_bid_size)
                     record["outcome"]["bid_amend_succeeded"] = bool(amended)
                     record["outcome"]["bid_amend_latency_ms"] = int((time.time() - t0) * 1000)
                     if amended:
                         record["decision"]["bid_action"] = "amend"
-                        record["decision"]["bid_reason"] = f"amend bid to {bid}c"
+                        record["decision"]["bid_reason"] = f"amend bid to {bid}c × {new_bid_size}"
                         self._resting.setdefault(ticker, {})["bid_px"] = bid
+                        self._resting[ticker]["bid_size"] = new_bid_size
                     else:
                         record["decision"]["bid_action"] = "cancel_and_replace"
-                        record["decision"]["bid_reason"] = f"amend failed, replace at {bid}c"
-                        await self._cancel_and_place_bid(ticker, bid)
+                        record["decision"]["bid_reason"] = f"amend failed, replace at {bid}c × {new_bid_size}"
+                        await self._cancel_and_place_bid(ticker, bid, size=new_bid_size)
                 else:
                     record["decision"]["bid_action"] = "place_new"
-                    record["decision"]["bid_reason"] = f"new bid at {bid}c"
-                    await self._place_bid(ticker, bid)
+                    record["decision"]["bid_reason"] = f"new bid at {bid}c × {new_bid_size}"
+                    await self._place_bid(ticker, bid, size=new_bid_size)
             else:
                 record["decision"]["bid_action"] = "no_change"
                 record["decision"]["bid_reason"] = (
@@ -1139,23 +1200,25 @@ class LIPMarketMaker:
             ask_needs_update = (not cur_ask_ok or cur_ask_px == 0 or force_refresh) and cur_ask_px != ask
             if ask_needs_update:
                 t0 = time.time()
+                new_ask_size = self._size_for_quote(int(ask), "ask")
                 if cur_ask_id:
                     record["outcome"]["ask_amend_attempted"] = True
-                    amended = await self._try_amend(cur_ask_id, yes_price=ask, count=self._size)
+                    amended = await self._try_amend(cur_ask_id, yes_price=ask, count=new_ask_size)
                     record["outcome"]["ask_amend_succeeded"] = bool(amended)
                     record["outcome"]["ask_amend_latency_ms"] = int((time.time() - t0) * 1000)
                     if amended:
                         record["decision"]["ask_action"] = "amend"
-                        record["decision"]["ask_reason"] = f"amend ask to {ask}c"
+                        record["decision"]["ask_reason"] = f"amend ask to {ask}c × {new_ask_size}"
                         self._resting.setdefault(ticker, {})["ask_px"] = ask
+                        self._resting[ticker]["ask_size"] = new_ask_size
                     else:
                         record["decision"]["ask_action"] = "cancel_and_replace"
-                        record["decision"]["ask_reason"] = f"amend failed, replace at {ask}c"
-                        await self._cancel_and_place_ask(ticker, ask)
+                        record["decision"]["ask_reason"] = f"amend failed, replace at {ask}c × {new_ask_size}"
+                        await self._cancel_and_place_ask(ticker, ask, size=new_ask_size)
                 else:
                     record["decision"]["ask_action"] = "place_new"
-                    record["decision"]["ask_reason"] = f"new ask at {ask}c"
-                    await self._place_ask(ticker, ask)
+                    record["decision"]["ask_reason"] = f"new ask at {ask}c × {new_ask_size}"
+                    await self._place_ask(ticker, ask, size=new_ask_size)
             else:
                 record["decision"]["ask_action"] = "no_change"
                 record["decision"]["ask_reason"] = (
@@ -1440,7 +1503,9 @@ class LIPMarketMaker:
             logger.warning("LIP AMEND error (order=%s): %s — falling back to cancel+place", order_id[:8], exc)
             return False
 
-    async def _cancel_and_place_bid(self, ticker: str, target_bid: int) -> None:
+    async def _cancel_and_place_bid(
+        self, ticker: str, target_bid: int, size: int | None = None,
+    ) -> None:
         """Cancel existing bid and place new one (fallback from amend)."""
         assert self._kalshi_client is not None
         cur = self._resting.get(ticker, {})
@@ -1450,9 +1515,11 @@ class LIPMarketMaker:
                 await self._kalshi_client.cancel_order(cur_bid_id)
             except Exception:
                 pass
-        await self._place_bid(ticker, target_bid)
+        await self._place_bid(ticker, target_bid, size=size)
 
-    async def _cancel_and_place_ask(self, ticker: str, target_ask: int) -> None:
+    async def _cancel_and_place_ask(
+        self, ticker: str, target_ask: int, size: int | None = None,
+    ) -> None:
         """Cancel existing ask and place new one (fallback from amend)."""
         assert self._kalshi_client is not None
         cur = self._resting.get(ticker, {})
@@ -1462,18 +1529,21 @@ class LIPMarketMaker:
                 await self._kalshi_client.cancel_order(cur_ask_id)
             except Exception:
                 pass
-        await self._place_ask(ticker, target_ask)
+        await self._place_ask(ticker, target_ask, size=size)
 
-    async def _place_bid(self, ticker: str, target_bid: int) -> None:
-        """Place a new bid order."""
+    async def _place_bid(
+        self, ticker: str, target_bid: int, size: int | None = None,
+    ) -> None:
+        """Place a new bid order. size=None falls back to per-quote sizing."""
         assert self._kalshi_client is not None
+        order_size = size if size is not None else self._size_for_quote(target_bid, "bid")
         try:
             resp = await self._kalshi_client.create_order(
                 ticker=ticker,
                 action="buy",
                 side="yes",
                 order_type="limit",
-                count=self._size,
+                count=order_size,
                 yes_price=target_bid,
                 post_only=True,
             )
@@ -1481,21 +1551,26 @@ class LIPMarketMaker:
             oid = order.get("order_id", "")
             self._resting.setdefault(ticker, {})["bid_id"] = oid
             self._resting[ticker]["bid_px"] = target_bid
+            self._resting[ticker]["bid_size"] = order_size
         except Exception as exc:
-            logger.warning("LIP: failed bid %s @ %dc: %s", ticker, target_bid, exc)
+            logger.warning("LIP: failed bid %s @ %dc × %d: %s", ticker, target_bid, order_size, exc)
             self._resting.setdefault(ticker, {})["bid_id"] = ""
             self._resting[ticker]["bid_px"] = 0
+            self._resting[ticker]["bid_size"] = 0
 
-    async def _place_ask(self, ticker: str, target_ask: int) -> None:
-        """Place a new ask order."""
+    async def _place_ask(
+        self, ticker: str, target_ask: int, size: int | None = None,
+    ) -> None:
+        """Place a new ask order. size=None falls back to per-quote sizing."""
         assert self._kalshi_client is not None
+        order_size = size if size is not None else self._size_for_quote(target_ask, "ask")
         try:
             resp = await self._kalshi_client.create_order(
                 ticker=ticker,
                 action="sell",
                 side="yes",
                 order_type="limit",
-                count=self._size,
+                count=order_size,
                 yes_price=target_ask,
                 post_only=True,
             )
@@ -1503,10 +1578,12 @@ class LIPMarketMaker:
             oid = order.get("order_id", "")
             self._resting.setdefault(ticker, {})["ask_id"] = oid
             self._resting[ticker]["ask_px"] = target_ask
+            self._resting[ticker]["ask_size"] = order_size
         except Exception as exc:
-            logger.warning("LIP: failed ask %s @ %dc: %s", ticker, target_ask, exc)
+            logger.warning("LIP: failed ask %s @ %dc × %d: %s", ticker, target_ask, order_size, exc)
             self._resting.setdefault(ticker, {})["ask_id"] = ""
             self._resting[ticker]["ask_px"] = 0
+            self._resting[ticker]["ask_size"] = 0
 
     def _pull_yfinance_forward(self) -> float | None:
         """Pull ZS front-month price from yfinance. Returns price in cents or None."""
