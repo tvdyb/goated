@@ -206,6 +206,14 @@ class LIPMarketMaker:
 
                     cached_strikes = all_strikes
 
+                    # Wait for yfinance before placing any orders
+                    # (prevents wrong theo on first rotation)
+                    yf_fwd = self._pull_yfinance_forward()
+                    if yf_fwd is None or yf_fwd <= 0:
+                        logger.warning("LIP: waiting for yfinance forward before quoting")
+                        await asyncio.sleep(5)
+                        continue
+
                     # Calibrate vol from all orderbooks (once per rotation)
                     if rotation_count % 3 == 0:  # every 3rd rotation
                         all_obs = await self._pull_orderbooks(cached_strikes)
