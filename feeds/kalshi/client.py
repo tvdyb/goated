@@ -109,6 +109,7 @@ class KalshiClient:
         json_body: dict[str, Any] | None = None,
         is_write: bool = False,
         token_cost: float = DEFAULT_REQUEST_COST,
+        max_retries: int | None = None,
     ) -> dict[str, Any]:
         """Execute an authenticated, rate-limited, retrying request.
 
@@ -140,8 +141,9 @@ class KalshiClient:
         else:
             await self._rate_limiter.acquire_read(cost=token_cost)
 
+        retries = max_retries if max_retries is not None else self._max_retries
         last_exc: Exception | None = None
-        for attempt in range(self._max_retries):
+        for attempt in range(retries):
             # Build auth headers fresh each attempt (timestamp changes)
             auth_headers = self._auth.build_headers(method.upper(), full_path)
 
@@ -488,9 +490,13 @@ class KalshiClient:
     async def get_exchange_status(self) -> dict[str, Any]:
         """GET /exchange/status -- maintenance/trading status.
 
+        Single-attempt (no retries) on purpose: a 5xx response IS the
+        maintenance signal, so retrying just spams logs while learning
+        nothing new.
+
         Returns dict with:
             exchange_active: bool — False if exchange is under maintenance.
             trading_active: bool — False outside trading hours.
             exchange_estimated_resume_time: ISO8601 (only during maintenance).
         """
-        return await self._request("GET", "/exchange/status")
+        return await self._request("GET", "/exchange/status", max_retries=1)

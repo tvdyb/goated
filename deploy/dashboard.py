@@ -23,6 +23,7 @@ from flask import Flask, Response
 
 from feeds.kalshi.auth import KalshiAuth
 from feeds.kalshi.client import KalshiClient
+from feeds.kalshi.errors import KalshiResponseError
 
 app = Flask(__name__)
 
@@ -384,9 +385,54 @@ def _analyze_lip(
     }
 
 
+def _read_theo_state_file() -> dict:
+    """Read theo_state.json without holding any locks. Returns {} on failure."""
+    try:
+        with open(_THEO_STATE_FILE) as tf:
+            return json.load(tf)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _is_scheduled_maintenance() -> bool:
+    """Kalshi's scheduled weekly maintenance: Thursday 3-5 AM ET.
+
+    Empirically can start ~50 min early (saw 503s at 02:10 ET on Thursday),
+    so we treat 02:00-05:00 ET on Thursdays as the maintenance window.
+    """
+    now = datetime.now(_ET)
+    if now.weekday() != 3:  # Thursday
+        return False
+    mins = now.hour * 60 + now.minute
+    return (2 * 60) <= mins < (5 * 60)
+
+
+def _maintenance_state(extra_flag: bool = False) -> dict:
+    """Build a synthesized state dict for maintenance display."""
+    with _lock:
+        cached = dict(_state)
+    ts_pre = _read_theo_state_file()
+    if extra_flag and not ts_pre.get("maintenance_active"):
+        ts_pre = dict(ts_pre)
+        ts_pre["maintenance_active"] = True
+    cached["theo_state"] = ts_pre
+    cached["last_refresh"] = datetime.now(_ET).strftime("%H:%M:%S")
+    cached["error"] = ""
+    return cached
+
+
 async def _refresh() -> dict:
+    # Cheap pre-check: skip Kalshi API entirely if either signal says so.
+    # This stops the 4x-retry log spam every 5s during the maintenance window.
+    theo_state_pre = _read_theo_state_file()
+    in_maint = bool(theo_state_pre.get("maintenance_active")) or _is_scheduled_maintenance()
+    if in_maint:
+        return _maintenance_state(extra_flag=True)
+
     auth, base = _get_client()
-    async with KalshiClient(auth=auth, base_url=base) as c:
+    # max_retries=1 → fail fast on 5xx so we don't spam 4 warnings per call
+    # during early/unscheduled outages. We catch and treat as maintenance.
+    async with KalshiClient(auth=auth, base_url=base, max_retries=1) as c:
         balance = await c.get_balance()
         orders_resp = await c.get_orders(status="resting", limit=200)
         positions_resp = await c.get_positions(limit=100)
@@ -490,8 +536,11 @@ async def _refresh() -> dict:
         }
 
 
+_last_5xx_warn_ts: float = 0.0
+
+
 def _bg_refresh() -> None:
-    global _state
+    global _state, _last_5xx_warn_ts
     while True:
         try:
             result = asyncio.run(_refresh())
@@ -505,6 +554,33 @@ def _bg_refresh() -> None:
             in_maintenance = ts.get("maintenance_active", False)
             if not in_maintenance and bot_age < 120:
                 _update_lip_history(result.get("total_est_hourly", 0.0))
+        except KalshiResponseError as exc:
+            # 5xx from Kalshi — treat as unscheduled maintenance.
+            # Throttle the warning to once per minute so logs don't churn.
+            now = time.time()
+            if 500 <= (exc.status_code or 0) < 600:
+                if (now - _last_5xx_warn_ts) > 60:
+                    print(
+                        f"[dash] Kalshi {exc.status_code} — assuming maintenance, "
+                        f"showing last-known state (banner up). Suppressing further "
+                        f"warnings for 60s.",
+                        flush=True,
+                    )
+                    _last_5xx_warn_ts = now
+                with _lock:
+                    cached = dict(_state)
+                ts_pre = _read_theo_state_file()
+                ts_pre = dict(ts_pre)
+                ts_pre["maintenance_active"] = True
+                cached["theo_state"] = ts_pre
+                cached["last_refresh"] = datetime.now(_ET).strftime("%H:%M:%S")
+                cached["error"] = ""
+                with _lock:
+                    _state = cached
+            else:
+                with _lock:
+                    _state["error"] = str(exc)
+                    _state["last_refresh"] = datetime.now(_ET).strftime("%H:%M:%S")
         except Exception as exc:
             with _lock:
                 _state["error"] = str(exc)

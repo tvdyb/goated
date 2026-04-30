@@ -179,9 +179,10 @@ class LIPMarketMaker:
     def _scheduled_maintenance_window(self, now: datetime | None = None) -> bool:
         """Kalshi's scheduled weekly maintenance: Thursday 3-5 AM ET.
 
-        Used as a fallback when the /exchange/status API call fails (e.g.,
-        because maintenance has taken the API itself down). Includes a 5-min
-        pre-cancel buffer.
+        Empirically Kalshi can start the window ~50 minutes early (we've seen
+        503s on /exchange/status as early as 02:10 ET on a Thursday). Buffer
+        is set to 02:00 ET start to cover early starts without being overly
+        aggressive on other days/times.
         """
         if now is None:
             now = datetime.now(_ET)
@@ -189,16 +190,21 @@ class LIPMarketMaker:
         if now.weekday() != 3:
             return False
         mins = now.hour * 60 + now.minute
-        return (2 * 60 + 55) <= mins < (5 * 60)
+        return (2 * 60) <= mins < (5 * 60)
 
     async def _check_maintenance(self) -> tuple[bool, str]:
         """Returns (is_maintenance, reason).
 
-        Prefers the live /exchange/status API. Falls back to the scheduled
-        Thursday 3-5 AM ET window only if the API is unreachable AND we are
-        inside that window — so we don't spuriously pause on unrelated API
-        hiccups.
+        Cheap pre-check for the scheduled Thursday 3-5 AM ET window — if we're
+        in it, assume maintenance without calling the API.
+
+        Outside the scheduled window, query /exchange/status (single-attempt).
+        Treat 5xx on the status endpoint as a maintenance signal too — the
+        endpoint going 503 IS the maintenance.
         """
+        if self._scheduled_maintenance_window():
+            return True, "scheduled Thursday 3-5 AM ET window"
+
         assert self._kalshi_client is not None
         try:
             status = await self._kalshi_client.get_exchange_status()
@@ -209,12 +215,14 @@ class LIPMarketMaker:
             if not trading_active:
                 return True, "API: trading_active=false (outside trading hours)"
             return False, "API: exchange+trading both active"
+        except KalshiResponseError as exc:
+            # 5xx on the status endpoint = exchange itself is unhealthy.
+            # Treat as maintenance to stop quoting until it recovers.
+            if 500 <= (exc.status_code or 0) < 600:
+                return True, f"API {exc.status_code} on /exchange/status — likely maintenance"
+            return False, f"API status check non-5xx error (continuing): {exc}"
         except Exception as exc:
-            # API call failed. Use scheduled-window heuristic only — don't pause
-            # on transient errors outside the known maintenance window.
-            if self._scheduled_maintenance_window():
-                return True, f"API unreachable + inside scheduled Thu 3-5am ET window: {exc}"
-            return False, f"API status check failed but outside scheduled window: {exc}"
+            return False, f"API status check failed (continuing): {exc}"
 
     # Legacy alias kept for _write_theo_state's status field
     def _in_maintenance_window(self) -> bool:
