@@ -529,8 +529,20 @@ def index() -> str:
     ) if lip else 0
 
     # Forward and settlement info
-    yf_fwd = _get_yf_forward()
-    yf_fwd_str = f"{yf_fwd:.1f}c (${yf_fwd/100:.4f})" if yf_fwd > 0 else "N/A"
+    # Top header price: prefer bot's live forward (Trading Economics primary),
+    # fall back to yfinance if bot heartbeat stale.
+    _ts_top = s.get("theo_state", {})
+    _ts_age_top = time.time() - _ts_top.get("ts", 0) if _ts_top else 1e9
+    _bot_fwd_dollars = _ts_top.get("forward_dollars", 0.0) if _ts_age_top < 120 else 0.0
+    if _bot_fwd_dollars and _bot_fwd_dollars > 0:
+        _bot_fwd_cents = _bot_fwd_dollars * 100
+        _bot_fwd_src = _ts_top.get("forward_source", "bot")
+        yf_fwd_str = f"{_bot_fwd_cents:.2f}c (${_bot_fwd_dollars:.4f})"
+        yf_fwd_label = f"Soybean ({_bot_fwd_src})"
+    else:
+        yf_fwd = _get_yf_forward()
+        yf_fwd_str = f"{yf_fwd:.1f}c (${yf_fwd/100:.4f})" if yf_fwd > 0 else "N/A"
+        yf_fwd_label = "ZSK26 (yfinance, bot down)"
     days_to_settle = _get_days_to_settle()
     hours_to_settle = days_to_settle * 24
 
@@ -996,7 +1008,7 @@ def index() -> str:
 
     <div class="stats">
         <div class="stat">
-            <div class="stat-label">ZSK26 (May Soy)</div>
+            <div class="stat-label">{yf_fwd_label}</div>
             <div class="stat-value" style="color:#60a5fa">{yf_fwd_str}</div>
         </div>
         <div class="stat">
