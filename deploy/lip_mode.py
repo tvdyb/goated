@@ -277,20 +277,24 @@ class LIPMarketMaker:
                     break
             best_ask = (100 - best_no_bid) if best_no_bid > 0 else 100
 
-            # --- BID: the higher of (best_bid - max_dist) or (fair - max_half_spread)
-            #     This prevents following a collapsing bid down to nothing.
-            #     If best bid is far below theo, we stay near theo instead.
-            if best_bid > 0:
-                bid_follow = best_bid - max_dist
-                bid_theo = fair - self._max_half_spread
-                bid = max(bid_follow, bid_theo)
-            else:
-                bid = fair - self._max_half_spread
+            # --- Determine market regime: active or desert ---
+            desert_threshold = 10  # if best is >10c from theo, it's a desert
+            bid_is_desert = best_bid > 0 and abs(fair - best_bid) > desert_threshold
+            ask_is_desert = best_ask < 100 and abs(best_ask - fair) > desert_threshold
 
-            # Deep ITM special case: theo >= 97c → penny the best bid
-            # Almost certain to settle Yes, so buying at 96-97c is safe
-            if fair >= 97 and best_bid > 0:
-                bid = max(bid, best_bid + 1)
+            # --- BID ---
+            if best_bid <= 0:
+                bid = fair - self._max_half_spread
+            elif bid_is_desert:
+                # Desert: post halfway between theo and best bid
+                # We become the new best, earn 1.0x LIP, any fill has big edge
+                bid = (fair + best_bid) // 2
+            elif fair >= 97:
+                # Deep ITM: match best bid (safe, will profit at settlement)
+                bid = best_bid
+            else:
+                # Active market: stay 1c behind best
+                bid = best_bid - max_dist
 
             # Check LIP: would we be in top 300 at this bid?
             yes_ahead = sum(
@@ -300,23 +304,22 @@ class LIPMarketMaker:
             if yes_ahead + self._size > lip_target:
                 bid = best_bid
 
-            # ANTI-SPOOFING: never bid too far above theo
-            # Tolerance allows small disagreement with market (our theo isn't perfect)
-            bid = min(bid, fair - 1 + self._theo_tolerance)
+            # ANTI-SPOOFING: cap at theo + tolerance (only matters in active markets)
+            if not bid_is_desert:
+                bid = min(bid, fair - 1 + self._theo_tolerance)
 
-            # --- ASK: the lower of (best_ask + max_dist) or (fair + max_half_spread)
-            #     Same logic: don't follow a collapsing ask up to nothing.
-            if best_ask < 100:
-                ask_follow = best_ask + max_dist
-                ask_theo = fair + self._max_half_spread
-                ask = min(ask_follow, ask_theo)
-            else:
+            # --- ASK ---
+            if best_ask >= 100:
                 ask = fair + self._max_half_spread
-
-            # Deep OTM special case: theo <= 3c → penny the best ask
-            # Almost certain to settle No, so selling at 3-4c is safe
-            if fair <= 3 and best_ask < 100:
-                ask = min(ask, best_ask - 1)
+            elif ask_is_desert:
+                # Desert: post halfway between theo and best ask
+                ask = (fair + best_ask + 1) // 2
+            elif fair <= 3:
+                # Deep OTM: match best ask (safe, will profit at settlement)
+                ask = best_ask
+            else:
+                # Active market: stay 1c behind best
+                ask = best_ask + max_dist
 
             # Check LIP on No side
             target_no_px = 100 - ask
@@ -327,8 +330,9 @@ class LIPMarketMaker:
             if no_ahead + self._size > lip_target:
                 ask = best_ask
 
-            # ANTI-SPOOFING: never sell too far below theo
-            ask = max(ask, fair + 1 - self._theo_tolerance)
+            # ANTI-SPOOFING: floor at theo - tolerance (only matters in active markets)
+            if not ask_is_desert:
+                ask = max(ask, fair + 1 - self._theo_tolerance)
 
             # Clamp
             bid = max(1, min(99, bid))
