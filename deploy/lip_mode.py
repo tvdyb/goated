@@ -155,9 +155,12 @@ class LIPMarketMaker:
         # Sticky-quote state machine for LIP drag-defense
         sticky_cfg = lip.get("sticky", {})
         self._sticky_enabled = bool(sticky_cfg.get("enabled", True))
+        # Cached separately so the per-strike applicability gate can read it
+        # without reaching into StickyQuoter's private config.
+        self._sticky_min_dist_from_theo = int(sticky_cfg.get("min_distance_from_theo", 15))
         self._sticky = StickyQuoter(StickyConfig(
             desert_jump_cents=int(sticky_cfg.get("desert_jump_cents", 5)),
-            min_distance_from_theo=int(sticky_cfg.get("min_distance_from_theo", 15)),
+            min_distance_from_theo=self._sticky_min_dist_from_theo,
             snapshots_at_1x_required=int(sticky_cfg.get("snapshots_at_1x_required", 15)),
             theo_stability_cents=float(sticky_cfg.get("theo_stability_cents", 2.0)),
             theo_range_cents=float(sticky_cfg.get("theo_range_cents", 3.0)),
@@ -907,9 +910,22 @@ class LIPMarketMaker:
         # Wraps the natural bid/ask above with hysteresis: races aggressively
         # when pennied, then locks position and only relaxes after sustained
         # 1.0x with theo stability. See engine/sticky_quote.py.
+        #
+        # Applicability gate: sticky's protection is only coherent when theo
+        # is far enough from both price boundaries that min_distance_from_theo
+        # leaves room for a meaningful floor/ceiling. On deep wings (theo near
+        # 0c or 100c), the natural logic was working fine on its own and
+        # there's no drag attack to defend against — sticky's pennying-detection
+        # fires inappropriately on benign theo updates and forces clamps that
+        # produce wrong quotes. Bypass on those strikes.
+        sticky_applies = (
+            self._sticky_enabled
+            and fair >= self._sticky_min_dist_from_theo
+            and fair <= 100 - self._sticky_min_dist_from_theo
+        )
         ask_skip = False
         bid_skip = False
-        if self._sticky_enabled:
+        if sticky_applies:
             # Snapshot sticky state pre-compute via public API, for transition detection
             pre_ask = self._sticky.snapshot(ticker, "ask")
             pre_bid = self._sticky.snapshot(ticker, "bid")

@@ -151,12 +151,89 @@ async def test_sticky_cooldown_cancel_path_runs_cleanly() -> None:
         st.cooldown_until = future
         st.current_price = 50
 
-    targets = {strike: 7}
+    # theo=50 → in the active sticky range [15, 85], so the gate runs sticky
+    # and the COOLDOWN cancel paths fire. (At deep-wing theo values like 7,
+    # sticky is bypassed entirely — see test_sticky_bypassed_on_deep_otm_strike.)
+    targets = {strike: 50}
     # Should complete and log COOLDOWN cancellations without raising
     await mm._process_single_strike(strike, targets)
 
     # Both cancels should have been attempted
     assert mm._kalshi_client.cancel_order.await_count == 2
+
+
+async def test_sticky_bypassed_on_deep_otm_strike() -> None:
+    """Strikes with theo outside [min_dist, 100-min_dist] should bypass sticky.
+
+    Confirms deep-wing strikes use the natural logic, not the sticky machine.
+    Sticky's protection (min_distance_from_theo floor/ceiling) is only coherent
+    when theo is far from both price boundaries; on deep wings the natural
+    logic was working fine and sticky's pennying-detection inappropriately
+    fires on benign theo updates.
+    """
+    mm = _make_lip_mm_with_sticky(sticky_enabled=True)
+    strike = 1186.99
+    ticker = "KXSOYBEANMON-26MAY-T1186.99"
+    _setup_strike(mm, strike, ticker)
+
+    # theo=11 is below min_distance_from_theo=15 → sticky should be bypassed
+    targets = {strike: 11}
+    await mm._process_single_strike(strike, targets)
+
+    # Sticky state must remain at NORMAL — compute() was never called for this
+    # cycle on this ticker. aggressive_entered_at must be untouched.
+    snap_bid = mm._sticky.snapshot(ticker, "bid")
+    snap_ask = mm._sticky.snapshot(ticker, "ask")
+    assert snap_bid["state"] == "NORMAL"
+    assert snap_bid["aggressive_entered_at"] is None
+    assert snap_ask["state"] == "NORMAL"
+    assert snap_ask["aggressive_entered_at"] is None
+
+
+async def test_sticky_bypassed_on_deep_itm_strike() -> None:
+    """Symmetric: deep-ITM strikes (theo near 100) also bypass sticky.
+
+    With min_distance_from_theo=15, theo > 85 means theo_floor would clamp
+    to 99 — the same kind of degenerate behavior as the deep-OTM case.
+    """
+    mm = _make_lip_mm_with_sticky(sticky_enabled=True)
+    strike = 1136.99
+    ticker = "KXSOYBEANMON-26MAY-T1136.99"
+    _setup_strike(mm, strike, ticker)
+
+    targets = {strike: 95}  # deep ITM, above 100 - 15 = 85
+    await mm._process_single_strike(strike, targets)
+
+    snap_bid = mm._sticky.snapshot(ticker, "bid")
+    snap_ask = mm._sticky.snapshot(ticker, "ask")
+    assert snap_bid["state"] == "NORMAL"
+    assert snap_ask["state"] == "NORMAL"
+
+
+async def test_sticky_runs_on_mid_strike() -> None:
+    """Sanity: when theo is in [min_dist, 100-min_dist], sticky DOES run.
+
+    Counterpoint to the bypass tests — confirms the gate isn't accidentally
+    too aggressive (i.e., that mid-range strikes still get the protection).
+    """
+    mm = _make_lip_mm_with_sticky(sticky_enabled=True)
+    strike = 1156.99
+    ticker = "KXSOYBEANMON-26MAY-T1156.99"
+    _setup_strike(mm, strike, ticker)
+
+    # theo=50 is in [15, 85] → sticky applies
+    targets = {strike: 50}
+    await mm._process_single_strike(strike, targets)
+
+    # First call initializes state but stays NORMAL. The fact that the
+    # snapshot comes back at all (and reflects compute() having run) is
+    # the sanity signal — initial current_price gets set to natural_target.
+    snap_bid = mm._sticky.snapshot(ticker, "bid")
+    snap_ask = mm._sticky.snapshot(ticker, "ask")
+    assert snap_bid["state"] == "NORMAL"
+    assert snap_ask["state"] == "NORMAL"
+    # current_price should be set (proves compute() ran and initialized state)
+    assert snap_bid["current_price"] > 0 or snap_ask["current_price"] > 0
 
 
 def test_static_lipmode_has_no_unboundlocal_in_process_single_strike() -> None:
