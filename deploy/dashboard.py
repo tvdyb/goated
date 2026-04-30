@@ -36,19 +36,56 @@ LIP_POOL_PER_MARKET = 15.0  # $/day
 LIP_TARGET = 300
 LIP_DISCOUNT = 0.5
 
-# Theo parameters — keep in sync with config_lip.yaml
-_THEO_FORWARD = 11.8225  # ZSK26 May soybeans
+# Theo parameters
 _THEO_VOL = 0.1629
+_YF_TICKER = "ZSK26.CBT"
+_SETTLE_TIME = "2026-04-30T17:00:00-04:00"
 
 _MARKOUT_FILE = "state/markout.json"
+
+# yfinance cache
+_yf_price: float = 0.0
+_yf_last_pull: float = 0.0
+
+
+def _get_yf_forward() -> float:
+    """Get ZSK26 price from yfinance, cached 60s."""
+    global _yf_price, _yf_last_pull
+    now = time.time()
+    if _yf_price > 0 and (now - _yf_last_pull) < 60:
+        return _yf_price
+    try:
+        import yfinance as yf
+        tk = yf.Ticker(_YF_TICKER)
+        hist = tk.history(period="1d")
+        if not hist.empty:
+            _yf_price = float(hist["Close"].iloc[-1])
+            _yf_last_pull = now
+    except Exception:
+        pass
+    return _yf_price
+
+
+def _get_days_to_settle() -> float:
+    """Compute days to settlement."""
+    try:
+        settle = datetime.fromisoformat(_SETTLE_TIME)
+        now = datetime.now(settle.tzinfo)
+        return max(0.1, (settle - now).total_seconds() / 86400)
+    except Exception:
+        return 1.0
 
 
 def _compute_theo(strike_cents: float, days_to_settle: float) -> int:
     """Compute theo in cents for a strike."""
+    fwd_cents = _get_yf_forward()
+    if fwd_cents <= 0:
+        return 0
+    forward = fwd_cents / 100.0
     k = strike_cents / 100.0
-    tau = max(0.25, days_to_settle) / 365.0
+    tau = max(0.1, days_to_settle) / 365.0
     sig_sqrt_t = max(_THEO_VOL * math.sqrt(tau), 1e-12)
-    d2 = (math.log(_THEO_FORWARD / k) - 0.5 * _THEO_VOL ** 2 * tau) / sig_sqrt_t
+    d2 = (math.log(forward / k) - 0.5 * _THEO_VOL ** 2 * tau) / sig_sqrt_t
     return int(round(float(_ndtr(d2)) * 100))
 
 _state: dict = {
@@ -259,16 +296,8 @@ async def _refresh() -> dict:
                         ticker, strike, yes_depth, no_depth,
                         orders_by_ticker.get(ticker, []),
                     )
-                    # Compute theo
-                    exp_time = m.get("expiration_time", "")
-                    days_left = 1.0
-                    if exp_time:
-                        try:
-                            exp_dt = datetime.fromisoformat(exp_time.replace("Z", "+00:00"))
-                            days_left = max(0.25, (exp_dt - datetime.now(exp_dt.tzinfo)).total_seconds() / 86400)
-                        except (ValueError, TypeError):
-                            pass
-                    analysis["theo"] = _compute_theo(strike, days_left)
+                    # Compute theo using settlement override + yfinance forward
+                    analysis["theo"] = _compute_theo(strike, _get_days_to_settle())
                     lip_analysis.append(analysis)
                 except Exception:
                     pass
@@ -330,6 +359,12 @@ def index() -> str:
     avg_headroom = (
         sum(min(a["bid_headroom"], a["ask_headroom"]) for a in lip) / len(lip)
     ) if lip else 0
+
+    # Forward and settlement info
+    yf_fwd = _get_yf_forward()
+    yf_fwd_str = f"{yf_fwd:.1f}c (${yf_fwd/100:.4f})" if yf_fwd > 0 else "N/A"
+    days_to_settle = _get_days_to_settle()
+    hours_to_settle = days_to_settle * 24
 
     error_html = ""
     if s["error"]:
@@ -454,6 +489,14 @@ def index() -> str:
     {error_html}
 
     <div class="stats">
+        <div class="stat">
+            <div class="stat-label">ZSK26 (May Soy)</div>
+            <div class="stat-value" style="color:#60a5fa">{yf_fwd_str}</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Settlement In</div>
+            <div class="stat-value {'red' if hours_to_settle < 2 else 'yellow' if hours_to_settle < 6 else ''}">{hours_to_settle:.1f}h</div>
+        </div>
         <div class="stat">
             <div class="stat-label">Est. LIP $/hr</div>
             <div class="stat-value green">${total_est_hourly:.2f}</div>
