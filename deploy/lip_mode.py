@@ -375,9 +375,8 @@ class LIPMarketMaker:
             if yes_ahead + self._size > lip_target:
                 bid = best_bid
 
-            # ANTI-SPOOFING: cap at theo + tolerance (only matters in active markets)
-            if not bid_is_desert:
-                bid = min(bid, fair - 1 + self._theo_tolerance)
+            # ANTI-SPOOFING: ALWAYS cap at theo + tolerance (even in desert)
+            bid = min(bid, fair - 1 + self._theo_tolerance)
 
             # --- ASK ---
             if best_ask >= 100:
