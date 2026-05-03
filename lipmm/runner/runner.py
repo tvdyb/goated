@@ -40,6 +40,7 @@ from lipmm.quoting import (
     QuotingDecision,
     QuotingStrategy,
 )
+from lipmm.risk import RiskContext, RiskRegistry
 from lipmm.theo import TheoRegistry, TheoResult
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,7 @@ class LIPRunner:
         exchange: ExchangeClient,
         ticker_source: TickerSource,
         decision_recorder: DecisionRecorder | None = None,
+        risk_registry: RiskRegistry | None = None,
     ) -> None:
         self._cfg = config
         self._theo = theo_registry
@@ -113,6 +115,7 @@ class LIPRunner:
         self._exchange = exchange
         self._ticker_source = ticker_source
         self._recorder = decision_recorder
+        self._risk = risk_registry
 
         self._running = False
         self._cycle_id = 0
@@ -224,6 +227,29 @@ class LIPRunner:
             time_to_settle_s=time_to_settle_s,
         )
 
+        # 3b. Optional risk evaluation: gates can veto bid/ask sides,
+        # turning them into skip=True. Audit trail goes into the decision log.
+        risk_audit: list[dict] = []
+        if self._risk is not None:
+            # Compute aggregate views for context
+            resting = self._om.all_resting()
+            agg_count = len(resting)
+            agg_notional = sum(
+                ro.price_cents * ro.size / 100.0 for ro in resting.values()
+            )
+            risk_ctx = RiskContext(
+                ticker=ticker,
+                cycle_id=self._cycle_id,
+                decision=decision,
+                theo=theo,
+                our_state=our_state,
+                time_to_settle_s=time_to_settle_s,
+                now_ts=now_ts,
+                all_resting_count=agg_count,
+                all_resting_notional=agg_notional,
+            )
+            decision, risk_audit = await self._risk.evaluate(risk_ctx)
+
         # 4. Apply via OrderManager
         bid_outcome = await self._om.apply(
             ticker, "bid", decision.bid, self._exchange,
@@ -245,6 +271,7 @@ class LIPRunner:
                 bid_outcome=bid_outcome,
                 ask_outcome=ask_outcome,
                 market_meta=self._cfg.market_meta,
+                risk_audit=risk_audit,
             )
             try:
                 result = self._recorder(record)

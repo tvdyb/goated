@@ -23,9 +23,10 @@ Top-level keys (always present):
     theo               — dict, projected from TheoResult
     orderbook          — dict, snapshot of best/depth (depth trimmed)
     our_state          — dict, our currently-resting bid/ask state
-    decision           — dict, the strategy's QuotingDecision
+    decision           — dict, the strategy's QuotingDecision (post-risk-veto)
     transitions        — list, state transitions emitted this cycle
     outcome            — dict, what OrderManager actually did
+    risk               — list, audit trail of risk-gate verdicts (may be [])
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ def build_record(
     bid_outcome: SideExecution,
     ask_outcome: SideExecution,
     market_meta: dict[str, Any] | None = None,
+    risk_audit: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical lipmm decision-record dict.
 
@@ -112,6 +114,7 @@ def build_record(
             "ask_order_id": ask_outcome.order_id,
             "ask_latency_ms": ask_outcome.latency_ms,
         },
+        "risk": list(risk_audit) if risk_audit else [],
     }
 
 

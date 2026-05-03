@@ -33,6 +33,7 @@ from lipmm.execution import (
     PlaceOrderRequest,
     Position,
 )
+from lipmm.execution.adapters import KalshiExchangeAdapter
 from lipmm.observability import (
     DecisionLogger,
     SCHEMA_VERSION,
@@ -44,6 +45,15 @@ from lipmm.quoting import (
     QuotingDecision,
     QuotingStrategy,
     SideDecision,
+)
+from lipmm.risk import (
+    EndgameGuardrailGate,
+    MaxNotionalPerSideGate,
+    MaxOrdersPerCycleGate,
+    RiskContext,
+    RiskGate,
+    RiskRegistry,
+    RiskVerdict,
 )
 from lipmm.quoting.strategies import (
     DefaultLIPQuoting,
@@ -88,4 +98,14 @@ __all__ = [
     "DecisionLogger",
     "SCHEMA_VERSION",
     "build_record",
+    # risk
+    "RiskContext",
+    "RiskGate",
+    "RiskRegistry",
+    "RiskVerdict",
+    "EndgameGuardrailGate",
+    "MaxNotionalPerSideGate",
+    "MaxOrdersPerCycleGate",
+    # exchange adapters
+    "KalshiExchangeAdapter",
 ]

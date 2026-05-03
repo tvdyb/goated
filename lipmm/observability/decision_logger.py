@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Schema namespace. Bump when schema fields are added/removed/renamed.
 # Namespacing with "lipmm-" lets analyst tools distinguish records emitted
 # by the lipmm framework from any legacy soy-bot logs.
-SCHEMA_VERSION = "lipmm-1.0"
+SCHEMA_VERSION = "lipmm-1.1"  # bumped to 1.1 when "risk" top-level key was added
 
 # Rotate to a new file when the current daily file exceeds this many bytes.
 # At ~1.5KB per record × 20 records/sec, hits 500MB after ~4.6 hours.

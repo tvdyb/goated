@@ -109,7 +109,7 @@ def test_build_record_has_all_required_top_level_keys() -> None:
     required = {
         "cycle_id", "ts", "ticker", "market_meta",
         "theo", "orderbook", "our_state",
-        "decision", "transitions", "outcome",
+        "decision", "transitions", "outcome", "risk",
     }
     assert set(rec.keys()) == required, (
         f"top-level schema drift: missing={required - set(rec.keys())}, "
@@ -245,7 +245,7 @@ def test_record_round_trips_through_decision_logger(tmp_path) -> None:
     parsed = json.loads(lines[0])
     # Schema version stamped by logger
     assert parsed["schema_version"] == SCHEMA_VERSION
-    assert parsed["schema_version"] == "lipmm-1.0"
+    assert parsed["schema_version"] == "lipmm-1.1"
     # User content preserved
     assert parsed["ticker"] == "KX-T50.00"
     assert parsed["theo"]["yes_cents"] == 42
