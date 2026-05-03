@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from engine.sticky_quote import StickyConfig, StickyQuoter
+from lipmm.quoting.strategies._sticky_machine import StickyConfig, StickyQuoter
 
 
 def _cfg(**overrides):
