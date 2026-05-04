@@ -7,6 +7,8 @@
       <h1 class="text-lg font-semibold">lipmm control</h1>
       <span id="connection-pill" class="pill bg-slate-700 text-slate-300">connecting…</span>
       {% include "partials/presence.html" %}
+      {% include "partials/pnl_pill.html" %}
+      {% include "partials/balance_strip.html" %}
     </div>
     <div class="flex items-center gap-2">
       {% include "partials/kill_panel.html" %}
@@ -17,6 +19,8 @@
 
 <main id="ws-mount" hx-ext="ws" class="grid gap-4 p-6 lg:grid-cols-2 xl:grid-cols-3">
   {% include "partials/state_panel.html" %}
+  {% include "partials/positions_panel.html" %}
+  {% include "partials/resting_orders_panel.html" %}
   {% include "partials/knob_panel.html" %}
   {% include "partials/lock_panel.html" %}
   {% include "partials/manual_order_panel.html" %}

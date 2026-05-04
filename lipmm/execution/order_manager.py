@@ -96,6 +96,24 @@ class OrderManager:
             k: v for k, v in self._resting.items() if v is not None
         }
 
+    def find_by_order_id(
+        self, order_id: str,
+    ) -> tuple[str, SideName, RestingOrder] | None:
+        """Locate a resting order by its exchange-side `order_id`. Used by
+        the surgical cancel endpoint so the operator can target a single
+        order without supplying (ticker, side) explicitly."""
+        for (ticker, side), ro in self._resting.items():
+            if ro is not None and ro.order_id == order_id:
+                return (ticker, side, ro)
+        return None
+
+    def forget(self, ticker: str, side: SideName) -> RestingOrder | None:
+        """Drop the (ticker, side) entry from internal state without
+        touching the exchange. Used after a successful out-of-band cancel
+        (e.g., the dashboard's surgical cancel-by-order-id path) so the
+        next `apply()` cycle doesn't think the order is still resting."""
+        return self._resting.pop((ticker, side), None)
+
     async def reconcile(self, exchange: ExchangeClient) -> None:
         """Populate internal state from the exchange's truth.
 

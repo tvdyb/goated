@@ -59,6 +59,7 @@ def render_initial(
     presence: list[str],
     total_tabs: int,
     records: list[dict[str, Any]] | None = None,
+    runtime: dict[str, Any] | None = None,
 ) -> str:
     """Render every panel as a single HTML blob — used both by GET
     /dashboard's first-paint and by the WS `initial` event."""
@@ -73,6 +74,10 @@ def render_initial(
         _env.get_template("partials/presence.html").render(
             presence=presence, total_tabs=total_tabs,
         ),
+        _env.get_template("partials/positions_panel.html").render(runtime=runtime),
+        _env.get_template("partials/resting_orders_panel.html").render(runtime=runtime),
+        _env.get_template("partials/balance_strip.html").render(runtime=runtime),
+        _env.get_template("partials/pnl_pill.html").render(runtime=runtime),
     ]
     return "\n".join(parts)
 
@@ -85,6 +90,17 @@ def render_state(snapshot: dict[str, Any]) -> str:
         _env.get_template("partials/kill_panel.html").render(snapshot=snapshot),
         _env.get_template("partials/knob_panel.html").render(snapshot=snapshot),
         _env.get_template("partials/lock_panel.html").render(snapshot=snapshot),
+    ])
+
+
+def render_runtime(runtime: dict[str, Any] | None) -> str:
+    """Re-render the four runtime-derived blocks (positions, resting
+    orders, balance, PnL pill) on every `runtime_snapshot` event."""
+    return "\n".join([
+        _env.get_template("partials/positions_panel.html").render(runtime=runtime),
+        _env.get_template("partials/resting_orders_panel.html").render(runtime=runtime),
+        _env.get_template("partials/balance_strip.html").render(runtime=runtime),
+        _env.get_template("partials/pnl_pill.html").render(runtime=runtime),
     ])
 
 
@@ -160,6 +176,8 @@ class HtmlWebSocketAdapter:
         if et == "decision":
             self._records.append(self._normalize(event.get("record", {})))
             return render_decision_feed(list(self._records))
+        if et == "runtime_snapshot":
+            return render_runtime(event.get("snapshot"))
         if et == "heartbeat":
             # Keep the feed silent on heartbeats; presence stays in sync.
             return ""

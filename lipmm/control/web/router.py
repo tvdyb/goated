@@ -72,11 +72,19 @@ def mount_dashboard(
         # sends the `initial` event with full data (and the up-to-date
         # presence). Server-rendering the snapshot avoids a flash of
         # empty panels for the initial 100ms before the WS opens.
+        runtime = None
+        collect = getattr(app.state, "collect_runtime", None)
+        if collect is not None:
+            try:
+                runtime = await collect()
+            except Exception as exc:
+                logger.info("first-paint runtime collect failed: %s", exc)
         ctx = {
             "snapshot": snap,
             "presence": broadcaster.presence(),
             "total_tabs": broadcaster.tab_count or 1,
             "records": [],
+            "runtime": runtime,
         }
         return _templates.TemplateResponse(request, "dashboard.html", ctx)
 
@@ -102,11 +110,19 @@ def mount_dashboard(
         adapter = HtmlWebSocketAdapter(websocket)
         tab_id = await broadcaster.register(adapter)
         try:
+            collect = getattr(websocket.app.state, "collect_runtime", None)
+            runtime = None
+            if collect is not None:
+                try:
+                    runtime = await collect()
+                except Exception as exc:
+                    logger.info("ws initial runtime collect failed: %s", exc)
             initial_html = render_initial(
                 state.snapshot(),
                 presence=broadcaster.presence(),
                 total_tabs=broadcaster.tab_count,
                 records=[],
+                runtime=runtime,
             )
             await websocket.send_text(initial_html)
             await broadcaster.notify_join(tab_id)

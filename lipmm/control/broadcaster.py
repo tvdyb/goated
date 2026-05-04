@@ -144,6 +144,16 @@ class Broadcaster:
             "ts": time.time(),
         })
 
+    async def broadcast_runtime(self, snapshot: dict[str, Any]) -> None:
+        """Push a runtime snapshot (positions + resting orders + balance)
+        as a `runtime_snapshot` event. Pre-shaped for the htmx renderer
+        to OOB-swap the positions / resting-orders / balance panels."""
+        await self._broadcast_event({
+            "event_type": "runtime_snapshot",
+            "snapshot": snapshot,
+            "ts": time.time(),
+        })
+
     async def broadcast_decision(self, record: dict[str, Any]) -> None:
         """Wrap a decision-log record in an event envelope and push to
         all subscribers. The record itself is the same shape the

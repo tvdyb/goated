@@ -133,6 +133,7 @@
         try { payload = JSON.parse(btn.dataset.payload); }
         catch (err) { return showToast("bad payload: " + err.message); }
       }
+      if (btn.dataset.confirm && !confirm(btn.dataset.confirm)) return;
       await callJson(url, payload);
     });
   }

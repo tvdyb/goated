@@ -209,6 +209,66 @@ class LocksResponse(BaseModel):
     locks: list[LockEntry]
 
 
+# ── Runtime snapshot (positions / resting orders / balance) ────────
+
+
+class PositionEntry(BaseModel):
+    """One row in the GET /control/runtime positions list."""
+    ticker: str
+    quantity: int
+    avg_cost_cents: int
+    realized_pnl_dollars: float
+    fees_paid_dollars: float
+
+
+class RestingOrderEntry(BaseModel):
+    """One row in the resting-orders list."""
+    ticker: str
+    side: Literal["bid", "ask"]
+    order_id: str
+    price_cents: int
+    size: int
+
+
+class BalanceEntry(BaseModel):
+    cash_dollars: float
+    portfolio_value_dollars: float
+
+
+class RuntimeSnapshotResponse(BaseModel):
+    """GET /control/runtime — current positions + resting orders + balance.
+
+    Tolerant of partial failure: if one of the three async calls raised,
+    the corresponding field is an empty list/None and `errors` enumerates
+    what failed. Operator can still see what we have.
+    """
+    positions: list[PositionEntry] = Field(default_factory=list)
+    resting_orders: list[RestingOrderEntry] = Field(default_factory=list)
+    balance: BalanceEntry | None = None
+    total_realized_pnl_dollars: float = 0.0
+    total_fees_paid_dollars: float = 0.0
+    errors: list[str] = Field(default_factory=list)
+    ts: float
+
+
+class CancelOrderRequest(BaseModel):
+    """POST /control/cancel_order body — surgical cancel by exchange order_id."""
+    order_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(default="", max_length=512)
+    request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
+
+
+class CancelOrderResponse(BaseModel):
+    cancelled: bool
+    order_id: str
+    ticker: str | None = None
+    side: str | None = None
+    new_version: int
+    request_id: str
+    actor: str
+
+
 # ── State snapshot response ─────────────────────────────────────────
 
 

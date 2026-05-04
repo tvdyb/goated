@@ -55,6 +55,8 @@ from lipmm.control.commands import (
     ArmRequest,
     AuthRequest,
     AuthResponse,
+    CancelOrderRequest,
+    CancelOrderResponse,
     CommandResponse,
     HealthResponse,
     KillRequest,
@@ -67,6 +69,7 @@ from lipmm.control.commands import (
     ManualOrderResponse,
     PauseRequest,
     ResumeRequest,
+    RuntimeSnapshotResponse,
     StateResponse,
     SwapStrategyRequest,
     UnlockSideRequest,
@@ -596,6 +599,184 @@ def build_app(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
 
+    # ── Phase 6: runtime snapshot + surgical cancel ────────────────
+
+    async def _collect_runtime() -> dict[str, Any]:
+        """Snapshot positions + resting orders + balance for the dashboard.
+
+        Resting orders come from the OrderManager's in-memory state (free,
+        sync). Positions and balance are async REST calls; we run them in
+        parallel and tolerate partial failure — the operator sees what we
+        got, plus an `errors` array for the failed calls.
+        """
+        om = app.state.order_manager
+        ex = app.state.exchange
+        errors: list[str] = []
+        resting_entries: list[dict[str, Any]] = []
+        position_entries: list[dict[str, Any]] = []
+        balance_entry: dict[str, Any] | None = None
+        total_realized = 0.0
+        total_fees = 0.0
+
+        if om is not None:
+            try:
+                for (ticker, side), ro in sorted(
+                    om.all_resting().items(), key=lambda kv: kv[0],
+                ):
+                    resting_entries.append({
+                        "ticker": ticker, "side": side,
+                        "order_id": ro.order_id,
+                        "price_cents": ro.price_cents,
+                        "size": ro.size,
+                    })
+            except Exception as exc:
+                errors.append(f"order_manager.all_resting: {exc}")
+
+        if ex is not None:
+            positions_task = asyncio.create_task(ex.list_positions())
+            balance_task = asyncio.create_task(ex.get_balance())
+            results = await asyncio.gather(
+                positions_task, balance_task, return_exceptions=True,
+            )
+            positions_result, balance_result = results
+            if isinstance(positions_result, Exception):
+                errors.append(f"exchange.list_positions: {positions_result}")
+            else:
+                for p in positions_result:
+                    position_entries.append({
+                        "ticker": p.ticker,
+                        "quantity": p.quantity,
+                        "avg_cost_cents": p.avg_cost_cents,
+                        "realized_pnl_dollars": p.realized_pnl_dollars,
+                        "fees_paid_dollars": p.fees_paid_dollars,
+                    })
+                    total_realized += p.realized_pnl_dollars
+                    total_fees += p.fees_paid_dollars
+            if isinstance(balance_result, Exception):
+                errors.append(f"exchange.get_balance: {balance_result}")
+            else:
+                balance_entry = {
+                    "cash_dollars": balance_result.cash_dollars,
+                    "portfolio_value_dollars": balance_result.portfolio_value_dollars,
+                }
+
+        return {
+            "positions": position_entries,
+            "resting_orders": resting_entries,
+            "balance": balance_entry,
+            "total_realized_pnl_dollars": total_realized,
+            "total_fees_paid_dollars": total_fees,
+            "errors": errors,
+            "ts": time.time(),
+        }
+
+    app.state.collect_runtime = _collect_runtime
+
+    @app.get("/control/runtime", response_model=RuntimeSnapshotResponse)
+    async def get_runtime(
+        actor: str = Depends(require_auth),
+    ) -> RuntimeSnapshotResponse:
+        if app.state.exchange is None and app.state.order_manager is None:
+            raise HTTPException(
+                503, "runtime requires an OrderManager and/or ExchangeClient "
+                "wired into ControlServer",
+            )
+        snap = await _collect_runtime()
+        return RuntimeSnapshotResponse(**snap)
+
+    @app.post("/control/cancel_order", response_model=CancelOrderResponse)
+    async def post_cancel_order(
+        req: CancelOrderRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CancelOrderResponse:
+        _check_if_version(req.if_version)
+        om = request.app.state.order_manager
+        ex = request.app.state.exchange
+        if om is None or ex is None:
+            err = "cancel_order requires an OrderManager + ExchangeClient wired into ControlServer"
+            emit_audit(
+                request.app.state.decision_logger,
+                request_id=req.request_id, actor=actor,
+                command_type="cancel_order", command_payload=req.model_dump(),
+                state_version_before=state.version,
+                state_version_after=state.version,
+                succeeded=False, error=err,
+            )
+            raise HTTPException(503, err)
+
+        version_before = state.version
+        located = om.find_by_order_id(req.order_id)
+        if located is None:
+            err = f"order_id={req.order_id!r} not in OrderManager state"
+            emit_audit(
+                request.app.state.decision_logger,
+                request_id=req.request_id, actor=actor,
+                command_type="cancel_order", command_payload=req.model_dump(),
+                state_version_before=version_before,
+                state_version_after=state.version,
+                succeeded=False, error=err,
+            )
+            raise HTTPException(404, err)
+        ticker, side, _ = located
+
+        # Per-(ticker, side) lock so this can't race a concurrent apply()
+        # from the runner cycle on the same key.
+        lock = om._lock_for((ticker, side))  # noqa: SLF001 — intra-package use
+        async with lock:
+            try:
+                cancelled = await ex.cancel_order(req.order_id)
+            except Exception as exc:
+                emit_audit(
+                    request.app.state.decision_logger,
+                    request_id=req.request_id, actor=actor,
+                    command_type="cancel_order",
+                    command_payload=req.model_dump(),
+                    state_version_before=version_before,
+                    state_version_after=state.version,
+                    succeeded=False, error=f"exchange.cancel_order raised: {exc!r}",
+                )
+                raise HTTPException(500, f"exchange.cancel_order error: {exc!r}") from exc
+            # Drop from OrderManager state regardless of cancelled bool —
+            # if the exchange says "already gone" (False) the bot's view
+            # was stale anyway.
+            om.forget(ticker, side)
+
+        # Bump state version so dashboards re-render and so the version
+        # advances visibly in the audit log.
+        async with state._lock:  # noqa: SLF001 — intra-package
+            new_version = state._bump_version()  # noqa: SLF001
+
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="cancel_order", command_payload=req.model_dump(),
+            state_version_before=version_before, state_version_after=new_version,
+            succeeded=True,
+            side_effect_summary={
+                "exchange_confirmed": cancelled,
+                "ticker": ticker,
+                "side": side,
+                "order_id": req.order_id,
+            },
+        )
+        await _broadcast_change("cancel_order", request_id=req.request_id, actor=actor)
+        # Push an immediate runtime snapshot so the cancelled row drops
+        # from open dashboards within the broadcast loop, not the next 5s tick.
+        if broadcaster is not None:
+            try:
+                snap = await _collect_runtime()
+                await broadcaster.broadcast_runtime(snap)
+            except Exception as exc:
+                logger.warning("post-cancel runtime broadcast failed: %s", exc)
+        return CancelOrderResponse(
+            cancelled=cancelled,
+            order_id=req.order_id,
+            ticker=ticker, side=side,
+            new_version=new_version,
+            request_id=req.request_id, actor=actor,
+        )
+
     @app.get("/control/locks", response_model=LocksResponse)
     async def get_locks(actor: str = Depends(require_auth)) -> LocksResponse:
         locks = state.all_side_locks()
@@ -755,6 +936,7 @@ class ControlServer:
         risk_registry: RiskRegistry | None = None,
         broadcaster: Broadcaster | None = None,
         mount_dashboard: bool = False,
+        runtime_refresh_s: float | None = 5.0,
     ) -> None:
         self._state = state
         # Auto-create a broadcaster if none provided — the server's WS
@@ -773,6 +955,13 @@ class ControlServer:
         )
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
+        # Periodic runtime broadcast: pulls positions + resting + balance
+        # every `runtime_refresh_s` seconds and pushes via the broadcaster.
+        # Set to None to disable (used by tests that don't wire an
+        # ExchangeClient).
+        self._runtime_refresh_s = runtime_refresh_s
+        self._runtime_task: asyncio.Task | None = None
+        self._runtime_stop: asyncio.Event | None = None
 
     @property
     def broadcaster(self) -> Broadcaster:
@@ -807,11 +996,55 @@ class ControlServer:
             if self._server.started:
                 # Start the broadcaster's heartbeat once the server is up.
                 await self._broadcaster.start_heartbeat()
+                # Spawn the periodic runtime-snapshot loop if enabled.
+                if self._runtime_refresh_s is not None:
+                    self._runtime_stop = asyncio.Event()
+                    self._runtime_task = asyncio.create_task(self._runtime_loop())
                 return
             await asyncio.sleep(0.01)
 
+    async def _runtime_loop(self) -> None:
+        """Periodically pull a runtime snapshot and broadcast it.
+
+        Runs in the same loop as the FastAPI app. Tolerates partial /
+        total failure: `_collect_runtime` already swallows individual
+        errors and returns what it can; the broadcaster fan-out drops
+        slow clients without affecting the rest.
+        """
+        assert self._runtime_stop is not None
+        assert self._runtime_refresh_s is not None
+        collect = getattr(self._app.state, "collect_runtime", None)
+        if collect is None:
+            return
+        try:
+            while not self._runtime_stop.is_set():
+                try:
+                    snap = await collect()
+                    await self._broadcaster.broadcast_runtime(snap)
+                except Exception as exc:
+                    logger.warning("runtime sweep failed: %s", exc)
+                try:
+                    await asyncio.wait_for(
+                        self._runtime_stop.wait(),
+                        timeout=self._runtime_refresh_s,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            raise
+
     async def stop(self) -> None:
-        # Stop heartbeat first so it doesn't try to push during shutdown
+        # Stop the runtime loop first so it doesn't push during shutdown.
+        if self._runtime_task is not None:
+            if self._runtime_stop is not None:
+                self._runtime_stop.set()
+            try:
+                await asyncio.wait_for(self._runtime_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self._runtime_task.cancel()
+            self._runtime_task = None
+            self._runtime_stop = None
+        # Stop heartbeat next so it doesn't try to push during shutdown.
         await self._broadcaster.stop_heartbeat()
         await self._broadcaster.close_all()
         if self._server is not None:

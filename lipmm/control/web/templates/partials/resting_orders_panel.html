@@ -1,0 +1,42 @@
+<section id="resting-orders-panel" class="panel" hx-swap-oob="true">
+  <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Resting orders</h2>
+  {% if not runtime %}
+    <p class="text-xs text-slate-500">order_manager not connected</p>
+  {% elif not runtime.resting_orders %}
+    <p class="text-xs text-slate-500">no resting orders</p>
+  {% else %}
+    <table class="w-full text-sm">
+      <thead class="text-xs uppercase tracking-wide text-slate-500">
+        <tr>
+          <th class="text-left py-1">Ticker</th>
+          <th class="text-left py-1">Side</th>
+          <th class="text-right py-1">Price</th>
+          <th class="text-right py-1">Size</th>
+          <th class="text-right py-1"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in runtime.resting_orders %}
+          <tr class="border-t border-slate-800 font-mono text-slate-200">
+            <td class="py-1">{{ o.ticker }}</td>
+            <td class="py-1">
+              {% if o.side == "bid" %}
+                <span class="pill bg-sky-700/40 text-sky-200">BID</span>
+              {% else %}
+                <span class="pill bg-amber-700/40 text-amber-200">ASK</span>
+              {% endif %}
+            </td>
+            <td class="py-1 text-right">{{ o.price_cents }}c</td>
+            <td class="py-1 text-right">{{ o.size }}</td>
+            <td class="py-1 text-right">
+              <button class="btn btn-muted"
+                      data-call="/control/cancel_order"
+                      data-confirm="Cancel order {{ o.order_id }} ({{ o.ticker }} {{ o.side }} {{ o.size }}@{{ o.price_cents }}c)?"
+                      data-payload='{"order_id":"{{ o.order_id }}"}'>cancel</button>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>
