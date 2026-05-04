@@ -22,6 +22,7 @@ Out of scope for v1 (planned for later phases):
   - Disk-cap retention manager (Phase 5)
 """
 
+from lipmm.control.broadcaster import Broadcaster
 from lipmm.control.manual_orders import (
     ManualOrderOutcome,
     submit_manual_order,
@@ -36,6 +37,7 @@ from lipmm.control.state import (
 from lipmm.control.server import ControlServer, build_app
 
 __all__ = [
+    "Broadcaster",
     "ControlConfig",
     "ControlServer",
     "ControlState",

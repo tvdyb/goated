@@ -45,6 +45,12 @@ class PauseRequest(BaseModel):
     side: Literal["bid", "ask"] | None = None
     request_id: str = Field(min_length=8, max_length=128,
                             description="Idempotency key for audit")
+    if_version: int | None = Field(
+        default=None, ge=0,
+        description="Optimistic concurrency: if set, command is rejected "
+                    "with 409 if the server's state version != if_version. "
+                    "None = no check (last-write-wins, default).",
+    )
 
     @model_validator(mode="after")
     def _scope_requires_extras(self) -> "PauseRequest":
@@ -61,6 +67,7 @@ class ResumeRequest(BaseModel):
     ticker: str | None = Field(default=None, min_length=1, max_length=128)
     side: Literal["bid", "ask"] | None = None
     request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _scope_requires_extras(self) -> "ResumeRequest":
@@ -79,11 +86,13 @@ class KillRequest(BaseModel):
     request_id: str = Field(min_length=8, max_length=128)
     reason: str = Field(default="", max_length=512,
                         description="Operator-provided reason for audit")
+    if_version: int | None = Field(default=None, ge=0)
 
 
 class ArmRequest(BaseModel):
     """POST /control/arm body."""
     request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
 
 
 # ── Knob updates ────────────────────────────────────────────────────
@@ -96,11 +105,13 @@ class KnobUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     value: float
     request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
 
 
 class KnobClearRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
 
 
 # ── Strategy swap (placeholder for now) ─────────────────────────────
@@ -139,6 +150,7 @@ class ManualOrderRequest(BaseModel):
     reason: str = Field(default="", max_length=512,
                         description="Operator-provided reason for audit")
     request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
 
 
 class ManualOrderResponse(BaseModel):
@@ -171,6 +183,7 @@ class LockSideRequest(BaseModel):
         description="Auto-unlock TTL in seconds. None = manual only.",
     )
     request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
 
 
 class UnlockSideRequest(BaseModel):
@@ -178,6 +191,7 @@ class UnlockSideRequest(BaseModel):
     ticker: str = Field(min_length=1, max_length=128)
     side: Literal["bid", "ask"]
     request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
 
 
 class LockEntry(BaseModel):

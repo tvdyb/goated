@@ -35,6 +35,7 @@ from lipmm.execution import (
 )
 from lipmm.execution.adapters import KalshiExchangeAdapter
 from lipmm.control import (
+    Broadcaster,
     ControlConfig,
     ControlServer,
     ControlState,
@@ -121,6 +122,7 @@ __all__ = [
     # exchange adapters
     "KalshiExchangeAdapter",
     # control plane
+    "Broadcaster",
     "ControlConfig",
     "ControlServer",
     "ControlState",

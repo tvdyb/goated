@@ -34,19 +34,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Awaitable, Callable
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
 
 from lipmm.control.audit import emit_audit
 from lipmm.control.auth import (
     DEFAULT_TOKEN_TTL_S,
     constant_time_secret_compare,
+    get_secret,
     issue_token,
     require_auth,
+    verify_token,
 )
+from lipmm.control.broadcaster import Broadcaster
 from lipmm.control.commands import (
     ArmRequest,
     AuthRequest,
@@ -90,6 +94,7 @@ def build_app(
     order_manager: OrderManager | None = None,
     exchange: ExchangeClient | None = None,
     risk_registry: RiskRegistry | None = None,
+    broadcaster: Broadcaster | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app. Caller wires in the ControlState and
     optional collaborators:
@@ -115,6 +120,43 @@ def build_app(
     app.state.order_manager = order_manager
     app.state.exchange = exchange
     app.state.risk_registry = risk_registry
+    app.state.broadcaster = broadcaster
+    if broadcaster is not None:
+        broadcaster.attach_state(state)
+
+    def _check_if_version(req_if_version: int | None) -> None:
+        """Optimistic concurrency: if the client sent if_version, the
+        server's current version must match. Mismatch → 409 with the
+        current snapshot so the client can re-render and retry."""
+        if req_if_version is None:
+            return
+        if state.version != req_if_version:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "version_mismatch",
+                    "client_if_version": req_if_version,
+                    "server_version": state.version,
+                    "snapshot": state.snapshot(),
+                },
+            )
+
+    async def _broadcast_change(
+        command_type: str,
+        request_id: str | None = None,
+        actor: str | None = None,
+    ) -> None:
+        """Push the new state snapshot to all WS subscribers. No-op if no
+        broadcaster is wired."""
+        if broadcaster is None:
+            return
+        try:
+            await broadcaster.broadcast_state_change(
+                command_type, state.snapshot(),
+                request_id=request_id, actor=actor,
+            )
+        except Exception as exc:
+            logger.warning("state_change broadcast failed: %s", exc)
 
     # ── Unprotected endpoints ──────────────────────────────────────
 
@@ -151,6 +193,7 @@ def build_app(
         request: Request,
         actor: str = Depends(require_auth),
     ) -> CommandResponse:
+        _check_if_version(req.if_version)
         version_before = state.version
         new_version: int
         try:
@@ -179,6 +222,7 @@ def build_app(
             state_version_before=version_before, state_version_after=new_version,
             succeeded=True,
         )
+        await _broadcast_change("pause", request_id=req.request_id, actor=actor)
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
@@ -189,6 +233,7 @@ def build_app(
         request: Request,
         actor: str = Depends(require_auth),
     ) -> CommandResponse:
+        _check_if_version(req.if_version)
         version_before = state.version
         # Reject resume_global if killed: operator must arm first.
         if req.scope == PauseScope.GLOBAL and state.is_killed():
@@ -231,6 +276,7 @@ def build_app(
             state_version_before=version_before, state_version_after=new_version,
             succeeded=True,
         )
+        await _broadcast_change("resume", request_id=req.request_id, actor=actor)
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
@@ -241,6 +287,7 @@ def build_app(
         request: Request,
         actor: str = Depends(require_auth),
     ) -> CommandResponse:
+        _check_if_version(req.if_version)
         version_before = state.version
         new_version = await state.kill()
         # Invoke the kill handler (cancel all resting orders) AFTER
@@ -272,6 +319,7 @@ def build_app(
             succeeded=True,
             side_effect_summary={"orders_cancelled": cancelled},
         )
+        await _broadcast_change("kill", request_id=req.request_id, actor=actor)
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
@@ -282,6 +330,7 @@ def build_app(
         request: Request,
         actor: str = Depends(require_auth),
     ) -> CommandResponse:
+        _check_if_version(req.if_version)
         version_before = state.version
         try:
             new_version = await state.arm()
@@ -302,6 +351,7 @@ def build_app(
             state_version_before=version_before, state_version_after=new_version,
             succeeded=True,
         )
+        await _broadcast_change("arm", request_id=req.request_id, actor=actor)
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
@@ -312,6 +362,7 @@ def build_app(
         request: Request,
         actor: str = Depends(require_auth),
     ) -> CommandResponse:
+        _check_if_version(req.if_version)
         version_before = state.version
         try:
             new_version = await state.set_knob(req.name, req.value)
@@ -332,6 +383,7 @@ def build_app(
             state_version_before=version_before, state_version_after=new_version,
             succeeded=True,
         )
+        await _broadcast_change("set_knob", request_id=req.request_id, actor=actor)
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
@@ -342,6 +394,7 @@ def build_app(
         request: Request,
         actor: str = Depends(require_auth),
     ) -> CommandResponse:
+        _check_if_version(req.if_version)
         version_before = state.version
         new_version = await state.clear_knob(req.name)
         emit_audit(
@@ -351,6 +404,7 @@ def build_app(
             state_version_before=version_before, state_version_after=new_version,
             succeeded=True,
         )
+        await _broadcast_change("clear_knob", request_id=req.request_id, actor=actor)
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
@@ -363,6 +417,7 @@ def build_app(
         request: Request,
         actor: str = Depends(require_auth),
     ) -> ManualOrderResponse:
+        _check_if_version(req.if_version)
         version_before = state.version
         om = request.app.state.order_manager
         ex = request.app.state.exchange
@@ -435,6 +490,12 @@ def build_app(
                 "risk_audit": outcome.risk_audit,
             },
         )
+        # Broadcast: even risk-vetoed orders may have changed state
+        # (e.g. version bumped if lock was set). Always broadcast so all
+        # tabs stay in sync.
+        await _broadcast_change(
+            "manual_order", request_id=req.request_id, actor=actor,
+        )
         return ManualOrderResponse(
             succeeded=outcome.succeeded,
             risk_vetoed=outcome.risk_vetoed,
@@ -458,6 +519,7 @@ def build_app(
         request: Request,
         actor: str = Depends(require_auth),
     ) -> CommandResponse:
+        _check_if_version(req.if_version)
         import time as _t
         version_before = state.version
         auto_unlock_at = (
@@ -490,6 +552,7 @@ def build_app(
             succeeded=True,
             side_effect_summary={"auto_unlock_at": auto_unlock_at},
         )
+        await _broadcast_change("lock_side", request_id=req.request_id, actor=actor)
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
@@ -500,6 +563,7 @@ def build_app(
         request: Request,
         actor: str = Depends(require_auth),
     ) -> CommandResponse:
+        _check_if_version(req.if_version)
         version_before = state.version
         try:
             new_version = await state.unlock_side(req.ticker, req.side)
@@ -523,6 +587,7 @@ def build_app(
             state_version_after=new_version,
             succeeded=True,
         )
+        await _broadcast_change("unlock_side", request_id=req.request_id, actor=actor)
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
@@ -540,6 +605,82 @@ def build_app(
             for (ticker, side), lock in sorted(locks.items(), key=lambda kv: kv[0])
         ]
         return LocksResponse(locks=entries)
+
+    # ── Phase 3: WebSocket stream ─────────────────────────────────
+
+    @app.websocket("/control/stream")
+    async def control_stream(websocket: WebSocket) -> None:
+        """Authenticated WebSocket stream for live state push.
+
+        Auth: token via `?token=...` query param (browsers can't set
+        Authorization on a WS upgrade). Token validated before accept;
+        invalid → 1008 close (policy violation).
+
+        On accept the server sends one initial event with the current
+        state snapshot, then streams events: state_change, decision,
+        tab_connected/disconnected, heartbeat. Tab gets a unique tab_id
+        in the initial frame so the dashboard can show "I'm tab X".
+
+        Server doesn't expect inbound messages from the client in v1
+        — it's read-only push. Future phases may use inbound for
+        client→server pings or subscription filters.
+        """
+        if broadcaster is None:
+            # No broadcaster wired → reject; the operator should rebuild
+            # the app with broadcaster= or use HTTP polling.
+            await websocket.close(code=1011, reason="no broadcaster wired")
+            return
+
+        # 1. Auth via query param.
+        token = websocket.query_params.get("token", "")
+        if not token:
+            await websocket.close(code=1008, reason="missing token")
+            return
+        secret_to_use = (
+            websocket.app.state.control_secret
+            if websocket.app.state.control_secret is not None
+            else get_secret()
+        )
+        try:
+            from jose import JWTError, jwt as _jwt
+            claims = _jwt.decode(token, secret_to_use, algorithms=["HS256"])
+            actor = claims.get("sub", "operator")
+        except Exception as exc:
+            await websocket.close(code=1008, reason=f"invalid token: {exc}")
+            return
+
+        # 2. Accept + silently register in the broadcaster.
+        await websocket.accept()
+        tab_id = await broadcaster.register(websocket)
+
+        # 3. Send the initial snapshot frame DIRECTLY to the new tab
+        # before notifying others. Order: initial → tab_connected (to
+        # others) → live events.
+        try:
+            await websocket.send_json({
+                "event_type": "initial",
+                "tab_id": tab_id,
+                "actor": actor,
+                "snapshot": state.snapshot(),
+                "presence": broadcaster.presence(),
+                "total_tabs": broadcaster.tab_count,
+                "ts": time.time(),
+            })
+            # Notify the OTHER tabs that someone joined
+            await broadcaster.notify_join(tab_id)
+
+            # 4. Read loop: just consume client messages and discard. The
+            # WS is server-push; client messages aren't acted on in v1
+            # (they keep the connection alive and let us detect disconnect).
+            while True:
+                try:
+                    await websocket.receive_text()
+                except WebSocketDisconnect:
+                    break
+        except Exception as exc:
+            logger.info("WS tab_id=%s closed unexpectedly: %s", tab_id, exc)
+        finally:
+            await broadcaster.unregister(tab_id)
 
     @app.post("/control/swap_strategy", response_model=CommandResponse)
     async def post_swap_strategy(
@@ -598,8 +739,12 @@ class ControlServer:
         order_manager: OrderManager | None = None,
         exchange: ExchangeClient | None = None,
         risk_registry: RiskRegistry | None = None,
+        broadcaster: Broadcaster | None = None,
     ) -> None:
         self._state = state
+        # Auto-create a broadcaster if none provided — the server's WS
+        # endpoint requires one to function.
+        self._broadcaster = broadcaster if broadcaster is not None else Broadcaster()
         self._app = build_app(
             state,
             decision_logger=decision_logger,
@@ -608,9 +753,14 @@ class ControlServer:
             order_manager=order_manager,
             exchange=exchange,
             risk_registry=risk_registry,
+            broadcaster=self._broadcaster,
         )
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
+
+    @property
+    def broadcaster(self) -> Broadcaster:
+        return self._broadcaster
 
     @property
     def app(self) -> FastAPI:
@@ -639,10 +789,15 @@ class ControlServer:
         # Brief yield so uvicorn can set up before we return
         for _ in range(100):
             if self._server.started:
+                # Start the broadcaster's heartbeat once the server is up.
+                await self._broadcaster.start_heartbeat()
                 return
             await asyncio.sleep(0.01)
 
     async def stop(self) -> None:
+        # Stop heartbeat first so it doesn't try to push during shutdown
+        await self._broadcaster.stop_heartbeat()
+        await self._broadcaster.close_all()
         if self._server is not None:
             self._server.should_exit = True
         if self._task is not None:
