@@ -110,15 +110,28 @@ class StickyDefenseQuoting:
         our_state: OurState,
         now_ts: float,
         time_to_settle_s: float,
+        control_overrides: dict | None = None,
     ) -> QuotingDecision:
-        # 1. Always run base first; we may end up returning it unchanged.
+        # 1. Always run base first (forwarding overrides); we may end up
+        # returning the base decision unchanged.
         base_decision = await self._base.quote(
             ticker=ticker, theo=theo, orderbook=orderbook,
             our_state=our_state, now_ts=now_ts,
             time_to_settle_s=time_to_settle_s,
+            control_overrides=control_overrides,
         )
 
-        eff_min = self._effective_min_dist(theo.confidence)
+        # Sticky-specific overrides: "sticky_min_distance_from_theo"
+        # narrows or widens the bypass-gate floor and the AGGRESSIVE
+        # safe zone. Confidence widening still applies on top.
+        eff_min = self._effective_min_dist(
+            theo.confidence,
+            override_min_distance_from_theo=(
+                int(control_overrides["sticky_min_distance_from_theo"])
+                if control_overrides and "sticky_min_distance_from_theo" in control_overrides
+                else None
+            ),
+        )
 
         # 2. Bypass gate: deep wings (where sticky's min_dist would be
         # incoherent) pass through to base unchanged.
@@ -158,17 +171,29 @@ class StickyDefenseQuoting:
 
     # ── helpers ──────────────────────────────────────────────────────
 
-    def _effective_min_dist(self, confidence: float) -> int:
+    def _effective_min_dist(
+        self, confidence: float,
+        override_min_distance_from_theo: int | None = None,
+    ) -> int:
         """Confidence-aware widening of min_distance_from_theo.
 
         Conf=1.0 → base. Conf=0.5 → 2x. Conf=0.1 → 10x (capped).
         Confidence below 0.1 is treated as 0.1 to prevent unbounded
         widening — at that point the bypass gate effectively turns sticky
         off everywhere, which is the correct behavior for unreliable theo.
+
+        `override_min_distance_from_theo`: per-call replacement for the
+        configured min_distance_from_theo (e.g. from control_overrides).
+        Confidence widening still applies on top of the override.
         """
+        base = (
+            override_min_distance_from_theo
+            if override_min_distance_from_theo is not None
+            else self._cfg.min_distance_from_theo
+        )
         if not self._cfg.confidence_widening or confidence >= 1.0:
-            return self._cfg.min_distance_from_theo
-        scaled = self._cfg.min_distance_from_theo / max(0.1, confidence)
+            return base
+        scaled = base / max(0.1, confidence)
         return int(math.ceil(scaled))
 
     def _adjust_side(

@@ -34,6 +34,12 @@ from typing import Awaitable, Callable, Protocol, runtime_checkable
 
 from lipmm.execution import ExchangeClient, OrderManager
 from lipmm.observability.schema import build_record
+
+# Lazy import to avoid circular dependency at module-load time
+# (lipmm/__init__.py exports both control + runner). Type-checked lazily.
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from lipmm.control.state import ControlState
 from lipmm.quoting import (
     OrderbookSnapshot,
     OurState,
@@ -107,6 +113,7 @@ class LIPRunner:
         ticker_source: TickerSource,
         decision_recorder: DecisionRecorder | None = None,
         risk_registry: RiskRegistry | None = None,
+        control_state: "ControlState | None" = None,
     ) -> None:
         self._cfg = config
         self._theo = theo_registry
@@ -116,6 +123,7 @@ class LIPRunner:
         self._ticker_source = ticker_source
         self._recorder = decision_recorder
         self._risk = risk_registry
+        self._control = control_state
 
         self._running = False
         self._cycle_id = 0
@@ -153,10 +161,40 @@ class LIPRunner:
         """Request main loop to exit after current cycle."""
         self._running = False
 
+    async def cancel_all_resting(self) -> int:
+        """Cancel every resting order. Returns the count cancelled.
+
+        Wired to the control plane's kill handler. Idempotent: safe to
+        call when there are no resting orders. Best-effort: errors on
+        individual cancels are logged but don't prevent other cancels.
+        """
+        resting = self._om.all_resting()
+        order_ids = [o.order_id for o in resting.values()]
+        if not order_ids:
+            return 0
+        try:
+            results = await self._exchange.cancel_orders(order_ids)
+            cancelled = sum(1 for ok in results.values() if ok)
+            # OrderManager keeps an in-memory view; reconcile after bulk cancel
+            # so subsequent cycles don't think we still have resting orders.
+            await self._om.reconcile(self._exchange)
+            return cancelled
+        except Exception as exc:
+            logger.warning("LIPRunner.cancel_all_resting failed: %s", exc)
+            return 0
+
     # ── one cycle ────────────────────────────────────────────────────
 
     async def _cycle(self) -> None:
         self._cycle_id += 1
+
+        # Control plane: top-of-cycle gate. If killed or globally paused,
+        # skip the entire cycle — no theo, no orders, no decision records.
+        # The kill handler (cancel-all) was invoked at /control/kill time;
+        # we don't re-cancel here.
+        if self._control is not None and self._control.should_skip_cycle():
+            return
+
         try:
             tickers = await self._ticker_source.list_active_tickers(self._exchange)
         except Exception as exc:
@@ -164,6 +202,9 @@ class LIPRunner:
             return
 
         for ticker in tickers:
+            # Per-ticker pause check (cheap, before any I/O).
+            if self._control is not None and self._control.should_skip_ticker(ticker):
+                continue
             try:
                 await self._process_ticker(ticker)
             except Exception as exc:
@@ -218,6 +259,11 @@ class LIPRunner:
             cur_ask_size=cur_ask_size,
             cur_ask_id=cur_ask.order_id if cur_ask else None,
         )
+        # Apply control-plane runtime knob overrides if a ControlState is wired.
+        control_overrides = (
+            self._control.control_overrides_for_strategy()
+            if self._control is not None else None
+        )
         decision: QuotingDecision = await self._strategy.quote(
             ticker=ticker,
             theo=theo,
@@ -225,7 +271,34 @@ class LIPRunner:
             our_state=our_state,
             now_ts=now_ts,
             time_to_settle_s=time_to_settle_s,
+            control_overrides=control_overrides,
         )
+
+        # 3a. Per-side pause from control plane: force skip on any paused side.
+        # Applied AFTER strategy decision so the strategy's reasoning is
+        # captured in the decision-log record before being overridden.
+        if self._control is not None:
+            from lipmm.quoting.base import SideDecision as _SideDecision
+            if self._control.is_side_paused(ticker, "bid") and not decision.bid.skip:
+                decision = QuotingDecision(
+                    bid=_SideDecision(
+                        price=0, size=0, skip=True,
+                        reason="control plane: bid paused",
+                        extras=decision.bid.extras,
+                    ),
+                    ask=decision.ask,
+                    transitions=list(decision.transitions),
+                )
+            if self._control.is_side_paused(ticker, "ask") and not decision.ask.skip:
+                decision = QuotingDecision(
+                    bid=decision.bid,
+                    ask=_SideDecision(
+                        price=0, size=0, skip=True,
+                        reason="control plane: ask paused",
+                        extras=decision.ask.extras,
+                    ),
+                    transitions=list(decision.transitions),
+                )
 
         # 3b. Optional risk evaluation: gates can veto bid/ask sides,
         # turning them into skip=True. Audit trail goes into the decision log.

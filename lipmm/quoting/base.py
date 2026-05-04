@@ -137,5 +137,14 @@ class QuotingStrategy(Protocol):
         our_state: OurState,
         now_ts: float,
         time_to_settle_s: float,
+        control_overrides: dict[str, Any] | None = None,
     ) -> QuotingDecision:
+        """Compute the strike's quoting decision.
+
+        `control_overrides`: optional dict of runtime knob overrides from
+        the dashboard control plane. Strategies that consume overrides
+        should look up documented keys (see strategy docstrings) and use
+        them in place of their configured defaults. Strategies that don't
+        consume overrides should ignore the kwarg — keeping the protocol
+        backward-compatible."""
         ...

@@ -20,6 +20,11 @@ dependencies = [
     "pytz>=2024.1",
     "duckdb>=1.0",
     "ib_insync>=0.9.86",
+    # lipmm.control — dashboard control plane
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "python-jose[cryptography]>=3.3",
 ]
 
 [project.optional-dependencies]

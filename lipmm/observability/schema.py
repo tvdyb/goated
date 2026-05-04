@@ -65,6 +65,7 @@ def build_record(
     for sports markets. The framework doesn't introspect this field.
     """
     return {
+        "record_type": "quoting_decision",
         "cycle_id": cycle_id,
         "ts": ts,
         "ticker": ticker,
@@ -115,6 +116,55 @@ def build_record(
             "ask_latency_ms": ask_outcome.latency_ms,
         },
         "risk": list(risk_audit) if risk_audit else [],
+    }
+
+
+def build_operator_command_record(
+    *,
+    ts: float,
+    request_id: str,
+    actor: str,
+    command_type: str,
+    command_payload: dict[str, Any],
+    state_version_before: int,
+    state_version_after: int,
+    succeeded: bool,
+    error: str | None = None,
+    side_effect_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Canonical schema for an operator command emitted by the control plane.
+
+    Distinguished from quoting_decision records by `record_type:
+    "operator_command"`. The same JSONL file holds both — analysts grep
+    by record_type to filter.
+
+    Fields:
+      ts                  — unix timestamp of the command application
+      request_id          — opaque idempotency key from the HTTP request
+      actor               — auth subject (JWT 'sub' claim)
+      command_type        — "pause", "resume", "kill", "arm", "set_knob",
+                            "swap_strategy", "manual_order", "lock_side", etc.
+      command_payload     — the request body, sanitized of secrets
+      state_version_before/after — ControlState's monotonic version counter
+                                   (for audit + Phase 3's optimistic conc)
+      succeeded           — did the command apply cleanly?
+      error               — human-readable reason if !succeeded
+      side_effect_summary — what the command actually changed; e.g. for kill:
+                            {"orders_cancelled": 14, "tickers_affected": [...]}.
+                            Optional but strongly encouraged for non-trivial commands.
+    """
+    return {
+        "record_type": "operator_command",
+        "ts": ts,
+        "request_id": request_id,
+        "actor": actor,
+        "command_type": command_type,
+        "command_payload": dict(command_payload) if command_payload else {},
+        "state_version_before": int(state_version_before),
+        "state_version_after": int(state_version_after),
+        "succeeded": bool(succeeded),
+        "error": error,
+        "side_effect_summary": dict(side_effect_summary) if side_effect_summary else {},
     }
 
 

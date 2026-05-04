@@ -82,46 +82,92 @@ class DefaultLIPQuoting:
         our_state: OurState,
         now_ts: float,
         time_to_settle_s: float,
+        control_overrides: dict | None = None,
     ) -> QuotingDecision:
-        cfg = self._cfg
+        # Build an effective config for this call from base + control overrides.
+        # Overrides documented for this strategy:
+        #   "min_theo_confidence" → DefaultLIPQuotingConfig.min_theo_confidence
+        #   "theo_tolerance_c"    → DefaultLIPQuotingConfig.theo_tolerance_c
+        #   "max_distance_from_best" → DefaultLIPQuotingConfig.max_distance_from_best
+        #   "dollars_per_side"    → DefaultLIPQuotingConfig.dollars_per_side
+        cfg = self._effective_cfg(control_overrides)
+        # Use cfg locally instead of self._cfg so per-call helpers see overrides.
+        # Helpers (_compute_bid, _compute_ask, _size_for_quote) read self._cfg
+        # directly; we temporarily swap it for the duration of this call to
+        # avoid threading cfg through every helper signature. Swap is safe
+        # because quote() is not re-entrant on the same instance per asyncio's
+        # cooperative scheduling — but we restore in a finally to be defensive.
+        original_cfg = self._cfg
+        self._cfg = cfg
+        try:
+            # Confidence gate: skip both sides if theo unreliable
+            if theo.confidence < cfg.min_theo_confidence:
+                reason = (
+                    f"theo confidence {theo.confidence:.2f} < gate "
+                    f"{cfg.min_theo_confidence}; theo source={theo.source}"
+                )
+                return QuotingDecision(
+                    bid=SideDecision(price=0, size=0, skip=True, reason=reason),
+                    ask=SideDecision(price=0, size=0, skip=True, reason=reason),
+                )
 
-        # Confidence gate: skip both sides if theo unreliable
-        if theo.confidence < cfg.min_theo_confidence:
-            reason = (
-                f"theo confidence {theo.confidence:.2f} < gate "
-                f"{cfg.min_theo_confidence}; theo source={theo.source}"
-            )
-            return QuotingDecision(
-                bid=SideDecision(price=0, size=0, skip=True, reason=reason),
-                ask=SideDecision(price=0, size=0, skip=True, reason=reason),
-            )
+            fair = theo.yes_cents
+            bid_decision = self._compute_bid(fair, orderbook)
+            ask_decision = self._compute_ask(fair, orderbook)
 
-        fair = theo.yes_cents
-        bid_decision = self._compute_bid(fair, orderbook)
-        ask_decision = self._compute_ask(fair, orderbook)
+            # No-cross guard: if our proposed quotes would cross the opposite
+            # best, post_only would reject. Pull back by 1c.
+            if (bid_decision.price > 0 and orderbook.best_ask < 100
+                    and bid_decision.price >= orderbook.best_ask):
+                bid_decision = SideDecision(
+                    price=orderbook.best_ask - 1,
+                    size=self._size_for_quote(orderbook.best_ask - 1, "bid"),
+                    skip=False,
+                    reason=f"no-cross: bid pulled to {orderbook.best_ask - 1} (best_ask {orderbook.best_ask})",
+                    extras=bid_decision.extras,
+                )
+            if (ask_decision.price > 0 and orderbook.best_bid > 0
+                    and ask_decision.price <= orderbook.best_bid):
+                ask_decision = SideDecision(
+                    price=orderbook.best_bid + 1,
+                    size=self._size_for_quote(orderbook.best_bid + 1, "ask"),
+                    skip=False,
+                    reason=f"no-cross: ask pulled to {orderbook.best_bid + 1} (best_bid {orderbook.best_bid})",
+                    extras=ask_decision.extras,
+                )
 
-        # No-cross guard: if our proposed quotes would cross the opposite
-        # best, post_only would reject. Pull back by 1c.
-        if (bid_decision.price > 0 and orderbook.best_ask < 100
-                and bid_decision.price >= orderbook.best_ask):
-            bid_decision = SideDecision(
-                price=orderbook.best_ask - 1,
-                size=self._size_for_quote(orderbook.best_ask - 1, "bid"),
-                skip=False,
-                reason=f"no-cross: bid pulled to {orderbook.best_ask - 1} (best_ask {orderbook.best_ask})",
-                extras=bid_decision.extras,
-            )
-        if (ask_decision.price > 0 and orderbook.best_bid > 0
-                and ask_decision.price <= orderbook.best_bid):
-            ask_decision = SideDecision(
-                price=orderbook.best_bid + 1,
-                size=self._size_for_quote(orderbook.best_bid + 1, "ask"),
-                skip=False,
-                reason=f"no-cross: ask pulled to {orderbook.best_bid + 1} (best_bid {orderbook.best_bid})",
-                extras=ask_decision.extras,
-            )
+            return QuotingDecision(bid=bid_decision, ask=ask_decision)
+        finally:
+            # Restore base config so concurrent / future calls see defaults
+            self._cfg = original_cfg
 
-        return QuotingDecision(bid=bid_decision, ask=ask_decision)
+    def _effective_cfg(self, overrides: dict | None) -> "DefaultLIPQuotingConfig":
+        """Build a per-call config dataclass with control overrides applied.
+        Returns base cfg unchanged if no relevant overrides are set."""
+        if not overrides:
+            return self._cfg
+        base = self._cfg
+        kwargs = {
+            "desert_threshold_c": base.desert_threshold_c,
+            "desert_relative_pct": base.desert_relative_pct,
+            "max_half_spread_c": base.max_half_spread_c,
+            "max_distance_from_best": int(overrides.get(
+                "max_distance_from_best", base.max_distance_from_best,
+            )),
+            "theo_tolerance_c": int(overrides.get(
+                "theo_tolerance_c", base.theo_tolerance_c,
+            )),
+            "dollars_per_side": float(overrides.get(
+                "dollars_per_side", base.dollars_per_side,
+            )),
+            "contracts_per_side": base.contracts_per_side,
+            "min_contracts": base.min_contracts,
+            "max_contracts": base.max_contracts,
+            "min_theo_confidence": float(overrides.get(
+                "min_theo_confidence", base.min_theo_confidence,
+            )),
+        }
+        return DefaultLIPQuotingConfig(**kwargs)
 
     # ── per-side computation ──────────────────────────────────────────
 

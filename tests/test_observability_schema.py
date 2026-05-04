@@ -107,6 +107,7 @@ def test_build_record_has_all_required_top_level_keys() -> None:
     that filter on these keys will break. Bump SCHEMA_VERSION when changing."""
     rec = _build()
     required = {
+        "record_type",
         "cycle_id", "ts", "ticker", "market_meta",
         "theo", "orderbook", "our_state",
         "decision", "transitions", "outcome", "risk",
@@ -115,6 +116,8 @@ def test_build_record_has_all_required_top_level_keys() -> None:
         f"top-level schema drift: missing={required - set(rec.keys())}, "
         f"unexpected={set(rec.keys()) - required}"
     )
+    # Quoting decisions are tagged so analysts can filter operator events out
+    assert rec["record_type"] == "quoting_decision"
 
 
 def test_top_level_types() -> None:
@@ -245,7 +248,7 @@ def test_record_round_trips_through_decision_logger(tmp_path) -> None:
     parsed = json.loads(lines[0])
     # Schema version stamped by logger
     assert parsed["schema_version"] == SCHEMA_VERSION
-    assert parsed["schema_version"] == "lipmm-1.1"
+    assert parsed["schema_version"] == "lipmm-1.2"
     # User content preserved
     assert parsed["ticker"] == "KX-T50.00"
     assert parsed["theo"]["yes_cents"] == 42

@@ -34,9 +34,18 @@ from lipmm.execution import (
     Position,
 )
 from lipmm.execution.adapters import KalshiExchangeAdapter
+from lipmm.control import (
+    ControlConfig,
+    ControlServer,
+    ControlState,
+    KillState,
+    PauseScope,
+    build_app,
+)
 from lipmm.observability import (
     DecisionLogger,
     SCHEMA_VERSION,
+    build_operator_command_record,
     build_record,
 )
 from lipmm.quoting import (
@@ -108,4 +117,12 @@ __all__ = [
     "MaxOrdersPerCycleGate",
     # exchange adapters
     "KalshiExchangeAdapter",
+    # control plane
+    "ControlConfig",
+    "ControlServer",
+    "ControlState",
+    "KillState",
+    "PauseScope",
+    "build_app",
+    "build_operator_command_record",
 ]
