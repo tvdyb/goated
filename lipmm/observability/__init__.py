@@ -26,11 +26,14 @@ from lipmm.observability.decision_logger import (
     DecisionLogger,
     trim_depth,
 )
+from lipmm.observability.retention import RetentionManager, RetentionStats
 from lipmm.observability.schema import build_operator_command_record, build_record
 
 __all__ = [
     "DEPTH_TRIM_LEVELS",
     "DecisionLogger",
+    "RetentionManager",
+    "RetentionStats",
     "SCHEMA_VERSION",
     "build_operator_command_record",
     "build_record",

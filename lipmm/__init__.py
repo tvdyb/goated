@@ -49,6 +49,8 @@ from lipmm.control import (
 )
 from lipmm.observability import (
     DecisionLogger,
+    RetentionManager,
+    RetentionStats,
     SCHEMA_VERSION,
     build_operator_command_record,
     build_record,
@@ -110,6 +112,8 @@ __all__ = [
     "default_sticky",
     # observability
     "DecisionLogger",
+    "RetentionManager",
+    "RetentionStats",
     "SCHEMA_VERSION",
     "build_record",
     # risk
