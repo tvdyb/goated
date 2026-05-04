@@ -60,6 +60,8 @@ from lipmm.control.commands import (
     ClearTheoOverrideRequest,
     CommandResponse,
     HealthResponse,
+    IncentiveProgramEntry,
+    IncentiveSnapshotResponse,
     KillRequest,
     KnobClearRequest,
     KnobUpdateRequest,
@@ -76,6 +78,7 @@ from lipmm.control.commands import (
     SwapStrategyRequest,
     UnlockSideRequest,
 )
+from lipmm.incentives import IncentiveCache
 from lipmm.control.manual_orders import submit_manual_order
 from lipmm.control.state import ControlState, KillState, PauseScope
 from lipmm.execution import ExchangeClient, OrderManager
@@ -101,6 +104,7 @@ def build_app(
     risk_registry: RiskRegistry | None = None,
     broadcaster: Broadcaster | None = None,
     mount_dashboard: bool = False,
+    incentive_cache: IncentiveCache | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app. Caller wires in the ControlState and
     optional collaborators:
@@ -130,6 +134,7 @@ def build_app(
     app.state.exchange = exchange
     app.state.risk_registry = risk_registry
     app.state.broadcaster = broadcaster
+    app.state.incentive_cache = incentive_cache
     if broadcaster is not None:
         broadcaster.attach_state(state)
 
@@ -742,6 +747,44 @@ def build_app(
 
     app.state.collect_runtime = _collect_runtime
 
+    def _collect_incentives() -> dict[str, Any]:
+        """Snapshot the current incentives cache for HTTP/WS consumers.
+        Returns an empty `programs` list when no cache is wired."""
+        cache = app.state.incentive_cache
+        if cache is None:
+            return {
+                "programs": [],
+                "last_refresh_ts": 0.0,
+                "last_refresh_age_s": None,
+                "ts": time.time(),
+            }
+        now_ts = time.time()
+        programs = cache.snapshot()
+        out: list[dict[str, Any]] = []
+        for p in programs:
+            entry = p.to_dict()
+            entry["time_remaining_s"] = p.time_remaining_s(now_ts)
+            out.append(entry)
+        return {
+            "programs": out,
+            "last_refresh_ts": cache.last_refresh_ts,
+            "last_refresh_age_s": cache.last_refresh_age_s,
+            "ts": now_ts,
+        }
+
+    app.state.collect_incentives = _collect_incentives
+
+    @app.get("/control/incentives", response_model=IncentiveSnapshotResponse)
+    async def get_incentives(
+        actor: str = Depends(require_auth),
+    ) -> IncentiveSnapshotResponse:
+        if app.state.incentive_cache is None:
+            raise HTTPException(
+                503, "incentive cache not wired into ControlServer "
+                "(pass an IncentiveProvider on construction)",
+            )
+        return IncentiveSnapshotResponse(**_collect_incentives())
+
     @app.get("/control/runtime", response_model=RuntimeSnapshotResponse)
     async def get_runtime(
         actor: str = Depends(require_auth),
@@ -1007,11 +1050,21 @@ class ControlServer:
         broadcaster: Broadcaster | None = None,
         mount_dashboard: bool = False,
         runtime_refresh_s: float | None = 5.0,
+        incentive_provider: "Any | None" = None,
+        incentives_refresh_s: float | None = 3600.0,
     ) -> None:
         self._state = state
         # Auto-create a broadcaster if none provided — the server's WS
         # endpoint requires one to function.
         self._broadcaster = broadcaster if broadcaster is not None else Broadcaster()
+        # Auto-wrap an IncentiveProvider in a cache if one was passed.
+        # Caller can also pass a pre-built cache via build_app directly,
+        # but this is the simpler path for deploy scripts.
+        self._incentive_cache: IncentiveCache | None = None
+        if incentive_provider is not None and incentives_refresh_s is not None:
+            self._incentive_cache = IncentiveCache(
+                incentive_provider, refresh_s=incentives_refresh_s,
+            )
         self._app = build_app(
             state,
             decision_logger=decision_logger,
@@ -1022,6 +1075,7 @@ class ControlServer:
             risk_registry=risk_registry,
             broadcaster=self._broadcaster,
             mount_dashboard=mount_dashboard,
+            incentive_cache=self._incentive_cache,
         )
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
@@ -1032,6 +1086,13 @@ class ControlServer:
         self._runtime_refresh_s = runtime_refresh_s
         self._runtime_task: asyncio.Task | None = None
         self._runtime_stop: asyncio.Event | None = None
+        # Incentive broadcast loop: pulls the cache snapshot and pushes
+        # via the broadcaster. The cache itself owns the upstream fetch
+        # cadence; this loop is just rebroadcast at the same interval so
+        # all dashboards stay in sync immediately after a refresh.
+        self._incentives_refresh_s = incentives_refresh_s
+        self._incentives_task: asyncio.Task | None = None
+        self._incentives_stop: asyncio.Event | None = None
 
     @property
     def broadcaster(self) -> Broadcaster:
@@ -1070,6 +1131,13 @@ class ControlServer:
                 if self._runtime_refresh_s is not None:
                     self._runtime_stop = asyncio.Event()
                     self._runtime_task = asyncio.create_task(self._runtime_loop())
+                # Spawn the incentives cache + broadcast loop if wired.
+                if self._incentive_cache is not None:
+                    await self._incentive_cache.start()
+                    self._incentives_stop = asyncio.Event()
+                    self._incentives_task = asyncio.create_task(
+                        self._incentives_loop(),
+                    )
                 return
             await asyncio.sleep(0.01)
 
@@ -1103,7 +1171,53 @@ class ControlServer:
         except asyncio.CancelledError:
             raise
 
+    async def _incentives_loop(self) -> None:
+        """Periodically pull the cache snapshot and broadcast it as an
+        `incentives_snapshot` event. The cache itself handles the
+        upstream fetch + fault tolerance; this loop is only rebroadcast.
+        """
+        assert self._incentives_stop is not None
+        assert self._incentives_refresh_s is not None
+        collect = getattr(self._app.state, "collect_incentives", None)
+        if collect is None:
+            return
+        # Push once immediately so dashboards see data without waiting.
+        try:
+            snap = collect()
+            await self._broadcaster.broadcast_incentives(snap)
+        except Exception as exc:
+            logger.warning("initial incentives broadcast failed: %s", exc)
+        try:
+            while not self._incentives_stop.is_set():
+                try:
+                    await asyncio.wait_for(
+                        self._incentives_stop.wait(),
+                        timeout=self._incentives_refresh_s,
+                    )
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                try:
+                    snap = collect()
+                    await self._broadcaster.broadcast_incentives(snap)
+                except Exception as exc:
+                    logger.warning("incentives broadcast tick failed: %s", exc)
+        except asyncio.CancelledError:
+            raise
+
     async def stop(self) -> None:
+        # Stop the incentives loop + cache first.
+        if self._incentives_task is not None:
+            if self._incentives_stop is not None:
+                self._incentives_stop.set()
+            try:
+                await asyncio.wait_for(self._incentives_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self._incentives_task.cancel()
+            self._incentives_task = None
+            self._incentives_stop = None
+        if self._incentive_cache is not None:
+            await self._incentive_cache.stop()
         # Stop the runtime loop first so it doesn't push during shutdown.
         if self._runtime_task is not None:
             if self._runtime_stop is not None:

@@ -60,6 +60,7 @@ def render_initial(
     total_tabs: int,
     records: list[dict[str, Any]] | None = None,
     runtime: dict[str, Any] | None = None,
+    incentives: dict[str, Any] | None = None,
 ) -> str:
     """Render every panel as a single HTML blob — used both by GET
     /dashboard's first-paint and by the WS `initial` event."""
@@ -79,8 +80,23 @@ def render_initial(
         _env.get_template("partials/resting_orders_panel.html").render(runtime=runtime),
         _env.get_template("partials/balance_strip.html").render(runtime=runtime),
         _env.get_template("partials/pnl_pill.html").render(runtime=runtime),
+        _env.get_template("partials/incentives_panel.html").render(
+            incentives=incentives, runtime=runtime,
+        ),
     ]
     return "\n".join(parts)
+
+
+def render_incentives(
+    incentives: dict[str, Any] | None,
+    runtime: dict[str, Any] | None = None,
+) -> str:
+    """Re-render the incentives panel on `incentives_snapshot` events.
+    `runtime` is optional; when present, rows for tickers we have
+    skin in are highlighted."""
+    return _env.get_template("partials/incentives_panel.html").render(
+        incentives=incentives, runtime=runtime,
+    )
 
 
 def render_state(snapshot: dict[str, Any]) -> str:
@@ -130,6 +146,11 @@ class HtmlWebSocketAdapter:
     def __init__(self, websocket: Any) -> None:
         self._ws = websocket
         self._records: deque[dict[str, Any]] = deque(maxlen=DECISION_FEED_SIZE)
+        # Last-known runtime + incentives snapshots so cross-event
+        # renders (e.g. incentives panel highlighting tickers we have
+        # positions on) have the right context.
+        self._last_runtime: dict[str, Any] | None = None
+        self._last_incentives: dict[str, Any] | None = None
 
     async def send_json(self, event: dict[str, Any]) -> None:
         try:
@@ -179,7 +200,13 @@ class HtmlWebSocketAdapter:
             self._records.append(self._normalize(event.get("record", {})))
             return render_decision_feed(list(self._records))
         if et == "runtime_snapshot":
+            self._last_runtime = event.get("snapshot")
             return render_runtime(event.get("snapshot"))
+        if et == "incentives_snapshot":
+            self._last_incentives = event.get("snapshot")
+            return render_incentives(
+                event.get("snapshot"), self._last_runtime,
+            )
         if et == "heartbeat":
             # Keep the feed silent on heartbeats; presence stays in sync.
             return ""

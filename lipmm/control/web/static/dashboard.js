@@ -294,6 +294,35 @@
     });
   }
 
+  function startCountdownTicker() {
+    function fmt(seconds) {
+      if (!Number.isFinite(seconds) || seconds <= 0) return "expired";
+      const s = Math.floor(seconds);
+      const days = Math.floor(s / 86400);
+      const hours = Math.floor((s % 86400) / 3600);
+      const mins = Math.floor((s % 3600) / 60);
+      const secs = s % 60;
+      if (days > 0) return `${days}d ${hours}h`;
+      if (hours > 0) return `${hours}h ${String(mins).padStart(2, "0")}m`;
+      return `${mins}:${String(secs).padStart(2, "0")}`;
+    }
+    setInterval(() => {
+      const now = Date.now() / 1000;
+      document.querySelectorAll('[data-time-remaining="true"]').forEach((el) => {
+        const endTs = parseFloat(el.dataset.endTs);
+        if (!Number.isFinite(endTs)) return;
+        el.textContent = fmt(endTs - now);
+        if (endTs - now <= 0) {
+          el.classList.remove("text-emerald-300");
+          el.classList.add("text-rose-300");
+        } else if (endTs - now <= 3600) {
+          el.classList.remove("text-emerald-300");
+          el.classList.add("text-amber-300");
+        }
+      });
+    }, 1000);
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     setupHtmxAuth();
     bindLoginForm();
@@ -305,6 +334,7 @@
     if (location.pathname === "/dashboard") {
       if (!getJwt()) { location.href = "/login"; return; }
       openWebSocket();
+      startCountdownTicker();
     }
   });
 })();

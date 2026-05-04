@@ -5,7 +5,16 @@ persists to DuckDB, refreshes daily.
 
 Data source strategy:
   1. Config overrides from config/lip_pools.yaml (manual entry fallback)
-  2. Kalshi REST API market metadata (if LIP fields are present)
+  2. Kalshi REST API `/incentive_programs` endpoint (real, documented)
+
+History note: an earlier version of this module guessed at LIP field
+names embedded in the markets endpoint (`liquidity_incentive`, `lip`,
+`reward_pool`, `incentive_pool`) — none of which Kalshi shipped.
+`parse_api_lip_data` is preserved for backward compatibility but is
+**deprecated**; new code should use `parse_incentive_program_entry`
+which consumes the documented `/incentive_programs` schema. The
+preferred ingest path goes through
+`feeds.kalshi.client.KalshiClient.get_incentive_programs`.
 
 Non-negotiables enforced:
   - No pandas; DuckDB direct
@@ -145,11 +154,77 @@ def _parse_date(value: Any) -> date:
 # ── API parser ────────────────────────────────────────────────────────
 
 
+def parse_incentive_program_entry(
+    entry: dict[str, Any],
+) -> LIPRewardPeriod:
+    """Parse one element of the `/incentive_programs` response into a
+    `LIPRewardPeriod`. This is the preferred parser; the legacy
+    `parse_api_lip_data` (which guessed at fields in the markets
+    endpoint) is deprecated.
+
+    Maps Kalshi's `period_reward` (in centi-cents — 1/10000 of a dollar)
+    to the dataclass's `pool_size_usd` field for backward compatibility.
+
+    Raises LIPPoolDataError on malformed entries.
+    """
+    try:
+        ticker = str(entry["market_ticker"])
+        period_reward_cc = int(entry["period_reward"])
+        start_iso = entry["start_date"]
+        end_iso = entry["end_date"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LIPPoolDataError(
+            f"Malformed incentive_programs entry: {exc}; entry={entry!r}"
+        ) from exc
+
+    # Convert centi-cents → dollars for the existing schema field.
+    pool_size_usd = period_reward_cc / 10_000.0
+    # Parse ISO-8601 → date (timestamp portion is preserved upstream
+    # by lipmm.incentives.IncentiveProgram for time-remaining display).
+    try:
+        start = _parse_iso_date(start_iso)
+        end = _parse_iso_date(end_iso)
+    except (TypeError, ValueError) as exc:
+        raise LIPPoolDataError(
+            f"Malformed date in incentive_programs entry for {ticker}: {exc}"
+        ) from exc
+
+    now = datetime.now(timezone.utc)
+    return LIPRewardPeriod(
+        market_ticker=ticker,
+        pool_size_usd=pool_size_usd,
+        start_date=start,
+        end_date=end,
+        active=(end >= now.date()) and not bool(entry.get("paid_out", False)),
+        source="api",
+        captured_at=now,
+    )
+
+
+def _parse_iso_date(value: Any) -> date:
+    """Parse ISO-8601 date or datetime → date."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        cleaned = value.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(cleaned)
+            return dt.date()
+        except ValueError:
+            return date.fromisoformat(value)
+    raise ValueError(f"Cannot parse date from {type(value).__name__}: {value!r}")
+
+
 def parse_api_lip_data(
     market_ticker: str,
     market_data: dict[str, Any],
 ) -> LIPRewardPeriod | None:
-    """Extract LIP reward period from Kalshi market API response.
+    """**DEPRECATED.** Extract LIP reward period from Kalshi market API
+    response by guessing at field names. Predates the real
+    `/incentive_programs` endpoint; kept for backward compatibility but
+    new code should use `parse_incentive_program_entry`.
 
     Returns None if the market response does not contain LIP pool data.
     Raises LIPPoolDataError if LIP data is present but malformed.
@@ -462,45 +537,50 @@ async def _fetch_api_pools(
     client: Any,
     series_ticker: str,
 ) -> list[LIPRewardPeriod]:
-    """Fetch LIP pool data from Kalshi API market metadata.
+    """Fetch LIP pool data from Kalshi's `/incentive_programs` endpoint.
 
-    Iterates through events for the series and checks each market's
-    metadata for LIP pool information.
+    Walks pagination via `next_cursor` and filters server-side to
+    `status=active&type=liquidity`. Then locally narrows to programs
+    whose `market_ticker` starts with `series_ticker` so the caller
+    only sees LIP for the series they care about.
+
+    Replaces the prior implementation which tried to extract LIP info
+    from the markets endpoint by guessing at field names.
     """
+    if not hasattr(client, "get_incentive_programs"):
+        # Older clients without the method — degrade gracefully.
+        logger.warning(
+            "client missing get_incentive_programs; install latest client. "
+            "Returning [] for series=%s", series_ticker,
+        )
+        return []
+
     periods: list[LIPRewardPeriod] = []
-
-    try:
-        events_resp = await client.get_events(series_ticker=series_ticker, status="open")
-    except Exception as exc:
-        logger.warning("Failed to fetch events for %s: %s", series_ticker, exc)
-        return periods
-
-    events = events_resp.get("events", [])
-    for event in events:
-        event_ticker = event.get("event_ticker", "")
-        markets = event.get("markets", [])
-
-        for market in markets:
-            ticker = market.get("ticker", "")
-            if not ticker:
+    cursor: str | None = None
+    pages = 0
+    MAX_PAGES = 100
+    while pages < MAX_PAGES:
+        try:
+            resp = await client.get_incentive_programs(
+                status="active", type="liquidity",
+                limit=1000, cursor=cursor,
+            )
+        except Exception as exc:
+            logger.warning(
+                "get_incentive_programs failed (page %d): %s", pages, exc,
+            )
+            break
+        entries = resp.get("incentive_programs", []) or []
+        for entry in entries:
+            ticker = entry.get("market_ticker", "")
+            if series_ticker and not ticker.startswith(series_ticker):
                 continue
-
-            # Try parsing LIP data from the event-level market summary
-            period = parse_api_lip_data(ticker, market)
-            if period is not None:
-                periods.append(period)
-                continue
-
-            # If not in event response, try fetching individual market
             try:
-                market_resp = await client.get_market(ticker)
-                market_detail = market_resp.get("market", market_resp)
-                period = parse_api_lip_data(ticker, market_detail)
-                if period is not None:
-                    periods.append(period)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to fetch market detail for %s: %s", ticker, exc
-                )
-
+                periods.append(parse_incentive_program_entry(entry))
+            except LIPPoolDataError as exc:
+                logger.warning("skip malformed incentive entry: %s", exc)
+        cursor = resp.get("next_cursor") or None
+        if not cursor:
+            break
+        pages += 1
     return periods

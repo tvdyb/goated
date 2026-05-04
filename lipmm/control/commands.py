@@ -290,6 +290,33 @@ class RuntimeSnapshotResponse(BaseModel):
     ts: float
 
 
+class IncentiveProgramEntry(BaseModel):
+    """One row in /control/incentives. Operator-friendly: dollars and
+    seconds-remaining precomputed; the raw centi-cents and ISO strings
+    stay on the framework dataclass."""
+    id: str
+    market_ticker: str
+    market_id: str
+    incentive_type: str
+    incentive_description: str = ""
+    start_date_ts: float
+    end_date_ts: float
+    period_reward_dollars: float
+    discount_factor_bps: int | None = None
+    discount_factor_pct: float | None = None
+    target_size_contracts: float | None = None
+    paid_out: bool = False
+    time_remaining_s: float
+
+
+class IncentiveSnapshotResponse(BaseModel):
+    """GET /control/incentives response."""
+    programs: list[IncentiveProgramEntry] = Field(default_factory=list)
+    last_refresh_ts: float = 0.0
+    last_refresh_age_s: float | None = None
+    ts: float
+
+
 class CancelOrderRequest(BaseModel):
     """POST /control/cancel_order body — surgical cancel by exchange order_id."""
     order_id: str = Field(min_length=1, max_length=128)

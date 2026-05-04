@@ -491,6 +491,35 @@ class KalshiClient:
             params["cursor"] = cursor
         return await self._request("GET", "/portfolio/settlements", params=params)
 
+    async def get_incentive_programs(
+        self,
+        *,
+        status: str = "active",
+        type: str = "liquidity",
+        limit: int = 1000,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """GET /incentive_programs — list LIP/volume reward programs.
+
+        This endpoint is **unauthenticated** (no Authorization header
+        required). The KalshiClient still routes the request through
+        its rate-limiter for politeness.
+
+        Args:
+            status: "all" | "active" | "upcoming" | "closed" | "paid_out"
+            type:   "all" | "liquidity" | "volume"
+            limit:  page size (1..10000)
+            cursor: pagination cursor from a prior response's `next_cursor`
+
+        Returns dict with:
+            incentive_programs: list of program records
+            next_cursor: str | "" (empty when paginated to end)
+        """
+        params: dict[str, Any] = {"status": status, "type": type, "limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        return await self._request("GET", "/incentive_programs", params=params)
+
     async def get_exchange_status(self) -> dict[str, Any]:
         """GET /exchange/status -- maintenance/trading status.
 

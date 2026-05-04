@@ -144,6 +144,16 @@ class Broadcaster:
             "ts": time.time(),
         })
 
+    async def broadcast_incentives(self, snapshot: dict[str, Any]) -> None:
+        """Push an incentive-programs snapshot as `incentives_snapshot`.
+        The renderer's HTML adapter recognizes this event type and
+        OOB-swaps the incentives panel."""
+        await self._broadcast_event({
+            "event_type": "incentives_snapshot",
+            "snapshot": snapshot,
+            "ts": time.time(),
+        })
+
     async def broadcast_runtime(self, snapshot: dict[str, Any]) -> None:
         """Push a runtime snapshot (positions + resting orders + balance)
         as a `runtime_snapshot` event. Pre-shaped for the htmx renderer

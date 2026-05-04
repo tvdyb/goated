@@ -79,12 +79,20 @@ def mount_dashboard(
                 runtime = await collect()
             except Exception as exc:
                 logger.info("first-paint runtime collect failed: %s", exc)
+        incentives = None
+        collect_inc = getattr(app.state, "collect_incentives", None)
+        if collect_inc is not None and app.state.incentive_cache is not None:
+            try:
+                incentives = collect_inc()
+            except Exception as exc:
+                logger.info("first-paint incentives collect failed: %s", exc)
         ctx = {
             "snapshot": snap,
             "presence": broadcaster.presence(),
             "total_tabs": broadcaster.tab_count or 1,
             "records": [],
             "runtime": runtime,
+            "incentives": incentives,
         }
         return _templates.TemplateResponse(request, "dashboard.html", ctx)
 
@@ -117,12 +125,24 @@ def mount_dashboard(
                     runtime = await collect()
                 except Exception as exc:
                     logger.info("ws initial runtime collect failed: %s", exc)
+            collect_inc = getattr(websocket.app.state, "collect_incentives", None)
+            incentives = None
+            if collect_inc is not None and websocket.app.state.incentive_cache is not None:
+                try:
+                    incentives = collect_inc()
+                except Exception as exc:
+                    logger.info("ws initial incentives collect failed: %s", exc)
+            # Seed the adapter so any subsequent `incentives_snapshot` /
+            # `runtime_snapshot` event has the right context for cross-render.
+            adapter._last_runtime = runtime  # noqa: SLF001
+            adapter._last_incentives = incentives  # noqa: SLF001
             initial_html = render_initial(
                 state.snapshot(),
                 presence=broadcaster.presence(),
                 total_tabs=broadcaster.tab_count,
                 records=[],
                 runtime=runtime,
+                incentives=incentives,
             )
             await websocket.send_text(initial_html)
             await broadcaster.notify_join(tab_id)

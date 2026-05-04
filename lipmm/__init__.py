@@ -33,6 +33,12 @@ from lipmm.execution import (
     PlaceOrderRequest,
     Position,
 )
+from lipmm.incentives import (
+    IncentiveCache,
+    IncentiveProgram,
+    IncentiveProvider,
+    KalshiIncentiveProvider,
+)
 from lipmm.execution.adapters import KalshiExchangeAdapter
 from lipmm.control import (
     Broadcaster,
@@ -127,6 +133,11 @@ __all__ = [
     "MaxOrdersPerCycleGate",
     # exchange adapters
     "KalshiExchangeAdapter",
+    # incentives
+    "IncentiveCache",
+    "IncentiveProgram",
+    "IncentiveProvider",
+    "KalshiIncentiveProvider",
     # control plane
     "Broadcaster",
     "ControlConfig",
