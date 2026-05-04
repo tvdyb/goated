@@ -1,0 +1,4 @@
+<span id="presence-pill" class="pill bg-slate-800 text-slate-300" hx-swap-oob="true"
+      title="{{ presence | join(', ') if presence else '' }}">
+  {{ total_tabs or 1 }} tab{{ '' if (total_tabs or 1) == 1 else 's' }}
+</span>

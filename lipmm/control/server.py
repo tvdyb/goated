@@ -95,6 +95,7 @@ def build_app(
     exchange: ExchangeClient | None = None,
     risk_registry: RiskRegistry | None = None,
     broadcaster: Broadcaster | None = None,
+    mount_dashboard: bool = False,
 ) -> FastAPI:
     """Construct the FastAPI app. Caller wires in the ControlState and
     optional collaborators:
@@ -105,6 +106,9 @@ def build_app(
         (Phase 2). If either is None, /control/manual_order returns 503.
       - risk_registry: optional; if present, manual orders flow through
         the same gates as strategy decisions
+      - mount_dashboard: if True, attaches the Phase 4 htmx + Jinja
+        dashboard at /, /login, /dashboard, /static, and the WS
+        /control/stream/html endpoint. Requires a broadcaster.
     """
     app = FastAPI(
         title="lipmm Control Plane",
@@ -709,6 +713,16 @@ def build_app(
             detail="strategy hot-swap is deferred to Phase 2",
         )
 
+    # ── Phase 4: optional dashboard mount ──────────────────────────
+    if mount_dashboard:
+        if broadcaster is None:
+            raise ValueError(
+                "mount_dashboard=True requires a broadcaster — pass one explicitly "
+                "or use ControlServer which auto-creates one"
+            )
+        from lipmm.control.web import mount_dashboard as _mount
+        _mount(app, broadcaster=broadcaster, state=state, secret=secret)
+
     return app
 
 
@@ -740,6 +754,7 @@ class ControlServer:
         exchange: ExchangeClient | None = None,
         risk_registry: RiskRegistry | None = None,
         broadcaster: Broadcaster | None = None,
+        mount_dashboard: bool = False,
     ) -> None:
         self._state = state
         # Auto-create a broadcaster if none provided — the server's WS
@@ -754,6 +769,7 @@ class ControlServer:
             exchange=exchange,
             risk_registry=risk_registry,
             broadcaster=self._broadcaster,
+            mount_dashboard=mount_dashboard,
         )
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None

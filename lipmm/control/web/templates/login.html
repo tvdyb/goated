@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}lipmm control — login{% endblock %}
+{% block body %}
+<main class="mx-auto flex min-h-screen max-w-sm flex-col items-center justify-center p-6">
+  <h1 class="mb-6 text-2xl font-semibold tracking-tight">lipmm control</h1>
+  <form id="login-form" class="panel flex w-full flex-col gap-3" autocomplete="off">
+    <label class="text-xs uppercase tracking-wide text-slate-400" for="secret">Deployment secret</label>
+    <input id="secret" name="secret" type="password" class="input" required minlength="16"
+           autocomplete="off" autofocus>
+    <label class="text-xs uppercase tracking-wide text-slate-400 mt-2" for="actor">Actor name (optional)</label>
+    <input id="actor" name="actor" type="text" class="input" maxlength="64" value="operator">
+    <button type="submit" class="btn btn-primary mt-4">Sign in</button>
+    <p id="login-error" class="hidden text-sm text-rose-400"></p>
+  </form>
+</main>
+{% endblock %}

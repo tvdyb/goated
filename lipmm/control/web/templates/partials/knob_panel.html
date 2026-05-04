@@ -1,0 +1,37 @@
+<section id="knob-panel" class="panel" hx-swap-oob="true">
+  <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Knob overrides</h2>
+  {% if snapshot.knob_overrides %}
+    <ul class="space-y-1 text-sm">
+      {% for name, value in snapshot.knob_overrides.items() %}
+        <li class="flex items-center justify-between rounded bg-slate-950 px-2 py-1">
+          <span class="font-mono">{{ name }} = {{ value }}</span>
+          <button class="btn btn-muted"
+                  data-call="/control/clear_knob"
+                  data-payload='{"name":"{{ name }}"}'>clear</button>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="text-xs text-slate-500">no overrides — strategy uses configured defaults</p>
+  {% endif %}
+  <form class="mt-4 flex flex-wrap items-end gap-2 border-t border-slate-800 pt-3" data-form="knob">
+    <label class="flex flex-col text-xs text-slate-400">
+      Name
+      <input name="name" class="input" required placeholder="min_theo_confidence" list="knob-names">
+      <datalist id="knob-names">
+        <option>min_theo_confidence</option>
+        <option>theo_tolerance_c</option>
+        <option>max_distance_from_best</option>
+        <option>dollars_per_side</option>
+        <option>sticky_min_distance_from_theo</option>
+        <option>sticky_desert_jump_cents</option>
+        <option>max_notional_per_side_dollars</option>
+      </datalist>
+    </label>
+    <label class="flex flex-col text-xs text-slate-400">
+      Value
+      <input name="value" type="number" step="any" class="input w-24" required>
+    </label>
+    <button type="submit" class="btn btn-primary">set</button>
+  </form>
+</section>

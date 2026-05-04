@@ -35,6 +35,7 @@ from lipmm.control.state import (
     SideLock,
 )
 from lipmm.control.server import ControlServer, build_app
+from lipmm.control.web import mount_dashboard
 
 __all__ = [
     "Broadcaster",
@@ -46,5 +47,6 @@ __all__ = [
     "PauseScope",
     "SideLock",
     "build_app",
+    "mount_dashboard",
     "submit_manual_order",
 ]

@@ -1,0 +1,15 @@
+<div id="decision-feed" hx-swap-oob="true" class="max-h-72 overflow-y-auto rounded bg-slate-950 p-2 font-mono text-xs">
+  {% if records %}
+    <ul class="space-y-1">
+      {% for rec in records %}
+        <li class="text-slate-300">
+          <span class="text-slate-500">{{ rec.ts | round(2) }}</span>
+          <span class="text-sky-300">{{ rec.record_type or "decision" }}</span>
+          <span>{{ rec.summary }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="text-slate-500">waiting for events…</p>
+  {% endif %}
+</div>

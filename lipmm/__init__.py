@@ -44,6 +44,7 @@ from lipmm.control import (
     PauseScope,
     SideLock,
     build_app,
+    mount_dashboard,
     submit_manual_order,
 )
 from lipmm.observability import (
@@ -132,5 +133,6 @@ __all__ = [
     "SideLock",
     "build_app",
     "build_operator_command_record",
+    "mount_dashboard",
     "submit_manual_order",
 ]
