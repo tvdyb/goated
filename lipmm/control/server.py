@@ -57,6 +57,7 @@ from lipmm.control.commands import (
     AuthResponse,
     CancelOrderRequest,
     CancelOrderResponse,
+    ClearTheoOverrideRequest,
     CommandResponse,
     HealthResponse,
     KillRequest,
@@ -70,6 +71,7 @@ from lipmm.control.commands import (
     PauseRequest,
     ResumeRequest,
     RuntimeSnapshotResponse,
+    SetTheoOverrideRequest,
     StateResponse,
     SwapStrategyRequest,
     UnlockSideRequest,
@@ -595,6 +597,74 @@ def build_app(
             succeeded=True,
         )
         await _broadcast_change("unlock_side", request_id=req.request_id, actor=actor)
+        return CommandResponse(
+            new_version=new_version, request_id=req.request_id, actor=actor,
+        )
+
+    # ── Phase 7: manual theo overrides ─────────────────────────────
+
+    @app.post("/control/set_theo_override", response_model=CommandResponse)
+    async def post_set_theo_override(
+        req: SetTheoOverrideRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        _check_if_version(req.if_version)
+        version_before = state.version
+        try:
+            new_version = await state.set_theo_override(
+                req.ticker,
+                yes_probability=req.yes_cents / 100.0,
+                confidence=req.confidence,
+                reason=req.reason,
+                actor=actor,
+            )
+        except ValueError as exc:
+            emit_audit(
+                request.app.state.decision_logger,
+                request_id=req.request_id, actor=actor,
+                command_type="set_theo_override",
+                command_payload=req.model_dump(),
+                state_version_before=version_before,
+                state_version_after=state.version,
+                succeeded=False, error=str(exc),
+            )
+            raise HTTPException(400, str(exc)) from exc
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="set_theo_override",
+            command_payload=req.model_dump(),
+            state_version_before=version_before, state_version_after=new_version,
+            succeeded=True,
+        )
+        await _broadcast_change(
+            "set_theo_override", request_id=req.request_id, actor=actor,
+        )
+        return CommandResponse(
+            new_version=new_version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.post("/control/clear_theo_override", response_model=CommandResponse)
+    async def post_clear_theo_override(
+        req: ClearTheoOverrideRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        _check_if_version(req.if_version)
+        version_before = state.version
+        new_version = await state.clear_theo_override(req.ticker)
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="clear_theo_override",
+            command_payload=req.model_dump(),
+            state_version_before=version_before, state_version_after=new_version,
+            succeeded=True,
+        )
+        await _broadcast_change(
+            "clear_theo_override", request_id=req.request_id, actor=actor,
+        )
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )

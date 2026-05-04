@@ -33,6 +33,7 @@ from lipmm.control.state import (
     KillState,
     PauseScope,
     SideLock,
+    TheoOverride,
 )
 from lipmm.control.server import ControlServer, build_app
 from lipmm.control.web import mount_dashboard
@@ -46,6 +47,7 @@ __all__ = [
     "ManualOrderOutcome",
     "PauseScope",
     "SideLock",
+    "TheoOverride",
     "build_app",
     "mount_dashboard",
     "submit_manual_order",

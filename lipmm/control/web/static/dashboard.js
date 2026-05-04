@@ -170,6 +170,43 @@
         if (ttl) body.auto_unlock_seconds = parseFloat(ttl);
         await callJson("/control/lock_side", body);
         form.reset();
+      } else if (kind === "theo-override") {
+        const ticker = (fd.get("ticker") || "").trim();
+        const yes_cents = parseInt(fd.get("yes_cents"), 10);
+        const confidence = parseFloat(fd.get("confidence"));
+        const reason = (fd.get("reason") || "").trim();
+        if (!ticker) return showToast("ticker required");
+        if (!Number.isInteger(yes_cents) || yes_cents < 1 || yes_cents > 99) {
+          return showToast("yes_cents must be 1..99");
+        }
+        if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+          return showToast("confidence must be 0..1");
+        }
+        if (reason.length < 4) return showToast("reason must be ≥4 chars");
+        const yes_p = (yes_cents / 100).toFixed(2);
+        // Step 1: rich preview confirm()
+        const msg = (
+          `OVERRIDE THEO for ${ticker}?\n\n` +
+          `  Setting fair value = ${yes_cents}c (P(Yes) = ${yes_p})\n` +
+          `  confidence = ${confidence}\n` +
+          `  reason = ${reason}\n\n` +
+          `The bot will quote this strike as if its fair value is ` +
+          `${yes_cents} cents until you clear the override or restart ` +
+          `the bot.\n\nClick OK to continue to ticker confirmation.`
+        );
+        if (!confirm(msg)) return;
+        // Step 2: type the ticker exactly
+        const typed = prompt(`To confirm, type the ticker name "${ticker}" exactly:`);
+        if (typed === null) return;  // cancelled
+        if (typed.trim() !== ticker) {
+          return showToast(`override aborted — typed "${typed}" did not match "${ticker}"`);
+        }
+        await callJson("/control/set_theo_override", {
+          ticker, yes_cents, confidence, reason,
+        });
+        form.reset();
+        const conf = form.querySelector("[name=confidence]");
+        if (conf) conf.value = "1.0";
       } else if (kind === "manual-order") {
         const body = {
           ticker: fd.get("ticker"),

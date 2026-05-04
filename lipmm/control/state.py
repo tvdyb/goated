@@ -80,6 +80,29 @@ class _Pauses:
 
 
 @dataclass(frozen=True)
+class TheoOverride:
+    """A manual theo value the operator has plugged in via the dashboard.
+
+    Lives in `ControlState.theo_overrides[ticker]`. The runner consults
+    this BEFORE calling the registered TheoProvider — if an override
+    exists, the override wins and the provider is skipped entirely.
+
+    The strategy doesn't know it's an override; it just receives a
+    `TheoResult` whose `source` reads `manual-override:{actor}`.
+
+    Runtime-only: cleared on bot restart by virtue of being in-memory
+    (matches the knob-override convention). The dashboard surfaces a
+    "cleared on restart" reminder so the operator doesn't lean on
+    overrides for long-term state.
+    """
+    yes_probability: float    # in [0,1]
+    confidence: float         # in [0,1]; controls whether strategy quotes
+    reason: str               # operator-provided audit string
+    set_at: float             # unix timestamp
+    actor: str                # who set it (from JWT)
+
+
+@dataclass(frozen=True)
 class SideLock:
     """A lock on a strike-side that the strategy must respect.
 
@@ -120,6 +143,9 @@ class ControlState:
         self._knob_overrides: dict[str, float] = {}
         # side_locks[(ticker, side)] = SideLock; strategy must respect.
         self._side_locks: dict[tuple[str, SideName], SideLock] = {}
+        # theo_overrides[ticker] = TheoOverride; runner consults this
+        # BEFORE calling the registered TheoProvider.
+        self._theo_overrides: dict[str, TheoOverride] = {}
 
     @property
     def version(self) -> int:
@@ -185,6 +211,18 @@ class ControlState:
         Does NOT auto-expire — use is_side_locked() for the runner's check."""
         return self._side_locks.get((ticker, side))
 
+    def get_theo_override(self, ticker: str) -> TheoOverride | None:
+        """Returns the operator-set theo override for `ticker`, or None.
+
+        Called by the runner each cycle BEFORE the registered TheoProvider —
+        if an override exists, it short-circuits the provider entirely.
+        """
+        return self._theo_overrides.get(ticker)
+
+    def all_theo_overrides(self) -> dict[str, TheoOverride]:
+        """All current overrides. Used by the dashboard's overview render."""
+        return dict(self._theo_overrides)
+
     def all_side_locks(self) -> dict[tuple[str, SideName], SideLock]:
         """All current locks. Useful for the dashboard's locks-overview
         endpoint. Doesn't auto-expire — operator sees stale-but-not-yet-
@@ -227,6 +265,18 @@ class ControlState:
                 for (ticker, side), lock in sorted(
                     self._side_locks.items(), key=lambda kv: kv[0],
                 )
+            ],
+            "theo_overrides": [
+                {
+                    "ticker": ticker,
+                    "yes_probability": ov.yes_probability,
+                    "yes_cents": int(round(ov.yes_probability * 100)),
+                    "confidence": ov.confidence,
+                    "reason": ov.reason,
+                    "set_at": ov.set_at,
+                    "actor": ov.actor,
+                }
+                for ticker, ov in sorted(self._theo_overrides.items())
             ],
         }
 
@@ -356,6 +406,52 @@ class ControlState:
                 locked_at=_t.time(),
                 auto_unlock_at=auto_unlock_at,
             )
+            return self._bump_version()
+
+    async def set_theo_override(
+        self,
+        ticker: str,
+        yes_probability: float,
+        *,
+        confidence: float = 1.0,
+        reason: str,
+        actor: str = "operator",
+    ) -> int:
+        """Plug a manual theo value for `ticker`. Strict bounds:
+        `yes_probability ∈ [0,1]`, `confidence ∈ [0,1]`, reason non-empty
+        (the dashboard enforces ≥4 chars; here we allow any non-empty
+        for testability).
+
+        Once set, the runner skips the TheoProvider for this ticker and
+        feeds the strategy a TheoResult derived from these values. Use
+        `clear_theo_override(ticker)` to undo.
+        """
+        if not (0.0 <= yes_probability <= 1.0):
+            raise ValueError(
+                f"yes_probability must be in [0,1]; got {yes_probability}"
+            )
+        if not (0.0 <= confidence <= 1.0):
+            raise ValueError(
+                f"confidence must be in [0,1]; got {confidence}"
+            )
+        if not reason or not reason.strip():
+            raise ValueError("reason required for theo override")
+        import time as _t
+        async with self._lock:
+            self._theo_overrides[ticker] = TheoOverride(
+                yes_probability=float(yes_probability),
+                confidence=float(confidence),
+                reason=reason.strip(),
+                set_at=_t.time(),
+                actor=actor,
+            )
+            return self._bump_version()
+
+    async def clear_theo_override(self, ticker: str) -> int:
+        """Remove the override for `ticker`. No-op if no override
+        exists; still bumps version so dashboards see the action."""
+        async with self._lock:
+            self._theo_overrides.pop(ticker, None)
             return self._bump_version()
 
     async def unlock_side(self, ticker: str, side: SideName) -> int:

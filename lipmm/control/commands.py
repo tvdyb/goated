@@ -209,6 +209,45 @@ class LocksResponse(BaseModel):
     locks: list[LockEntry]
 
 
+# ── Theo override (manual operator-set fair value) ────────────────
+
+
+class SetTheoOverrideRequest(BaseModel):
+    """POST /control/set_theo_override body.
+
+    `yes_cents` is the operator-friendly form (1..99 integer); the
+    server converts to a float `yes_probability` in [0.01, 0.99] before
+    storing. `confidence` is on the framework's calibrated scale; 1.0 =
+    "trust this within 1c on a 100c scale." `reason` is required and
+    must be ≥4 chars to make the audit trail useful.
+    """
+    ticker: str = Field(min_length=1, max_length=128)
+    yes_cents: int = Field(ge=1, le=99,
+                           description="Operator's fair-value estimate in cents (1..99)")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    reason: str = Field(min_length=4, max_length=512,
+                        description="Required audit string — why this override?")
+    request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
+
+
+class ClearTheoOverrideRequest(BaseModel):
+    ticker: str = Field(min_length=1, max_length=128)
+    request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
+
+
+class TheoOverrideEntry(BaseModel):
+    """One row in the GET /control/state theo_overrides list."""
+    ticker: str
+    yes_probability: float
+    yes_cents: int
+    confidence: float
+    reason: str
+    set_at: float
+    actor: str
+
+
 # ── Runtime snapshot (positions / resting orders / balance) ────────
 
 
@@ -281,6 +320,7 @@ class StateResponse(BaseModel):
     paused_sides: list[list[str]]   # [[ticker, side], ...]
     knob_overrides: dict[str, float]
     side_locks: list[LockEntry] = Field(default_factory=list)
+    theo_overrides: list[TheoOverrideEntry] = Field(default_factory=list)
 
 
 # ── Generic command response ────────────────────────────────────────

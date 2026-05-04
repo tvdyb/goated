@@ -69,6 +69,7 @@ def render_initial(
         _env.get_template("partials/kill_panel.html").render(snapshot=snapshot),
         _env.get_template("partials/knob_panel.html").render(snapshot=snapshot),
         _env.get_template("partials/lock_panel.html").render(snapshot=snapshot),
+        _env.get_template("partials/theo_overrides_panel.html").render(snapshot=snapshot),
         _env.get_template("partials/manual_order_panel.html").render(snapshot=snapshot),
         _env.get_template("partials/decision_feed.html").render(records=records),
         _env.get_template("partials/presence.html").render(
@@ -90,6 +91,7 @@ def render_state(snapshot: dict[str, Any]) -> str:
         _env.get_template("partials/kill_panel.html").render(snapshot=snapshot),
         _env.get_template("partials/knob_panel.html").render(snapshot=snapshot),
         _env.get_template("partials/lock_panel.html").render(snapshot=snapshot),
+        _env.get_template("partials/theo_overrides_panel.html").render(snapshot=snapshot),
     ])
 
 

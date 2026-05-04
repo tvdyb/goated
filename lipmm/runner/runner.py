@@ -221,8 +221,25 @@ class LIPRunner:
             if self._cfg.settlement_time_ts else 0.0
         )
 
-        # 1. Theo
-        theo: TheoResult = await self._theo.theo(ticker)
+        # 1. Theo. If the operator has plugged in a manual override via
+        # the dashboard for this ticker, skip the registered TheoProvider
+        # entirely and feed the strategy a TheoResult derived from the
+        # override. Source string is "manual-override:{actor}" so analysts
+        # can identify override-driven decisions in the log.
+        override = (
+            self._control.get_theo_override(ticker)
+            if self._control is not None else None
+        )
+        if override is not None:
+            theo = TheoResult(
+                yes_probability=override.yes_probability,
+                confidence=override.confidence,
+                computed_at=override.set_at,
+                source=f"manual-override:{override.actor}",
+                extras={"override_reason": override.reason},
+            )
+        else:
+            theo = await self._theo.theo(ticker)
 
         # 2. Orderbook (will be ExchangeClient's job)
         ob_levels = await self._exchange.get_orderbook(ticker)
