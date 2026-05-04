@@ -56,13 +56,22 @@ from lipmm.control.commands import (
     KillRequest,
     KnobClearRequest,
     KnobUpdateRequest,
+    LockEntry,
+    LockSideRequest,
+    LocksResponse,
+    ManualOrderRequest,
+    ManualOrderResponse,
     PauseRequest,
     ResumeRequest,
     StateResponse,
     SwapStrategyRequest,
+    UnlockSideRequest,
 )
+from lipmm.control.manual_orders import submit_manual_order
 from lipmm.control.state import ControlState, KillState, PauseScope
+from lipmm.execution import ExchangeClient, OrderManager
 from lipmm.observability import DecisionLogger
+from lipmm.risk import RiskRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -78,14 +87,24 @@ def build_app(
     decision_logger: DecisionLogger | None = None,
     kill_handler: KillHandler | None = None,
     secret: str | None = None,
+    order_manager: OrderManager | None = None,
+    exchange: ExchangeClient | None = None,
+    risk_registry: RiskRegistry | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app. Caller wires in the ControlState and
-    optional collaborators (logger for audit, kill_handler for the kill
-    button). `secret` overrides the env-var lookup (useful for tests)."""
+    optional collaborators:
+      - decision_logger: for audit emission of every command
+      - kill_handler: invoked by /control/kill (cancel-all)
+      - secret: overrides env-var lookup (useful for tests)
+      - order_manager + exchange: required for manual-order endpoints
+        (Phase 2). If either is None, /control/manual_order returns 503.
+      - risk_registry: optional; if present, manual orders flow through
+        the same gates as strategy decisions
+    """
     app = FastAPI(
         title="lipmm Control Plane",
         description="HTTP control surface for runtime bot management.",
-        version="0.1.0",
+        version="0.2.0",
     )
     # Stash collaborators on app.state so route handlers can find them
     # without importing module-level globals.
@@ -93,6 +112,9 @@ def build_app(
     app.state.decision_logger = decision_logger
     app.state.kill_handler = kill_handler
     app.state.control_secret = secret  # None → require_auth reads env
+    app.state.order_manager = order_manager
+    app.state.exchange = exchange
+    app.state.risk_registry = risk_registry
 
     # ── Unprotected endpoints ──────────────────────────────────────
 
@@ -333,6 +355,192 @@ def build_app(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
 
+    # ── Phase 2: manual orders + side locks ────────────────────────
+
+    @app.post("/control/manual_order", response_model=ManualOrderResponse)
+    async def post_manual_order(
+        req: ManualOrderRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> ManualOrderResponse:
+        version_before = state.version
+        om = request.app.state.order_manager
+        ex = request.app.state.exchange
+        if om is None or ex is None:
+            err = "manual orders require an OrderManager + ExchangeClient wired into ControlServer"
+            emit_audit(
+                request.app.state.decision_logger,
+                request_id=req.request_id, actor=actor,
+                command_type="manual_order",
+                command_payload=req.model_dump(),
+                state_version_before=version_before,
+                state_version_after=state.version,
+                succeeded=False, error=err,
+            )
+            raise HTTPException(503, err)
+        # Honor kill switch: refuse manual orders when killed.
+        if state.is_killed():
+            err = "manual orders refused: bot is in KILLED state; arm + resume first"
+            emit_audit(
+                request.app.state.decision_logger,
+                request_id=req.request_id, actor=actor,
+                command_type="manual_order",
+                command_payload=req.model_dump(),
+                state_version_before=version_before,
+                state_version_after=state.version,
+                succeeded=False, error=err,
+            )
+            raise HTTPException(409, err)
+        try:
+            outcome = await submit_manual_order(
+                state=state, order_manager=om, exchange=ex,
+                risk_registry=request.app.state.risk_registry,
+                ticker=req.ticker, side=req.side, count=req.count,
+                limit_price_cents=req.limit_price_cents,
+                lock_after=req.lock_after,
+                lock_auto_unlock_seconds=req.lock_auto_unlock_seconds,
+                reason=req.reason,
+            )
+        except ValueError as exc:
+            emit_audit(
+                request.app.state.decision_logger,
+                request_id=req.request_id, actor=actor,
+                command_type="manual_order",
+                command_payload=req.model_dump(),
+                state_version_before=version_before,
+                state_version_after=state.version,
+                succeeded=False, error=str(exc),
+            )
+            raise HTTPException(400, str(exc)) from exc
+        # Audit the outcome whether it succeeded, was risk-vetoed, or rejected.
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="manual_order",
+            command_payload=req.model_dump(),
+            state_version_before=version_before,
+            state_version_after=state.version,
+            succeeded=outcome.succeeded,
+            error=(None if outcome.succeeded
+                   else outcome.execution.reason),
+            side_effect_summary={
+                "action": outcome.execution.action,
+                "order_id": outcome.execution.order_id,
+                "price_cents": outcome.execution.price_cents,
+                "size": outcome.execution.size,
+                "latency_ms": outcome.execution.latency_ms,
+                "risk_vetoed": outcome.risk_vetoed,
+                "lock_applied": outcome.lock_applied,
+                "lock_auto_unlock_at": outcome.lock_auto_unlock_at,
+                "risk_audit": outcome.risk_audit,
+            },
+        )
+        return ManualOrderResponse(
+            succeeded=outcome.succeeded,
+            risk_vetoed=outcome.risk_vetoed,
+            action=outcome.execution.action,
+            reason=outcome.execution.reason,
+            order_id=outcome.execution.order_id,
+            price_cents=outcome.execution.price_cents,
+            size=outcome.execution.size,
+            latency_ms=outcome.execution.latency_ms,
+            risk_audit=outcome.risk_audit,
+            lock_applied=outcome.lock_applied,
+            lock_auto_unlock_at=outcome.lock_auto_unlock_at,
+            new_version=state.version,
+            request_id=req.request_id,
+            actor=actor,
+        )
+
+    @app.post("/control/lock_side", response_model=CommandResponse)
+    async def post_lock_side(
+        req: LockSideRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        import time as _t
+        version_before = state.version
+        auto_unlock_at = (
+            _t.time() + req.auto_unlock_seconds
+            if req.auto_unlock_seconds else None
+        )
+        try:
+            new_version = await state.lock_side(
+                req.ticker, req.side,
+                reason=req.reason, auto_unlock_at=auto_unlock_at,
+            )
+        except ValueError as exc:
+            emit_audit(
+                request.app.state.decision_logger,
+                request_id=req.request_id, actor=actor,
+                command_type="lock_side",
+                command_payload=req.model_dump(),
+                state_version_before=version_before,
+                state_version_after=state.version,
+                succeeded=False, error=str(exc),
+            )
+            raise HTTPException(400, str(exc)) from exc
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="lock_side",
+            command_payload=req.model_dump(),
+            state_version_before=version_before,
+            state_version_after=new_version,
+            succeeded=True,
+            side_effect_summary={"auto_unlock_at": auto_unlock_at},
+        )
+        return CommandResponse(
+            new_version=new_version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.post("/control/unlock_side", response_model=CommandResponse)
+    async def post_unlock_side(
+        req: UnlockSideRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        version_before = state.version
+        try:
+            new_version = await state.unlock_side(req.ticker, req.side)
+        except ValueError as exc:
+            emit_audit(
+                request.app.state.decision_logger,
+                request_id=req.request_id, actor=actor,
+                command_type="unlock_side",
+                command_payload=req.model_dump(),
+                state_version_before=version_before,
+                state_version_after=state.version,
+                succeeded=False, error=str(exc),
+            )
+            raise HTTPException(400, str(exc)) from exc
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="unlock_side",
+            command_payload=req.model_dump(),
+            state_version_before=version_before,
+            state_version_after=new_version,
+            succeeded=True,
+        )
+        return CommandResponse(
+            new_version=new_version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.get("/control/locks", response_model=LocksResponse)
+    async def get_locks(actor: str = Depends(require_auth)) -> LocksResponse:
+        locks = state.all_side_locks()
+        entries = [
+            LockEntry(
+                ticker=ticker, side=side,
+                mode=lock.mode, reason=lock.reason,
+                locked_at=lock.locked_at,
+                auto_unlock_at=lock.auto_unlock_at,
+            )
+            for (ticker, side), lock in sorted(locks.items(), key=lambda kv: kv[0])
+        ]
+        return LocksResponse(locks=entries)
+
     @app.post("/control/swap_strategy", response_model=CommandResponse)
     async def post_swap_strategy(
         req: SwapStrategyRequest,
@@ -387,11 +595,19 @@ class ControlServer:
         decision_logger: DecisionLogger | None = None,
         kill_handler: KillHandler | None = None,
         secret: str | None = None,
+        order_manager: OrderManager | None = None,
+        exchange: ExchangeClient | None = None,
+        risk_registry: RiskRegistry | None = None,
     ) -> None:
         self._state = state
         self._app = build_app(
-            state, decision_logger=decision_logger,
-            kill_handler=kill_handler, secret=secret,
+            state,
+            decision_logger=decision_logger,
+            kill_handler=kill_handler,
+            secret=secret,
+            order_manager=order_manager,
+            exchange=exchange,
+            risk_registry=risk_registry,
         )
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None

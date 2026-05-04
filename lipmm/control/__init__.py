@@ -22,11 +22,16 @@ Out of scope for v1 (planned for later phases):
   - Disk-cap retention manager (Phase 5)
 """
 
+from lipmm.control.manual_orders import (
+    ManualOrderOutcome,
+    submit_manual_order,
+)
 from lipmm.control.state import (
     ControlConfig,
     ControlState,
     KillState,
     PauseScope,
+    SideLock,
 )
 from lipmm.control.server import ControlServer, build_app
 
@@ -35,6 +40,9 @@ __all__ = [
     "ControlServer",
     "ControlState",
     "KillState",
+    "ManualOrderOutcome",
     "PauseScope",
+    "SideLock",
     "build_app",
+    "submit_manual_order",
 ]

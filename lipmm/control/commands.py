@@ -115,6 +115,86 @@ class SwapStrategyRequest(BaseModel):
     request_id: str = Field(min_length=8, max_length=128)
 
 
+# ── Manual orders + side locks ──────────────────────────────────────
+
+
+class ManualOrderRequest(BaseModel):
+    """POST /control/manual_order body."""
+    ticker: str = Field(min_length=1, max_length=128)
+    side: Literal["bid", "ask"]
+    count: int = Field(gt=0, le=100_000,
+                       description="Contracts to place")
+    limit_price_cents: int = Field(ge=1, le=99,
+                                   description="Limit price in cents (1..99)")
+    lock_after: bool = Field(
+        default=False,
+        description="If true, lock this side after a successful place "
+                    "(strategy stops quoting it until /unlock_side or auto-expiry)",
+    )
+    lock_auto_unlock_seconds: float | None = Field(
+        default=None, ge=1.0, le=86400.0,
+        description="If lock_after, auto-unlock after this many seconds "
+                    "(1..86400). None = manual unlock only.",
+    )
+    reason: str = Field(default="", max_length=512,
+                        description="Operator-provided reason for audit")
+    request_id: str = Field(min_length=8, max_length=128)
+
+
+class ManualOrderResponse(BaseModel):
+    """POST /control/manual_order response. Distinguishes succeeded /
+    risk_vetoed / exchange_rejected so the UI can render the right message."""
+    succeeded: bool
+    risk_vetoed: bool
+    action: str                         # SideExecution.action enum value
+    reason: str                         # human-readable
+    order_id: str | None = None
+    price_cents: int | None = None
+    size: int | None = None
+    latency_ms: int = 0
+    risk_audit: list[dict] = Field(default_factory=list)
+    lock_applied: bool = False
+    lock_auto_unlock_at: float | None = None
+    new_version: int
+    request_id: str
+    actor: str
+
+
+class LockSideRequest(BaseModel):
+    """POST /control/lock_side body. Operator-initiated lock, not from a
+    manual order's lock_after flag."""
+    ticker: str = Field(min_length=1, max_length=128)
+    side: Literal["bid", "ask"]
+    reason: str = Field(default="", max_length=512)
+    auto_unlock_seconds: float | None = Field(
+        default=None, ge=1.0, le=86400.0,
+        description="Auto-unlock TTL in seconds. None = manual only.",
+    )
+    request_id: str = Field(min_length=8, max_length=128)
+
+
+class UnlockSideRequest(BaseModel):
+    """POST /control/unlock_side body."""
+    ticker: str = Field(min_length=1, max_length=128)
+    side: Literal["bid", "ask"]
+    request_id: str = Field(min_length=8, max_length=128)
+
+
+class LockEntry(BaseModel):
+    """One entry in the GET /control/locks response."""
+    ticker: str
+    side: str
+    mode: str
+    reason: str
+    locked_at: float
+    auto_unlock_at: float | None
+
+
+class LocksResponse(BaseModel):
+    """GET /control/locks response."""
+    locks: list[LockEntry]
+
+
 # ── State snapshot response ─────────────────────────────────────────
 
 
@@ -126,6 +206,7 @@ class StateResponse(BaseModel):
     paused_tickers: list[str]
     paused_sides: list[list[str]]   # [[ticker, side], ...]
     knob_overrides: dict[str, float]
+    side_locks: list[LockEntry] = Field(default_factory=list)
 
 
 # ── Generic command response ────────────────────────────────────────

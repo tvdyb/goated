@@ -303,6 +303,59 @@ async def test_knob_override_reaches_strategy() -> None:
     assert len(ex.orders) == 0
 
 
+# ── 7. Side locks affect the runner the same way as side pauses ────
+
+
+@pytest.mark.asyncio
+async def test_side_lock_blocks_one_side() -> None:
+    """A SideLock has the same runner-side effect as a pause: skip=True
+    on the locked side, with a reason that mentions the lock."""
+    cs = ControlState()
+    await cs.lock_side("KX-T50.00", "bid", reason="manual buy hold")
+    book = OrderbookLevels(
+        ticker="KX-T50.00",
+        yes_levels=[(45, 100.0)], no_levels=[(45, 100.0)],
+    )
+    runner, ex = _make_runner(
+        tickers=["KX-T50.00"],
+        book_for={"KX-T50.00": book},
+        theo_prob=0.50,
+        control_state=cs,
+    )
+    await _run_for(runner, 0.15)
+    buys = [o for o in ex.orders.values() if o.action == "buy"]
+    sells = [o for o in ex.orders.values() if o.action == "sell"]
+    assert len(buys) == 0   # bid locked → no buys
+    assert len(sells) > 0   # ask unaffected
+
+
+@pytest.mark.asyncio
+async def test_side_lock_auto_unlocks_after_ttl() -> None:
+    """A lock with auto_unlock_at in the past is treated as not locked
+    on the next runner check — and the lock is lazily cleared from state."""
+    import time as _t
+    cs = ControlState()
+    # Lock with expiry already in the past
+    await cs.lock_side("KX-T50.00", "bid",
+                       auto_unlock_at=_t.time() - 1)
+    book = OrderbookLevels(
+        ticker="KX-T50.00",
+        yes_levels=[(45, 100.0)], no_levels=[(45, 100.0)],
+    )
+    runner, ex = _make_runner(
+        tickers=["KX-T50.00"],
+        book_for={"KX-T50.00": book},
+        theo_prob=0.50,
+        control_state=cs,
+    )
+    await _run_for(runner, 0.15)
+    # Bot should have placed bids despite the (expired) lock
+    buys = [o for o in ex.orders.values() if o.action == "buy"]
+    assert len(buys) > 0
+    # And the expired lock has been cleared from state
+    assert cs.get_side_lock("KX-T50.00", "bid") is None
+
+
 @pytest.mark.asyncio
 async def test_no_knob_override_uses_strategy_default() -> None:
     """Sanity: same scenario without the knob override → strategy uses

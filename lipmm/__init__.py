@@ -39,8 +39,11 @@ from lipmm.control import (
     ControlServer,
     ControlState,
     KillState,
+    ManualOrderOutcome,
     PauseScope,
+    SideLock,
     build_app,
+    submit_manual_order,
 )
 from lipmm.observability import (
     DecisionLogger,
@@ -122,7 +125,10 @@ __all__ = [
     "ControlServer",
     "ControlState",
     "KillState",
+    "ManualOrderOutcome",
     "PauseScope",
+    "SideLock",
     "build_app",
     "build_operator_command_record",
+    "submit_manual_order",
 ]

@@ -28,6 +28,7 @@ What the OrderManager DOES NOT do:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -75,6 +76,15 @@ class OrderManager:
 
     def __init__(self) -> None:
         self._resting: dict[tuple[str, SideName], RestingOrder | None] = {}
+        # Per-(ticker, side) lock guards apply() against concurrent calls
+        # from different tasks (e.g. runner cycle vs manual-order endpoint
+        # both touching the same key in flight). Lazy-allocated.
+        self._locks: dict[tuple[str, SideName], asyncio.Lock] = {}
+
+    def _lock_for(self, key: tuple[str, SideName]) -> asyncio.Lock:
+        if key not in self._locks:
+            self._locks[key] = asyncio.Lock()
+        return self._locks[key]
 
     # ── public API ───────────────────────────────────────────────────
 
@@ -126,8 +136,24 @@ class OrderManager:
         exchange: ExchangeClient,
     ) -> SideExecution:
         """Apply one strike-side decision. Returns a SideExecution summary
-        suitable for decision-log records."""
+        suitable for decision-log records.
+
+        Holds a per-(ticker, side) async lock so concurrent calls (e.g.
+        runner cycle vs manual-order endpoint) on the same key serialize
+        correctly. Calls on different keys remain parallel.
+        """
         key = (ticker, side)
+        async with self._lock_for(key):
+            return await self._apply_locked(key, ticker, side, decision, exchange)
+
+    async def _apply_locked(
+        self,
+        key: tuple[str, SideName],
+        ticker: str,
+        side: SideName,
+        decision: SideDecision,
+        exchange: ExchangeClient,
+    ) -> SideExecution:
         cur = self._resting.get(key)
 
         # Skip path: cancel any resting order, place nothing.

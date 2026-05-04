@@ -79,6 +79,31 @@ class _Pauses:
     paused_sides: set[tuple[str, SideName]] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class SideLock:
+    """A lock on a strike-side that the strategy must respect.
+
+    Locks are stronger than pauses: pauses are operator-driven and the
+    operator manually unpauses them; locks have semantic intent (often
+    set automatically by manual orders via the `lock_after` flag) and
+    can self-expire on a timestamp.
+
+    Modes (Phase 2 supports "lock" only; "reduce_only" deferred until
+    position-aware infrastructure lands):
+      - "lock":        strategy emits skip=True for this side until unlocked
+      - "reduce_only": strategy may only place orders that reduce position
+                       (DEFERRED — needs position polling, not in v1)
+
+    Auto-unlock:
+      - auto_unlock_at: unix timestamp; lazily cleared when checked past it
+      - None:           manual unlock only
+    """
+    mode: Literal["lock", "reduce_only"]
+    reason: str
+    locked_at: float
+    auto_unlock_at: float | None = None
+
+
 class ControlState:
     """Mutable shared state. All mutations bump the version counter and
     take the async lock. Reads are unsynchronized (consistent under
@@ -93,6 +118,8 @@ class ControlState:
         # knob_overrides[name] = value. Strategies/runner read these and
         # use them in place of configured defaults when present.
         self._knob_overrides: dict[str, float] = {}
+        # side_locks[(ticker, side)] = SideLock; strategy must respect.
+        self._side_locks: dict[tuple[str, SideName], SideLock] = {}
 
     @property
     def version(self) -> int:
@@ -128,6 +155,42 @@ class ControlState:
         """The runner asks this for each ticker."""
         return self.should_skip_cycle() or self.is_ticker_paused(ticker)
 
+    def is_side_locked(
+        self, ticker: str, side: SideName, now_ts: float | None = None,
+    ) -> bool:
+        """True if the side has a SideLock and it hasn't expired.
+
+        Lazily expires locks past their auto_unlock_at — the read path
+        is the only place that checks expiry, avoiding a separate cron.
+        Caller passes now_ts to avoid a clock call when iterating; if
+        omitted, time.time() is used.
+        """
+        lock = self._side_locks.get((ticker, side))
+        if lock is None:
+            return False
+        if lock.auto_unlock_at is not None:
+            import time as _t
+            t = now_ts if now_ts is not None else _t.time()
+            if t >= lock.auto_unlock_at:
+                # Lazy unlock: expire the lock without taking the async lock
+                # (idempotent — concurrent expires resolve to the same state).
+                self._side_locks.pop((ticker, side), None)
+                return False
+        return True
+
+    def get_side_lock(
+        self, ticker: str, side: SideName,
+    ) -> SideLock | None:
+        """Returns the SideLock for inspection, or None if not locked.
+        Does NOT auto-expire — use is_side_locked() for the runner's check."""
+        return self._side_locks.get((ticker, side))
+
+    def all_side_locks(self) -> dict[tuple[str, SideName], SideLock]:
+        """All current locks. Useful for the dashboard's locks-overview
+        endpoint. Doesn't auto-expire — operator sees stale-but-not-yet-
+        cleared locks for transparency."""
+        return dict(self._side_locks)
+
     def get_knob(self, name: str) -> float | None:
         """Returns the current override for a knob, or None if no override."""
         return self._knob_overrides.get(name)
@@ -154,6 +217,17 @@ class ControlState:
                 [list(t) for t in self._pauses.paused_sides]
             ),
             "knob_overrides": dict(self._knob_overrides),
+            "side_locks": [
+                {
+                    "ticker": ticker, "side": side,
+                    "mode": lock.mode, "reason": lock.reason,
+                    "locked_at": lock.locked_at,
+                    "auto_unlock_at": lock.auto_unlock_at,
+                }
+                for (ticker, side), lock in sorted(
+                    self._side_locks.items(), key=lambda kv: kv[0],
+                )
+            ],
         }
 
     # ── Mutations (locked + version-bumped) ─────────────────────────
@@ -250,6 +324,47 @@ class ControlState:
         on the next cycle."""
         async with self._lock:
             self._knob_overrides.pop(name, None)
+            return self._bump_version()
+
+    async def lock_side(
+        self,
+        ticker: str,
+        side: SideName,
+        *,
+        reason: str = "",
+        auto_unlock_at: float | None = None,
+        mode: Literal["lock", "reduce_only"] = "lock",
+    ) -> int:
+        """Place a lock on a strike-side. The runner consults this each
+        cycle and forces skip=True on locked sides.
+
+        For Phase 2 only `mode="lock"` is supported (full skip);
+        `mode="reduce_only"` is reserved for a future phase that adds
+        position-aware skip semantics.
+        """
+        if side not in ("bid", "ask"):
+            raise ValueError(f"side must be 'bid' or 'ask', got {side!r}")
+        if mode != "lock":
+            raise ValueError(
+                f"mode={mode!r} not supported in Phase 2; only 'lock' for now"
+            )
+        import time as _t
+        async with self._lock:
+            self._side_locks[(ticker, side)] = SideLock(
+                mode=mode,
+                reason=reason,
+                locked_at=_t.time(),
+                auto_unlock_at=auto_unlock_at,
+            )
+            return self._bump_version()
+
+    async def unlock_side(self, ticker: str, side: SideName) -> int:
+        """Remove a lock. No-op if no lock exists; still bumps version
+        so dashboards see the operator action."""
+        if side not in ("bid", "ask"):
+            raise ValueError(f"side must be 'bid' or 'ask', got {side!r}")
+        async with self._lock:
+            self._side_locks.pop((ticker, side), None)
             return self._bump_version()
 
     # ── Internal ─────────────────────────────────────────────────────

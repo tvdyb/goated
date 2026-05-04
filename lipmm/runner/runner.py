@@ -274,31 +274,47 @@ class LIPRunner:
             control_overrides=control_overrides,
         )
 
-        # 3a. Per-side pause from control plane: force skip on any paused side.
-        # Applied AFTER strategy decision so the strategy's reasoning is
-        # captured in the decision-log record before being overridden.
+        # 3a. Per-side pause AND per-side lock from control plane.
+        # Force skip on any paused or locked side. Applied AFTER strategy
+        # decision so the strategy's reasoning is captured in the
+        # decision-log record before being overridden.
         if self._control is not None:
             from lipmm.quoting.base import SideDecision as _SideDecision
-            if self._control.is_side_paused(ticker, "bid") and not decision.bid.skip:
-                decision = QuotingDecision(
-                    bid=_SideDecision(
-                        price=0, size=0, skip=True,
-                        reason="control plane: bid paused",
-                        extras=decision.bid.extras,
-                    ),
-                    ask=decision.ask,
-                    transitions=list(decision.transitions),
-                )
-            if self._control.is_side_paused(ticker, "ask") and not decision.ask.skip:
-                decision = QuotingDecision(
-                    bid=decision.bid,
-                    ask=_SideDecision(
-                        price=0, size=0, skip=True,
-                        reason="control plane: ask paused",
-                        extras=decision.ask.extras,
-                    ),
-                    transitions=list(decision.transitions),
-                )
+            for _side_name in ("bid", "ask"):
+                paused = self._control.is_side_paused(ticker, _side_name)
+                locked = self._control.is_side_locked(ticker, _side_name, now_ts=now_ts)
+                if not (paused or locked):
+                    continue
+                # Build the skip reason (lock takes priority in messaging
+                # since it carries operator-provided context)
+                if locked:
+                    lock = self._control.get_side_lock(ticker, _side_name)
+                    skip_reason = (
+                        f"control plane: {_side_name} locked"
+                        + (f" — {lock.reason}" if lock and lock.reason else "")
+                    )
+                else:
+                    skip_reason = f"control plane: {_side_name} paused"
+                if _side_name == "bid" and not decision.bid.skip:
+                    decision = QuotingDecision(
+                        bid=_SideDecision(
+                            price=0, size=0, skip=True,
+                            reason=skip_reason,
+                            extras=decision.bid.extras,
+                        ),
+                        ask=decision.ask,
+                        transitions=list(decision.transitions),
+                    )
+                elif _side_name == "ask" and not decision.ask.skip:
+                    decision = QuotingDecision(
+                        bid=decision.bid,
+                        ask=_SideDecision(
+                            price=0, size=0, skip=True,
+                            reason=skip_reason,
+                            extras=decision.ask.extras,
+                        ),
+                        transitions=list(decision.transitions),
+                    )
 
         # 3b. Optional risk evaluation: gates can veto bid/ask sides,
         # turning them into skip=True. Audit trail goes into the decision log.
