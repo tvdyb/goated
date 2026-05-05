@@ -3,8 +3,10 @@
   {% set knobs = [
     ('min_theo_confidence', 0.10, 0.0, 1.0, 0.05,
      'Minimum theo.confidence required for the strategy to quote a strike at all. Below this, both bid and ask are skipped (no orders placed). The framework calibrates: 1.0 = trust within ±1c, 0.5 = within ±5c, 0.1 = unreliable, 0.0 = no theo. Stub theo always returns 0.0 → without dashboard theo overrides, the strategy never quotes.'),
-    ('penny_inside_min_confidence', 0.70, 0.0, 1.0, 0.05,
-     'When theo.confidence ≥ this threshold, DefaultLIPQuoting switches from active-follow (1¢ behind best) to active-penny (1¢ INSIDE best — taking the LIP-1.0× spot). Default 0.70 maps to "trust within ~3¢". Higher = more conservative (rarely pennies inside); lower = more aggressive. Anti-spoofing cap (theo_tolerance_c) still binds in both modes.'),
+    ('match_best_min_confidence', 0.70, 0.0, 1.0, 0.05,
+     'At conf ≥ this AND below penny_inside_min_confidence, the strategy MATCHES best (bid = best_bid, ask = best_ask) — sits AT the LIP reference price. Default 0.70 = "trust within ~3¢". Below this, strategy reverts to active-follow (1¢ behind best).'),
+    ('penny_inside_min_confidence', 0.95, 0.0, 1.0, 0.05,
+     'At conf ≥ this, strategy goes one tick INSIDE best (bid = best+1, ask = best−1). Default 0.95 = "near-certain". Should be ≥ match_best_min_confidence; otherwise the inside branch never fires. Anti-spoofing cap still binds.'),
     ('theo_tolerance_c', 2.0, 0.0, 50.0, 0.5,
      'Anti-spoofing guard. Strategy will never bid above (theo - 1 + tolerance) or ask below (theo + 1 - tolerance). Keeps the bot from chasing fake quotes someone posts above fair value just to bait us into pennying them. Higher tolerance = more aggressive pennying; lower = safer.'),
     ('max_distance_from_best', 1.0, 0.0, 50.0, 0.5,

@@ -74,8 +74,8 @@ async def test_low_confidence_skips_both_sides() -> None:
 
 
 @pytest.mark.asyncio
-async def test_active_mode_pennies_behind_best_at_low_confidence() -> None:
-    """theo near best, low confidence → not desert → active-follow:
+async def test_active_follow_at_low_confidence() -> None:
+    """conf below match_best_min_confidence → active-follow:
     stay max_distance behind best on each side."""
     s = DefaultLIPQuoting(DefaultLIPQuotingConfig(max_distance_from_best=1))
     ob = OrderbookSnapshot(
@@ -84,11 +84,10 @@ async def test_active_mode_pennies_behind_best_at_low_confidence() -> None:
     )
     decision = await s.quote(
         ticker="KX-X-T50.00",
-        theo=_theo(0.50, confidence=0.5),  # below penny-inside threshold (0.7)
+        theo=_theo(0.50, confidence=0.5),  # below match-best threshold (0.70)
         orderbook=ob, our_state=_empty_state(),
         now_ts=time.time(), time_to_settle_s=3600,
     )
-    # Active-follow: bid = best_bid - 1, ask = best_ask + 1
     assert decision.bid.price == 44
     assert decision.ask.price == 56
     assert decision.bid.extras["mode"] == "active-follow"
@@ -96,19 +95,39 @@ async def test_active_mode_pennies_behind_best_at_low_confidence() -> None:
 
 
 @pytest.mark.asyncio
-async def test_active_mode_pennies_inside_at_high_confidence() -> None:
-    """theo near best, confidence ≥ penny_inside_min_confidence → trust theo
-    enough to take the LIP-1.0× spot at best+1 / best-1."""
-    s = DefaultLIPQuoting(DefaultLIPQuotingConfig(
-        max_distance_from_best=1, penny_inside_min_confidence=0.7,
-    ))
+async def test_active_match_at_mid_confidence() -> None:
+    """match_best_min_confidence ≤ conf < penny_inside_min_confidence →
+    active-match: bid = best_bid, ask = best_ask (sit AT the LIP
+    reference price)."""
+    s = DefaultLIPQuoting(DefaultLIPQuotingConfig())
     ob = OrderbookSnapshot(
         yes_depth=[(45, 100)], no_depth=[(45, 100)],
         best_bid=45, best_ask=55,
     )
     decision = await s.quote(
         ticker="KX-X-T50.00",
-        theo=_theo(0.50, confidence=0.9),
+        theo=_theo(0.50, confidence=0.70),  # exactly at match threshold
+        orderbook=ob, our_state=_empty_state(),
+        now_ts=time.time(), time_to_settle_s=3600,
+    )
+    assert decision.bid.price == 45
+    assert decision.ask.price == 55
+    assert decision.bid.extras["mode"] == "active-match"
+    assert decision.ask.extras["mode"] == "active-match"
+
+
+@pytest.mark.asyncio
+async def test_active_penny_at_high_confidence() -> None:
+    """conf ≥ penny_inside_min_confidence (default 0.95) → active-penny:
+    quote one tick INSIDE best on each side."""
+    s = DefaultLIPQuoting(DefaultLIPQuotingConfig(max_distance_from_best=1))
+    ob = OrderbookSnapshot(
+        yes_depth=[(45, 100)], no_depth=[(45, 100)],
+        best_bid=45, best_ask=55,
+    )
+    decision = await s.quote(
+        ticker="KX-X-T50.00",
+        theo=_theo(0.50, confidence=0.95),  # exactly at inside threshold
         orderbook=ob, our_state=_empty_state(),
         now_ts=time.time(), time_to_settle_s=3600,
     )

@@ -137,13 +137,19 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
   per-day reward rates, per-resting multiplier (with `·off` flag for
   bids below the qualifying threshold), presence pill (multi-tab),
   optimistic concurrency on every mutation.
-- **Strategy: penny-inside-at-high-confidence.** `DefaultLIPQuoting`
-  has an `active-penny` branch. When `theo.confidence ≥
-  penny_inside_min_confidence` (default 0.70) AND the market is
-  active (best near theo), the strategy quotes `best_bid + 1` /
-  `best_ask − 1` — i.e. it takes the LIP-multiplier-1.0 spot. Below
-  the threshold it stays in `active-follow` mode (1¢ behind best
-  on each side). Anti-spoofing cap (`theo_tolerance_c`) still binds.
+- **Strategy: 3-tier confidence brackets.** `DefaultLIPQuoting` has
+  three active-mode branches gated by `theo.confidence`:
+  - `active-penny`: conf ≥ `penny_inside_min_confidence` (default
+    **0.95**). Quotes `best_bid + 1` / `best_ask − 1` — INSIDE best.
+  - `active-match`: `match_best_min_confidence` ≤ conf <
+    `penny_inside_min_confidence` (default 0.70). Quotes
+    `best_bid` / `best_ask` — AT best (sits at LIP reference price).
+  - `active-follow`: conf < `match_best_min_confidence` (and ≥
+    `min_theo_confidence` 0.10). Quotes `best_bid −
+    max_distance_from_best` / `best_ask + max_distance_from_best` —
+    1¢ BEHIND best by default.
+  Below 0.10 → both sides skip. Anti-spoofing cap
+  (`theo_tolerance_c`) binds in all branches.
 - **Ctrl+C bulk-cancels.** `deploy/lipmm_run.py` shutdown path now
   awaits `runner.cancel_all_resting()` (15s timeout) before closing
   the Kalshi client, so SIGINT leaves zero naked quotes on the book.

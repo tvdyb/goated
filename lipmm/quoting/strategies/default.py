@@ -57,12 +57,19 @@ class DefaultLIPQuotingConfig:
     min_contracts: int = 5
     max_contracts: int = 300
     min_theo_confidence: float = 0.10
-    penny_inside_min_confidence: float = 0.70
-    """At theo.confidence ≥ this threshold the strategy switches from
-    `active-follow` (1c BEHIND best) to `active-penny` (1c INSIDE
-    best) — i.e. trusts theo enough to take the LIP-multiplier-1.0
-    spot at best+1 / best-1, accepting whatever fills come. Default
-    0.70 = framework's "trust within ~3c" calibration."""
+    match_best_min_confidence: float = 0.70
+    """At confidence ≥ this AND below `penny_inside_min_confidence`,
+    the strategy MATCHES the best on each side (bid = best_bid,
+    ask = best_ask) — sits at the LIP reference price without
+    pennying inside. Default 0.70 = framework's "trust within ~3c"
+    calibration. Below this threshold, the strategy reverts to
+    active-follow (1¢ behind best)."""
+    penny_inside_min_confidence: float = 0.95
+    """At theo.confidence ≥ this threshold the strategy goes
+    `active-penny` (1c INSIDE best) — i.e. trusts theo enough to
+    take the spot inside the LIP reference price, accepting whatever
+    fills come. Default 0.95 = "near-certain" theo. Should be ≥
+    `match_best_min_confidence`."""
 
 
 class DefaultLIPQuoting:
@@ -174,6 +181,9 @@ class DefaultLIPQuoting:
             "min_theo_confidence": float(overrides.get(
                 "min_theo_confidence", base.min_theo_confidence,
             )),
+            "match_best_min_confidence": float(overrides.get(
+                "match_best_min_confidence", base.match_best_min_confidence,
+            )),
             "penny_inside_min_confidence": float(overrides.get(
                 "penny_inside_min_confidence", base.penny_inside_min_confidence,
             )),
@@ -201,13 +211,18 @@ class DefaultLIPQuoting:
             target = best_bid
             mode = "deep-itm-match"
         elif confidence >= cfg.penny_inside_min_confidence:
-            # High-confidence active mode: penny INSIDE the best to take
-            # the LIP-multiplier-1.0 spot at best+1. Anti-spoofing cap
-            # below still binds, so we won't chase fake quotes above theo.
+            # Highest-confidence: penny INSIDE the best (best+1) — take
+            # the spot inside the LIP reference price. Most aggressive.
             target = best_bid + 1
             mode = "active-penny"
+        elif confidence >= cfg.match_best_min_confidence:
+            # Mid-confidence: MATCH the best — sit AT the reference price.
+            # No adverse-selection from being inside; full LIP credit at
+            # the reference (mult 1.0).
+            target = best_bid
+            mode = "active-match"
         else:
-            # Active mode: stay max_distance_from_best behind best
+            # Low-confidence: stay max_distance_from_best behind best
             target = best_bid - cfg.max_distance_from_best
             mode = "active-follow"
 
@@ -249,6 +264,9 @@ class DefaultLIPQuoting:
         elif confidence >= cfg.penny_inside_min_confidence:
             target = best_ask - 1
             mode = "active-penny"
+        elif confidence >= cfg.match_best_min_confidence:
+            target = best_ask
+            mode = "active-match"
         else:
             target = best_ask + cfg.max_distance_from_best
             mode = "active-follow"

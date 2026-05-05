@@ -409,11 +409,10 @@
            style="background: var(--surface); border-color: var(--border); color: var(--ink-mid);">
         <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Confidence scale</span>
         <ul class="mt-1 space-y-0.5" style="font-family: 'JetBrains Mono', ui-monospace;">
-          <li><span style="color: var(--yes);">1.00</span> — trust within ±1¢ → <strong style="color: var(--lip);">penny INSIDE best</strong> (bid = best+1, ask = best-1)</li>
-          <li><span style="color: var(--yes);">0.70</span> — trust within ~3¢ → <strong style="color: var(--lip);">still pennies inside</strong> (threshold for active-penny mode)</li>
-          <li><span style="color: var(--ink-hi);">0.50</span> — trust within ±5¢ → active-follow (1¢ BEHIND best on each side, safer)</li>
-          <li><span style="color: var(--ink-hi);">0.10</span> — unreliable but quotable; minimum to place orders at all (knob: <code>min_theo_confidence</code>)</li>
-          <li><span style="color: var(--ink-dim);">&lt; 0.10</span> — strategy skips both sides entirely (no orders placed)</li>
+          <li><span style="color: var(--yes);">≥ 0.95</span> — near-certain → <strong style="color: var(--lip);">penny INSIDE best</strong> (bid = best+1, ask = best−1) · most aggressive</li>
+          <li><span style="color: var(--yes);">≥ 0.70</span> — trust within ~3¢ → <strong style="color: var(--lip);">MATCH best</strong> (bid = best_bid, ask = best_ask) · sits at LIP reference price</li>
+          <li><span style="color: var(--ink-hi);">≥ 0.10</span> — unreliable but quotable → active-follow (1¢ BEHIND best on each side) · safer</li>
+          <li><span style="color: var(--ink-dim);">&lt; 0.10</span> — strategy skips both sides entirely (knob: <code>min_theo_confidence</code>)</li>
           <li><span style="color: var(--ink-dim);">0.00</span> — stub default, never quotes (set an override to start trading)</li>
         </ul>
         <div class="mt-1.5 text-[9px]" style="color: var(--ink-dim);">
