@@ -30,7 +30,7 @@ import logging
 import signal
 import time
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from lipmm.execution import ExchangeClient, OrderManager
 from lipmm.observability.schema import build_record
@@ -39,6 +39,7 @@ from lipmm.observability.schema import build_record
 # (lipmm/__init__.py exports both control + runner). Type-checked lazily.
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
+    from lipmm.control.broadcaster import Broadcaster
     from lipmm.control.state import ControlState
 from lipmm.quoting import (
     OrderbookSnapshot,
@@ -114,6 +115,7 @@ class LIPRunner:
         decision_recorder: DecisionRecorder | None = None,
         risk_registry: RiskRegistry | None = None,
         control_state: "ControlState | None" = None,
+        broadcaster: "Broadcaster | None" = None,
     ) -> None:
         self._cfg = config
         self._theo = theo_registry
@@ -124,9 +126,15 @@ class LIPRunner:
         self._recorder = decision_recorder
         self._risk = risk_registry
         self._control = control_state
+        self._broadcaster = broadcaster
 
         self._running = False
         self._cycle_id = 0
+        # Per-cycle aggregation of orderbooks the strategy already pulled.
+        # Reset at the top of each cycle, populated by _process_ticker,
+        # broadcast at the end so the dashboard's strike grid sees Yes/No
+        # best prices + L2 depth in lockstep with the runner.
+        self._cycle_orderbooks: list[dict[str, Any]] = []
 
     async def run(self) -> None:
         """Main loop. Returns on stop()."""
@@ -187,6 +195,9 @@ class LIPRunner:
 
     async def _cycle(self) -> None:
         self._cycle_id += 1
+        # Reset per-cycle orderbook aggregation. Each _process_ticker
+        # appends one entry; we broadcast the whole list at end-of-cycle.
+        self._cycle_orderbooks = []
 
         # Control plane: top-of-cycle gate. If killed or globally paused,
         # skip the entire cycle — no theo, no orders, no decision records.
@@ -213,6 +224,18 @@ class LIPRunner:
                 logger.exception(
                     "LIPRunner: error processing %s: %s", ticker, exc,
                 )
+
+        # End-of-cycle: broadcast the aggregated per-strike orderbooks
+        # so the dashboard's strike grid stays in lockstep with the
+        # runner. Best-effort; never crashes the cycle.
+        if self._broadcaster is not None and self._cycle_orderbooks:
+            try:
+                await self._broadcaster.broadcast_orderbook({
+                    "strikes": self._cycle_orderbooks,
+                    "last_cycle_ts": time.time(),
+                })
+            except Exception as exc:
+                logger.info("orderbook broadcast failed: %s", exc)
 
     async def _process_ticker(self, ticker: str) -> None:
         now_ts = time.time()
@@ -266,6 +289,24 @@ class LIPRunner:
             best_bid=best_bid,
             best_ask=best_ask,
         )
+
+        # Per-strike orderbook view for the dashboard's strike grid.
+        # Top 5 levels each side keeps the broadcast small; the depth
+        # ladder UI only ever shows top 5.
+        self._cycle_orderbooks.append({
+            "ticker": ticker,
+            "best_bid_c": int(best_bid),
+            "best_ask_c": int(best_ask),
+            "yes_levels": [
+                {"price_cents": int(p), "size": float(sz)}
+                for (p, sz) in ob_levels.yes_levels[:5]
+            ],
+            "no_levels": [
+                {"price_cents": int(p), "size": float(sz)}
+                for (p, sz) in ob_levels.no_levels[:5]
+            ],
+            "ts": now_ts,
+        })
 
         # 3. Strategy decision
         our_state = OurState(

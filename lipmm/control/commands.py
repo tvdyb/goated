@@ -290,6 +290,33 @@ class RuntimeSnapshotResponse(BaseModel):
     ts: float
 
 
+class OrderbookLevel(BaseModel):
+    """One price-level row in the L2 depth ladder."""
+    price_cents: int = Field(ge=1, le=99)
+    size: float = Field(ge=0)
+
+
+class StrikeOrderbook(BaseModel):
+    """Per-strike orderbook snapshot. `yes_levels` and `no_levels` are
+    descending by price (highest first); `best_bid_c` / `best_ask_c` are
+    derived from those, excluding our own resting orders, exactly as the
+    runner already computes them for the strategy."""
+    ticker: str
+    best_bid_c: int = Field(ge=0, le=100)
+    best_ask_c: int = Field(ge=0, le=100)
+    yes_levels: list[OrderbookLevel] = Field(default_factory=list)
+    no_levels: list[OrderbookLevel] = Field(default_factory=list)
+    ts: float
+
+
+class OrderbookSnapshotResponse(BaseModel):
+    """GET /control/orderbooks response. Mirror of the cached snapshot
+    that the runner emits each cycle."""
+    strikes: list[StrikeOrderbook] = Field(default_factory=list)
+    last_cycle_ts: float = 0.0
+    ts: float
+
+
 class IncentiveProgramEntry(BaseModel):
     """One row in /control/incentives. Operator-friendly: dollars and
     seconds-remaining precomputed; the raw centi-cents and ISO strings

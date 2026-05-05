@@ -64,6 +64,10 @@ class Broadcaster:
         self._heartbeat_interval_s = heartbeat_interval_s
         self._send_timeout_s = send_timeout_s
         self._state: "ControlState | None" = None
+        # Last orderbook snapshot the runner emitted. Cached here so a
+        # freshly opened dashboard tab can read the most recent prices
+        # immediately without waiting for the next cycle (3s).
+        self._last_orderbook: dict[str, Any] | None = None
 
     def attach_state(self, state: "ControlState") -> None:
         """Optional: wire a ControlState reference so heartbeats include
@@ -143,6 +147,26 @@ class Broadcaster:
             "actor": actor,
             "ts": time.time(),
         })
+
+    async def broadcast_orderbook(self, snapshot: dict[str, Any]) -> None:
+        """Push a per-strike orderbook snapshot as `orderbook_snapshot`.
+        Emitted by the LIPRunner once per cycle so the dashboard's strike
+        grid (Phase 10) can render Yes/No best prices + L2 depth without
+        each tab fetching its own books. Also caches as `last_orderbook`
+        so newly-connected tabs can seed their initial paint."""
+        self._last_orderbook = snapshot
+        await self._broadcast_event({
+            "event_type": "orderbook_snapshot",
+            "snapshot": snapshot,
+            "ts": time.time(),
+        })
+
+    @property
+    def last_orderbook(self) -> dict[str, Any] | None:
+        """Last orderbook snapshot the runner pushed, if any. Used by
+        the WS initial-frame builder + the GET /control/orderbooks
+        endpoint."""
+        return self._last_orderbook
 
     async def broadcast_incentives(self, snapshot: dict[str, Any]) -> None:
         """Push an incentive-programs snapshot as `incentives_snapshot`.

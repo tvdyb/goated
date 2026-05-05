@@ -253,6 +253,7 @@ async def _amain(args: argparse.Namespace) -> int:
         decision_recorder=recorder,
         risk_registry=risk,
         control_state=state,
+        broadcaster=broadcaster,
     )
 
     # 4. ControlServer: dashboard + incentive cache + retention.

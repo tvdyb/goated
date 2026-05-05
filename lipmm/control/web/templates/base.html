@@ -1,16 +1,78 @@
 <!DOCTYPE html>
-<html lang="en" class="bg-slate-950 text-slate-100">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}lipmm control{% endblock %}</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/ws.js"></script>
   <script src="/static/dashboard.js" defer></script>
+
   <style>
+    /* Phase 10 design tokens (from interface-overhaul/data.jsx).
+       Use as `style="background: var(--bg-base)"` or in arbitrary
+       Tailwind classes: `bg-[var(--bg-base)]`. */
+    :root {
+      --bg-base:        #070b14;
+      --bg-raise:       #0c1320;
+      --surface:        #0f1623;
+      --surface-2:      #161f30;
+      --surface-3:      #1d2841;
+      --border:         #1e2a40;
+      --border-strong:  #2a3a55;
+      --ink-hi:         #e6edf7;
+      --ink-mid:        #a6b1c8;
+      --ink-lo:         #6b7791;
+      --ink-dim:        #4a556d;
+      --yes:            #3ddc97;
+      --yes-dim:        #1f6e54;
+      --no:             #ff7a8a;
+      --no-dim:         #7a3340;
+      --info:           #5fb1ff;
+      --warn:           #f0b86c;
+      --lip:            #e6c065;
+      --lip-dim:        #5a4923;
+      --danger:         #ff5562;
+      --danger-dim:     #5a1820;
+      --live:           #3ddc97;
+    }
+
+    html, body {
+      background: var(--bg-base);
+      color: var(--ink-hi);
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    * { -webkit-font-smoothing: antialiased; }
+
+    /* Tabular nums + price/ticker monospace */
+    .font-mono, .tabular-nums, code, pre {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+    }
+
+    /* Scrollbars (dark theme) */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg-raise); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+    /* Range inputs (knobs panel) */
+    input[type="range"] {
+      height: 4px;
+      background: var(--surface-2);
+      border-radius: 4px;
+      accent-color: var(--info);
+    }
+
+    /* Legacy classes — kept for partials still using them while
+       Phase 10 migrates each one. Will be removed in 10c cleanup. */
     .pill { @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium; }
-    .panel { @apply rounded-xl border border-slate-800 bg-slate-900/60 p-4; }
+    .panel { @apply rounded-xl border p-4; border-color: var(--border); background: rgba(15,22,35,0.6); }
     .btn { @apply inline-flex items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium transition; }
     .btn-primary { @apply bg-sky-600 hover:bg-sky-500 text-white; }
     .btn-danger { @apply bg-rose-600 hover:bg-rose-500 text-white; }

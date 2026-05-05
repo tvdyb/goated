@@ -70,6 +70,7 @@ from lipmm.control.commands import (
     LocksResponse,
     ManualOrderRequest,
     ManualOrderResponse,
+    OrderbookSnapshotResponse,
     PauseRequest,
     ResumeRequest,
     RuntimeSnapshotResponse,
@@ -773,6 +774,26 @@ def build_app(
         }
 
     app.state.collect_incentives = _collect_incentives
+
+    @app.get("/control/orderbooks", response_model=OrderbookSnapshotResponse)
+    async def get_orderbooks(
+        actor: str = Depends(require_auth),
+    ) -> OrderbookSnapshotResponse:
+        """Return the last per-strike orderbook snapshot the runner
+        emitted. Empty `strikes` list (with current `ts`) when the
+        runner hasn't pushed yet (no broadcaster wired or no cycles
+        completed)."""
+        b = app.state.broadcaster
+        snap: dict[str, Any] | None = b.last_orderbook if b is not None else None
+        if snap is None:
+            return OrderbookSnapshotResponse(
+                strikes=[], last_cycle_ts=0.0, ts=time.time(),
+            )
+        return OrderbookSnapshotResponse(
+            strikes=snap.get("strikes", []),
+            last_cycle_ts=snap.get("last_cycle_ts", 0.0),
+            ts=time.time(),
+        )
 
     @app.get("/control/incentives", response_model=IncentiveSnapshotResponse)
     async def get_incentives(
