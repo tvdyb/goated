@@ -27,6 +27,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from lipmm.control.web import _paths
+from lipmm.incentives import compute_strike_score
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,10 @@ def join_strike_data(
     # tracking. Incentives are an ATTRIBUTE attached to a strike, not
     # a reason to add a strike (otherwise we'd render every LIP-active
     # ticker on Kalshi as a "strike", flooding the grid).
+    # Strike universe = strikes the bot has skin in OR is actively
+    # tracking. Incentives are an ATTRIBUTE attached to a strike, not
+    # a reason to add a strike (otherwise we'd render every LIP-active
+    # ticker on Kalshi as a "strike", flooding the grid).
     universe = set(obs) | set(positions) | set(resting) | set(overrides)
     out: list[dict[str, Any]] = []
     for ticker in sorted(universe):
@@ -123,6 +128,23 @@ def join_strike_data(
         best_bid = int(ob.get("best_bid_c", 0))
         best_ask = int(ob.get("best_ask_c", 100))
         label, threshold = _ticker_label(ticker)
+        ticker_resting = resting.get(ticker, [])
+        # Per-strike LIP score — only meaningful when we have an
+        # orderbook to score against. Without orderbook, total_score
+        # would be 0 and the share calculation degenerate.
+        lip_score = None
+        ob_present = bool(ob)
+        if ob_present:
+            try:
+                lip_score = compute_strike_score(
+                    our_orders=ticker_resting,
+                    yes_levels=ob.get("yes_levels", []),
+                    no_levels=ob.get("no_levels", []),
+                    best_bid_c=best_bid,
+                    best_ask_c=best_ask,
+                )
+            except Exception:
+                lip_score = None
         out.append({
             "ticker": ticker,
             "slug": _ticker_slug(ticker),
@@ -136,11 +158,12 @@ def join_strike_data(
             "spread": max(0, best_ask - best_bid),
             "yes_levels": ob.get("yes_levels", []),
             "no_levels": ob.get("no_levels", []),
-            "ob_present": bool(ob),
+            "ob_present": ob_present,
             "override": overrides.get(ticker),
             "position": positions.get(ticker),
-            "resting": resting.get(ticker, []),
+            "resting": ticker_resting,
             "lip": (incs.get(ticker) or [None])[0],
+            "lip_score": lip_score,
         })
     return out
 

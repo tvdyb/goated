@@ -256,9 +256,22 @@ class KalshiClient:
             params["cursor"] = cursor
         return await self._request("GET", "/events", params=params)
 
-    async def get_event(self, event_ticker: str) -> dict[str, Any]:
-        """GET /events/{ticker} -- single event with child markets."""
-        return await self._request("GET", f"/events/{event_ticker}")
+    async def get_event(
+        self,
+        event_ticker: str,
+        *,
+        with_nested_markets: bool = False,
+    ) -> dict[str, Any]:
+        """GET /events/{ticker} -- single event metadata.
+
+        By default Kalshi returns markets as a sibling top-level field
+        next to `event`. Pass `with_nested_markets=True` to also nest
+        them under `event.markets` for callers that expect that shape.
+        """
+        params = {"with_nested_markets": "true"} if with_nested_markets else None
+        return await self._request(
+            "GET", f"/events/{event_ticker}", params=params,
+        )
 
     async def get_market(self, ticker: str) -> dict[str, Any]:
         """GET /markets/{ticker} -- single market metadata."""

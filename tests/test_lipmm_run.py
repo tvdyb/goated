@@ -184,3 +184,124 @@ def test_module_imports_cleanly() -> None:
     assert callable(m.main)
     assert callable(m._amain)
     assert hasattr(m, "_EventTickerSource")
+
+
+# ── _EventTickerSource against both response shapes ────────────────
+
+
+@pytest.mark.asyncio
+async def test_event_ticker_source_handles_nested_markets() -> None:
+    """Phase 11: when Kalshi returns markets nested inside event
+    (with_nested_markets=true), the source must extract them."""
+    from deploy.lipmm_run import _EventTickerSource
+
+    class _Stub:
+        async def get_event(self, event_ticker, *, with_nested_markets=False):
+            return {
+                "event": {
+                    "event_ticker": event_ticker,
+                    "markets": [
+                        {"ticker": "KX-T49", "status": "open"},
+                        {"ticker": "KX-T50", "status": "open"},
+                        {"ticker": "KX-T51", "status": "settled"},
+                    ],
+                },
+            }
+
+    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    tickers = await src.list_active_tickers(None)
+    assert sorted(tickers) == ["KX-T49", "KX-T50"]
+
+
+@pytest.mark.asyncio
+async def test_event_ticker_source_handles_sibling_markets() -> None:
+    """Phase 11 root cause: Kalshi's default response has markets as
+    a sibling top-level field next to event. The source must read
+    that path too."""
+    from deploy.lipmm_run import _EventTickerSource
+
+    class _Stub:
+        async def get_event(self, event_ticker, *, with_nested_markets=False):
+            return {
+                "event": {"event_ticker": event_ticker},
+                "markets": [
+                    {"ticker": "KX-T49", "status": "open"},
+                    {"ticker": "KX-T50", "status": "open"},
+                ],
+            }
+
+    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    tickers = await src.list_active_tickers(None)
+    assert sorted(tickers) == ["KX-T49", "KX-T50"]
+
+
+@pytest.mark.asyncio
+async def test_event_ticker_source_dedupes_when_both_paths_populated() -> None:
+    """If a Kalshi response somehow has markets in BOTH paths (defensive),
+    don't double-count."""
+    from deploy.lipmm_run import _EventTickerSource
+
+    class _Stub:
+        async def get_event(self, event_ticker, *, with_nested_markets=False):
+            return {
+                "event": {
+                    "event_ticker": event_ticker,
+                    "markets": [{"ticker": "KX-T1", "status": "open"}],
+                },
+                "markets": [{"ticker": "KX-T1", "status": "open"}],
+            }
+
+    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    tickers = await src.list_active_tickers(None)
+    assert tickers == ["KX-T1"]
+
+
+@pytest.mark.asyncio
+async def test_event_ticker_source_skips_non_open_markets() -> None:
+    from deploy.lipmm_run import _EventTickerSource
+
+    class _Stub:
+        async def get_event(self, event_ticker, *, with_nested_markets=False):
+            return {
+                "event": {"event_ticker": event_ticker},
+                "markets": [
+                    {"ticker": "KX-A", "status": "open"},
+                    {"ticker": "KX-B", "status": "settled"},
+                    {"ticker": "KX-C", "status": "closed"},
+                ],
+            }
+
+    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    tickers = await src.list_active_tickers(None)
+    assert tickers == ["KX-A"]
+
+
+@pytest.mark.asyncio
+async def test_event_ticker_source_returns_empty_on_api_error() -> None:
+    from deploy.lipmm_run import _EventTickerSource
+
+    class _Stub:
+        async def get_event(self, *a, **k):
+            raise RuntimeError("kalshi 503")
+
+    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    tickers = await src.list_active_tickers(None)
+    assert tickers == []
+
+
+@pytest.mark.asyncio
+async def test_event_ticker_source_passes_with_nested_markets_kwarg() -> None:
+    """Verify the source passes with_nested_markets=True so that even
+    if Kalshi nests in the response, we get the data."""
+    from deploy.lipmm_run import _EventTickerSource
+
+    seen_kwargs: dict = {}
+
+    class _Stub:
+        async def get_event(self, event_ticker, *, with_nested_markets=False):
+            seen_kwargs["with_nested_markets"] = with_nested_markets
+            return {"event": {}, "markets": []}
+
+    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    await src.list_active_tickers(None)
+    assert seen_kwargs["with_nested_markets"] is True

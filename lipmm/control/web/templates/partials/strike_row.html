@@ -269,6 +269,55 @@
                     style="color: var(--ink-hi);">—</span>
             </div>
           </div>
+          {# ── Our share + projected reward ─────────────────── #}
+          {% if s.lip_score and s.lip_score.total_score > 0 %}
+            <div class="mt-3 pt-3 border-t" style="border-color: var(--border);">
+              <div class="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]"
+                   style="font-family: 'JetBrains Mono', ui-monospace;">
+                <div class="flex items-center justify-between">
+                  <span style="color: var(--ink-lo);">our share</span>
+                  <span style="color: var(--lip);">
+                    {{ "%.1f"|format(s.lip_score.share_pct) }}%
+                  </span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span style="color: var(--ink-lo);">projected</span>
+                  <span style="color: var(--yes);">
+                    ${{ "%.2f"|format(s.lip_score.projected_reward_dollars(s.lip.period_reward_dollars or 0)) }}
+                  </span>
+                </div>
+                <div class="flex items-center justify-between col-span-2 text-[10px]">
+                  <span style="color: var(--ink-dim);">our score / total</span>
+                  <span style="color: var(--ink-mid);">
+                    {{ "%.1f"|format(s.lip_score.our_score) }} / {{ "%.1f"|format(s.lip_score.total_score) }}
+                  </span>
+                </div>
+              </div>
+              {% if s.lip_score.multipliers %}
+                <div class="mt-2 space-y-0.5 text-[10px]"
+                     style="font-family: 'JetBrains Mono', ui-monospace;">
+                  <div class="text-[9px] uppercase tracking-wider" style="color: var(--ink-dim);">
+                    per-resting mult
+                  </div>
+                  {% for m in s.lip_score.multipliers %}
+                    <div class="flex items-center justify-between">
+                      <span style="color: {% if m.side == 'bid' %}var(--yes){% else %}var(--no){% endif %};">
+                        {{ 'B' if m.side == 'bid' else 'A' }} {{ m.price_c }}¢ × {{ m.size | int }}
+                      </span>
+                      <span style="color: {% if m.multiplier == 1.0 %}var(--lip){% elif m.multiplier > 0 %}var(--ink-mid){% else %}var(--ink-dim){% endif %};">
+                        mult {{ "%.2f"|format(m.multiplier) }}
+                      </span>
+                    </div>
+                  {% endfor %}
+                </div>
+              {% endif %}
+            </div>
+          {% elif s.lip_score and s.ob_present %}
+            <div class="mt-3 pt-3 border-t text-[10px]"
+                 style="border-color: var(--border); color: var(--ink-dim);">
+              orderbook empty — no score yet
+            </div>
+          {% endif %}
         {% endif %}
       </div>
     </div>

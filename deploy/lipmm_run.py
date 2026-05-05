@@ -108,21 +108,37 @@ class _EventTickerSource:
 
     async def list_active_tickers(self, _exchange: Any) -> list[str]:
         try:
-            resp = await self._client.get_event(self._event_ticker)
+            resp = await self._client.get_event(
+                self._event_ticker, with_nested_markets=True,
+            )
         except Exception as exc:
             logger.warning(
                 "TickerSource: get_event(%s) failed: %s",
                 self._event_ticker, exc,
             )
             return []
-        event = resp.get("event", resp)
-        markets = event.get("markets", []) or []
+        # Kalshi returns markets as a sibling top-level field by default,
+        # OR nested inside `event` when with_nested_markets=true. Read
+        # both paths and dedupe so either response shape works.
+        event = resp.get("event") or {}
+        nested = event.get("markets") or []
+        sibling = resp.get("markets") or []
+        seen: set[str] = set()
         out: list[str] = []
-        for m in markets:
-            if m.get("status", "open") == "open":
-                t = m.get("ticker") or m.get("market_ticker")
-                if t:
-                    out.append(t)
+        for m in (nested + sibling):
+            if m.get("status", "open") != "open":
+                continue
+            t = m.get("ticker") or m.get("market_ticker")
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+        if not out:
+            logger.warning(
+                "TickerSource: 0 open markets for %s — runner will iterate "
+                "nothing this cycle. Response keys: %s",
+                self._event_ticker, sorted(resp.keys()),
+            )
         return out
 
 
@@ -211,7 +227,9 @@ async def _amain(args: argparse.Namespace) -> int:
 
     # 2. Confirm the event exists before building the rest of the stack.
     try:
-        event_resp = await client.get_event(args.event_ticker)
+        event_resp = await client.get_event(
+            args.event_ticker, with_nested_markets=True,
+        )
     except Exception as exc:
         logger.error(
             "Could not fetch event %s: %s. Check --event-ticker spelling and API access.",
@@ -219,12 +237,23 @@ async def _amain(args: argparse.Namespace) -> int:
         )
         await client.close()
         return 3
-    event = event_resp.get("event", event_resp)
-    n_markets = len(event.get("markets", []) or [])
+    event = event_resp.get("event") or {}
+    # Markets may be nested inside event OR a sibling top-level field
+    # depending on Kalshi's `with_nested_markets` flag.
+    nested_markets = event.get("markets") or []
+    sibling_markets = event_resp.get("markets") or []
+    all_markets = nested_markets or sibling_markets
+    n_markets = len(all_markets)
     logger.info(
         "Event %s found: %d markets, status=%s",
         args.event_ticker, n_markets, event.get("status", "?"),
     )
+    if n_markets == 0:
+        logger.warning(
+            "Event has 0 markets visible — bot will sit idle. "
+            "Response top-level keys: %s",
+            sorted(event_resp.keys()),
+        )
 
     # 3. Build the rest
     order_manager = OrderManager()

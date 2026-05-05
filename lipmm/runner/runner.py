@@ -212,6 +212,12 @@ class LIPRunner:
             logger.warning("LIPRunner: ticker source failed: %s", exc)
             return
 
+        # One log line per cycle so the operator can tell from the
+        # screen output whether the runner is actually iterating.
+        logger.info(
+            "cycle %d: iterating %d ticker(s)", self._cycle_id, len(tickers),
+        )
+
         for ticker in tickers:
             # Per-ticker pause check (cheap, before any I/O).
             if self._control is not None and self._control.should_skip_ticker(ticker):
