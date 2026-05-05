@@ -351,6 +351,63 @@ async def test_list_resting_orders_parses_each() -> None:
     assert orders[1].action == "sell"
 
 
+@pytest.mark.asyncio
+async def test_list_resting_orders_parses_yes_price_dollars_string() -> None:
+    """Kalshi's /portfolio/orders endpoint returns prices as float-string
+    'yes_price_dollars' (e.g. '0.4500'), NOT integer 'yes_price'. Make
+    sure the parser handles that — the prior bug rendered all resting
+    orders at 0¢ in the dashboard."""
+    adapter, fake = _adapter()
+    fake.orders_response = {
+        "orders": [
+            {"order_id": "a", "ticker": "KX-T50", "action": "buy",
+             "side": "yes", "yes_price_dollars": "0.4500",
+             "remaining_count_fp": "10.00", "status": "resting"},
+            {"order_id": "b", "ticker": "KX-T50", "action": "sell",
+             "side": "yes", "yes_price_dollars": "0.5600",
+             "remaining_count_fp": "10.00", "status": "resting"},
+        ],
+    }
+    orders = await adapter.list_resting_orders()
+    assert len(orders) == 2
+    # 0.4500 → 45 cents (rounded), 0.5600 → 56 cents
+    assert orders[0].limit_price_cents == 45
+    assert orders[0].remaining_count == 10
+    assert orders[1].limit_price_cents == 56
+
+
+@pytest.mark.asyncio
+async def test_list_resting_orders_parses_no_price_dollars_for_sell_side() -> None:
+    """Some sell-side orders only carry no_price_dollars; convert via
+    100 - no_price."""
+    adapter, fake = _adapter()
+    fake.orders_response = {
+        "orders": [
+            {"order_id": "c", "ticker": "KX-T50", "action": "sell",
+             "side": "yes", "no_price_dollars": "0.4400",
+             "remaining_count": 5, "status": "resting"},
+        ],
+    }
+    orders = await adapter.list_resting_orders()
+    # 100 - 44 = 56
+    assert orders[0].limit_price_cents == 56
+
+
+@pytest.mark.asyncio
+async def test_list_resting_orders_falls_back_to_zero_when_neither_field() -> None:
+    """If Kalshi returns an order with no recognizable price field at
+    all, parser must return 0 not crash."""
+    adapter, fake = _adapter()
+    fake.orders_response = {
+        "orders": [
+            {"order_id": "d", "ticker": "KX-T50", "action": "buy",
+             "side": "yes", "remaining_count": 1, "status": "resting"},
+        ],
+    }
+    orders = await adapter.list_resting_orders()
+    assert orders[0].limit_price_cents == 0
+
+
 # ── list_positions ─────────────────────────────────────────────────────
 
 

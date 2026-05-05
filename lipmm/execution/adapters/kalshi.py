@@ -311,8 +311,28 @@ def _parse_order(
     parsed_action = o.get("action") or action or "buy"
     parsed_side = o.get("side") or side or "yes"
     parsed_ticker = o.get("ticker") or ticker or ""
+    # Kalshi inconsistency: create_order returns `yes_price` as cents
+    # (int), but /portfolio/orders returns `yes_price_dollars` as a
+    # string like "0.4500". Check the cents field first; fall through
+    # to the dollar string field; finally to the kwarg.
     if "yes_price" in o and o["yes_price"] is not None:
-        parsed_limit = int(o["yes_price"])
+        try:
+            parsed_limit = int(o["yes_price"])
+        except (TypeError, ValueError):
+            parsed_limit = limit_price or 0
+    elif "yes_price_dollars" in o and o["yes_price_dollars"] is not None:
+        # "0.4500" → 45 cents
+        try:
+            parsed_limit = int(round(float(o["yes_price_dollars"]) * 100))
+        except (TypeError, ValueError):
+            parsed_limit = limit_price or 0
+    elif "no_price_dollars" in o and o["no_price_dollars"] is not None:
+        # Some sell-side orders only return no_price_dollars; convert
+        # via 100 - no_price.
+        try:
+            parsed_limit = 100 - int(round(float(o["no_price_dollars"]) * 100))
+        except (TypeError, ValueError):
+            parsed_limit = limit_price or 0
     elif limit_price is not None:
         parsed_limit = limit_price
     else:
