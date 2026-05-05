@@ -74,8 +74,9 @@ async def test_low_confidence_skips_both_sides() -> None:
 
 
 @pytest.mark.asyncio
-async def test_active_mode_pennies_behind_best() -> None:
-    """theo near best → not desert → active mode follow with max_distance."""
+async def test_active_mode_pennies_behind_best_at_low_confidence() -> None:
+    """theo near best, low confidence → not desert → active-follow:
+    stay max_distance behind best on each side."""
     s = DefaultLIPQuoting(DefaultLIPQuotingConfig(max_distance_from_best=1))
     ob = OrderbookSnapshot(
         yes_depth=[(45, 100)], no_depth=[(45, 100)],
@@ -83,13 +84,38 @@ async def test_active_mode_pennies_behind_best() -> None:
     )
     decision = await s.quote(
         ticker="KX-X-T50.00",
-        theo=_theo(0.50),
+        theo=_theo(0.50, confidence=0.5),  # below penny-inside threshold (0.7)
         orderbook=ob, our_state=_empty_state(),
         now_ts=time.time(), time_to_settle_s=3600,
     )
-    # Active mode: bid = best_bid - 1, ask = best_ask + 1
+    # Active-follow: bid = best_bid - 1, ask = best_ask + 1
     assert decision.bid.price == 44
     assert decision.ask.price == 56
+    assert decision.bid.extras["mode"] == "active-follow"
+    assert decision.ask.extras["mode"] == "active-follow"
+
+
+@pytest.mark.asyncio
+async def test_active_mode_pennies_inside_at_high_confidence() -> None:
+    """theo near best, confidence ≥ penny_inside_min_confidence → trust theo
+    enough to take the LIP-1.0× spot at best+1 / best-1."""
+    s = DefaultLIPQuoting(DefaultLIPQuotingConfig(
+        max_distance_from_best=1, penny_inside_min_confidence=0.7,
+    ))
+    ob = OrderbookSnapshot(
+        yes_depth=[(45, 100)], no_depth=[(45, 100)],
+        best_bid=45, best_ask=55,
+    )
+    decision = await s.quote(
+        ticker="KX-X-T50.00",
+        theo=_theo(0.50, confidence=0.9),
+        orderbook=ob, our_state=_empty_state(),
+        now_ts=time.time(), time_to_settle_s=3600,
+    )
+    assert decision.bid.price == 46
+    assert decision.ask.price == 54
+    assert decision.bid.extras["mode"] == "active-penny"
+    assert decision.ask.extras["mode"] == "active-penny"
 
 
 # ── Desert mode (penny inside) ────────────────────────────────────────

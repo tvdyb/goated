@@ -361,6 +361,20 @@ async def _amain(args: argparse.Namespace) -> int:
         except asyncio.TimeoutError:
             logger.warning("runner did not stop in 10s; cancelling")
             runner_task.cancel()
+        # Pull every resting order before exiting so the operator
+        # doesn't leave naked quotes on Kalshi after a Ctrl+C.
+        try:
+            cancelled = await asyncio.wait_for(
+                runner.cancel_all_resting(), timeout=15.0,
+            )
+            logger.info("shutdown: cancelled %d resting orders", cancelled)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "shutdown: cancel_all_resting timed out — "
+                "orders may remain on the book; check the dashboard"
+            )
+        except Exception as exc:
+            logger.warning("shutdown: cancel_all_resting failed: %s", exc)
         await retention.stop()
         await server.stop()
         decision_logger.close()

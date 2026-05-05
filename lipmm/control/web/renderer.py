@@ -140,11 +140,27 @@ def join_strike_data(
         # program (where the score is informational anyway).
         ticker_lip = (incs.get(ticker) or [None])[0]
         df: float | None = None
-        if ticker_lip and ticker_lip.get("discount_factor_bps") is not None:
+        target: float | None = None
+        period_duration_s: float = 0.0
+        if ticker_lip:
+            if ticker_lip.get("discount_factor_bps") is not None:
+                try:
+                    df = float(ticker_lip["discount_factor_bps"]) / 10000.0
+                except (TypeError, ValueError):
+                    df = None
+            if ticker_lip.get("target_size_contracts") is not None:
+                try:
+                    target = float(ticker_lip["target_size_contracts"])
+                except (TypeError, ValueError):
+                    target = None
             try:
-                df = float(ticker_lip["discount_factor_bps"]) / 10000.0
+                period_duration_s = max(
+                    0.0,
+                    float(ticker_lip.get("end_date_ts") or 0)
+                    - float(ticker_lip.get("start_date_ts") or 0),
+                )
             except (TypeError, ValueError):
-                df = None
+                period_duration_s = 0.0
         if ob_present:
             try:
                 lip_score = compute_strike_score(
@@ -154,6 +170,7 @@ def join_strike_data(
                     best_bid_c=best_bid,
                     best_ask_c=best_ask,
                     discount_factor=df,
+                    target_size_contracts=target,
                 )
             except Exception:
                 lip_score = None
@@ -176,6 +193,7 @@ def join_strike_data(
             "resting": ticker_resting,
             "lip": ticker_lip,
             "lip_score": lip_score,
+            "lip_period_duration_s": period_duration_s,
         })
     return out
 

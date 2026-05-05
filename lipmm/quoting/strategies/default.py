@@ -57,6 +57,12 @@ class DefaultLIPQuotingConfig:
     min_contracts: int = 5
     max_contracts: int = 300
     min_theo_confidence: float = 0.10
+    penny_inside_min_confidence: float = 0.70
+    """At theo.confidence ≥ this threshold the strategy switches from
+    `active-follow` (1c BEHIND best) to `active-penny` (1c INSIDE
+    best) — i.e. trusts theo enough to take the LIP-multiplier-1.0
+    spot at best+1 / best-1, accepting whatever fills come. Default
+    0.70 = framework's "trust within ~3c" calibration."""
 
 
 class DefaultLIPQuoting:
@@ -112,8 +118,8 @@ class DefaultLIPQuoting:
                 )
 
             fair = theo.yes_cents
-            bid_decision = self._compute_bid(fair, orderbook)
-            ask_decision = self._compute_ask(fair, orderbook)
+            bid_decision = self._compute_bid(fair, orderbook, theo.confidence)
+            ask_decision = self._compute_ask(fair, orderbook, theo.confidence)
 
             # No-cross guard: if our proposed quotes would cross the opposite
             # best, post_only would reject. Pull back by 1c.
@@ -148,7 +154,9 @@ class DefaultLIPQuoting:
             return self._cfg
         base = self._cfg
         kwargs = {
-            "desert_threshold_c": base.desert_threshold_c,
+            "desert_threshold_c": int(overrides.get(
+                "desert_threshold_c", base.desert_threshold_c,
+            )),
             "desert_relative_pct": base.desert_relative_pct,
             "max_half_spread_c": base.max_half_spread_c,
             "max_distance_from_best": int(overrides.get(
@@ -166,13 +174,16 @@ class DefaultLIPQuoting:
             "min_theo_confidence": float(overrides.get(
                 "min_theo_confidence", base.min_theo_confidence,
             )),
+            "penny_inside_min_confidence": float(overrides.get(
+                "penny_inside_min_confidence", base.penny_inside_min_confidence,
+            )),
         }
         return DefaultLIPQuotingConfig(**kwargs)
 
     # ── per-side computation ──────────────────────────────────────────
 
     def _compute_bid(
-        self, fair: int, ob: OrderbookSnapshot,
+        self, fair: int, ob: OrderbookSnapshot, confidence: float = 0.0,
     ) -> SideDecision:
         cfg = self._cfg
         best_bid = ob.best_bid
@@ -189,6 +200,12 @@ class DefaultLIPQuoting:
             # Deep ITM: match best (no pennying — too risky on near-certain Yes)
             target = best_bid
             mode = "deep-itm-match"
+        elif confidence >= cfg.penny_inside_min_confidence:
+            # High-confidence active mode: penny INSIDE the best to take
+            # the LIP-multiplier-1.0 spot at best+1. Anti-spoofing cap
+            # below still binds, so we won't chase fake quotes above theo.
+            target = best_bid + 1
+            mode = "active-penny"
         else:
             # Active mode: stay max_distance_from_best behind best
             target = best_bid - cfg.max_distance_from_best
@@ -211,7 +228,7 @@ class DefaultLIPQuoting:
         )
 
     def _compute_ask(
-        self, fair: int, ob: OrderbookSnapshot,
+        self, fair: int, ob: OrderbookSnapshot, confidence: float = 0.0,
     ) -> SideDecision:
         cfg = self._cfg
         best_ask = ob.best_ask
@@ -229,6 +246,9 @@ class DefaultLIPQuoting:
         elif fair >= 97:
             target = best_ask
             mode = "deep-itm-match"
+        elif confidence >= cfg.penny_inside_min_confidence:
+            target = best_ask - 1
+            mode = "active-penny"
         else:
             target = best_ask + cfg.max_distance_from_best
             mode = "active-follow"

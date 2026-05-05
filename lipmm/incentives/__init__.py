@@ -22,15 +22,12 @@ from lipmm.incentives.base import IncentiveProgram, IncentiveProvider
 from lipmm.incentives.cache import IncentiveCache
 from lipmm.incentives.kalshi import KalshiIncentiveProvider
 from lipmm.incentives.score import (
-    DEFAULT_DECAY_TICKS,
     RestingMultiplier,
     StrikeScore,
     compute_strike_score,
-    linear_multiplier,
 )
 
 __all__ = [
-    "DEFAULT_DECAY_TICKS",
     "IncentiveCache",
     "IncentiveProgram",
     "IncentiveProvider",
@@ -38,5 +35,4 @@ __all__ = [
     "RestingMultiplier",
     "StrikeScore",
     "compute_strike_score",
-    "linear_multiplier",
 ]
