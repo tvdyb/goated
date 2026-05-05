@@ -138,6 +138,70 @@
     localStorage.setItem(EXPAND_KEY, JSON.stringify([...set]));
   }
 
+  // Per-strike theo-override form drafts. Every keystroke saves the
+  // value in localStorage; every htmx OOB swap of the strike grid
+  // (which fires every ~3s on orderbook updates) blows away the input
+  // elements, so we restore from drafts after each swap. Cleared on
+  // successful submit. Without this, the user can't type a 4-char
+  // reason without losing it.
+  const THEO_DRAFT_KEY = "lipmm_theo_drafts";
+
+  function getTheoDrafts() {
+    try {
+      return JSON.parse(localStorage.getItem(THEO_DRAFT_KEY) || "{}");
+    } catch (_) {
+      return {};
+    }
+  }
+  function saveTheoDrafts(d) {
+    localStorage.setItem(THEO_DRAFT_KEY, JSON.stringify(d));
+  }
+  function setTheoDraft(slug, name, value) {
+    const d = getTheoDrafts();
+    if (!d[slug]) d[slug] = {};
+    d[slug][name] = value;
+    saveTheoDrafts(d);
+  }
+  function clearTheoDraft(slug) {
+    const d = getTheoDrafts();
+    delete d[slug];
+    saveTheoDrafts(d);
+  }
+
+  function applyTheoDrafts() {
+    const d = getTheoDrafts();
+    let changed = false;
+    for (const slug of Object.keys(d)) {
+      const form = document.querySelector(
+        `[data-slug="${slug}"] form[data-form="theo-override-inline"]`
+      );
+      if (!form) {
+        // Strike row not in DOM anymore (collapsed / vanished). Drop
+        // the draft so it doesn't survive forever.
+        delete d[slug];
+        changed = true;
+        continue;
+      }
+      for (const [name, value] of Object.entries(d[slug])) {
+        const input = form.querySelector(`[name="${name}"]`);
+        if (input && input.value !== value) input.value = value;
+      }
+    }
+    if (changed) saveTheoDrafts(d);
+  }
+
+  function bindTheoDraftSave() {
+    document.body.addEventListener("input", (e) => {
+      const form = e.target.closest('form[data-form="theo-override-inline"]');
+      if (!form) return;
+      const wrap = form.closest("[data-slug]");
+      const slug = wrap ? wrap.dataset.slug : null;
+      const name = e.target.name;
+      if (!slug || !name) return;
+      setTheoDraft(slug, name, e.target.value);
+    });
+  }
+
   function applyPersistedExpansions() {
     const open = getExpandedSet();
     let changed = false;
@@ -283,10 +347,14 @@
     document.body.addEventListener("htmx:afterSwap", () => {
       applyPersistedDrawerState();
       applyPersistedExpansions();
+      applyTheoDrafts();
+      tickCountdowns();
     });
     document.body.addEventListener("htmx:wsAfterMessage", () => {
       applyPersistedDrawerState();
       applyPersistedExpansions();
+      applyTheoDrafts();
+      tickCountdowns();
     });
   }
 
@@ -339,6 +407,13 @@
       }
       if (btn.dataset.confirm && !confirm(btn.dataset.confirm)) return;
       await callJson(url, payload);
+      // If the call cleared a theo override, wipe any stale draft for
+      // that ticker's slug so a half-typed value doesn't reappear on
+      // the next swap.
+      if (url === "/control/clear_theo_override") {
+        const wrap = btn.closest("[data-slug]");
+        if (wrap && wrap.dataset.slug) clearTheoDraft(wrap.dataset.slug);
+      }
     });
   }
 
@@ -408,6 +483,11 @@
         await callJson("/control/set_theo_override", {
           ticker, yes_cents, confidence, reason,
         });
+        // Clear the draft for this strike — submission succeeded, the
+        // server-side state is now the source of truth and the next
+        // render will reflect it.
+        const wrap = form.closest("[data-slug]");
+        if (wrap && wrap.dataset.slug) clearTheoDraft(wrap.dataset.slug);
         form.reset();
         const conf = form.querySelector("[name=confidence]");
         if (conf) conf.value = "1.0";
@@ -498,33 +578,43 @@
     });
   }
 
+  function fmtTimeRemaining(seconds) {
+    if (!Number.isFinite(seconds) || seconds <= 0) return "expired";
+    const s = Math.floor(seconds);
+    const days = Math.floor(s / 86400);
+    const hours = Math.floor((s % 86400) / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const secs = s % 60;
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${String(mins).padStart(2, "0")}m`;
+    return `${mins}:${String(secs).padStart(2, "0")}`;
+  }
+
+  function tickCountdowns() {
+    const now = Date.now() / 1000;
+    document.querySelectorAll('[data-time-remaining="true"]').forEach((el) => {
+      const endTs = parseFloat(el.dataset.endTs);
+      if (!Number.isFinite(endTs)) return;
+      el.textContent = fmtTimeRemaining(endTs - now);
+      if (endTs - now <= 0) {
+        el.classList.remove("text-emerald-300");
+        el.classList.add("text-rose-300");
+      } else if (endTs - now <= 3600) {
+        el.classList.remove("text-emerald-300");
+        el.classList.add("text-amber-300");
+      }
+    });
+  }
+
   function startCountdownTicker() {
-    function fmt(seconds) {
-      if (!Number.isFinite(seconds) || seconds <= 0) return "expired";
-      const s = Math.floor(seconds);
-      const days = Math.floor(s / 86400);
-      const hours = Math.floor((s % 86400) / 3600);
-      const mins = Math.floor((s % 3600) / 60);
-      const secs = s % 60;
-      if (days > 0) return `${days}d ${hours}h`;
-      if (hours > 0) return `${hours}h ${String(mins).padStart(2, "0")}m`;
-      return `${mins}:${String(secs).padStart(2, "0")}`;
-    }
-    setInterval(() => {
-      const now = Date.now() / 1000;
-      document.querySelectorAll('[data-time-remaining="true"]').forEach((el) => {
-        const endTs = parseFloat(el.dataset.endTs);
-        if (!Number.isFinite(endTs)) return;
-        el.textContent = fmt(endTs - now);
-        if (endTs - now <= 0) {
-          el.classList.remove("text-emerald-300");
-          el.classList.add("text-rose-300");
-        } else if (endTs - now <= 3600) {
-          el.classList.remove("text-emerald-300");
-          el.classList.add("text-amber-300");
-        }
-      });
-    }, 1000);
+    // 1Hz cadence is cheap (no network), but the *visible* string only
+    // changes once per minute when > 1h remaining and once per hour
+    // when > 1d remaining. The flicker the operator was seeing came
+    // from htmx OOB swaps replacing the data-time-remaining elements
+    // with their server-rendered "—" placeholder; we now call
+    // tickCountdowns() right after every swap so the placeholder is
+    // overwritten within a frame instead of waiting up to 1s.
+    setInterval(tickCountdowns, 1000);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
@@ -540,6 +630,7 @@
     bindDrawer();
     bindKnobInline();
     bindCmdEnterManualOrder();
+    bindTheoDraftSave();
     bindNotionalPreview();
     if (location.pathname === "/dashboard") {
       if (!getJwt()) { location.href = "/login"; return; }
@@ -547,6 +638,7 @@
       startCountdownTicker();
       applyPersistedDrawerState();
       applyPersistedExpansions();
+      applyTheoDrafts();
     }
   });
 })();
