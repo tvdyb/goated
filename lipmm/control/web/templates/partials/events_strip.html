@@ -19,6 +19,10 @@
           title="{{ ev }} — {{ count }} strikes; ${{ '%.0f'|format(lip) }} LIP/period">
       <span style="font-family: 'JetBrains Mono', ui-monospace;">{{ ev }}</span>
       <span class="text-[10px]" style="color: var(--ink-lo);">{{ count }}</span>
+      <button data-action="quote-all-event" data-event-ticker="{{ ev }}"
+              class="rounded text-[11px] leading-none px-1 hover:brightness-150"
+              style="color: var(--lip);"
+              title="Apply theo override to ALL strikes in this event (panic-batch quote)">⚡</button>
       <button data-action="remove-event" data-event-ticker="{{ ev }}"
               data-resting-count="{{ count }}"
               class="rounded text-[11px] leading-none px-1 hover:brightness-150"

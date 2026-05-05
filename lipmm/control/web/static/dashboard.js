@@ -585,6 +585,104 @@
         }
         return;
       }
+      const quoteAllBtn = e.target.closest('[data-action="quote-all-event"]');
+      if (quoteAllBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const ev = quoteAllBtn.dataset.eventTicker;
+        if (!ev) return;
+        // Find every strike-row in the DOM whose ticker starts with the
+        // event prefix — those are the strikes the bot is currently
+        // tracking under this event.
+        const prefix = ev + "-";
+        const strikes = [];
+        document.querySelectorAll(".strike-row[data-ticker]").forEach((row) => {
+          const t = row.dataset.ticker;
+          if (t && t.startsWith(prefix)) strikes.push(t);
+        });
+        if (strikes.length === 0) {
+          return showToast(
+            `No strikes loaded for ${ev} yet — wait one runner cycle.`,
+          );
+        }
+        // Prompt: mode (default track_mid since that's the panic mode).
+        const modeRaw = prompt(
+          `Quick-quote ALL ${strikes.length} strikes in ${ev}\n\n` +
+          `Mode: type "fixed" or "mid" (default mid):`,
+          "mid",
+        );
+        if (modeRaw === null) return;
+        const mode = (modeRaw || "mid").trim().toLowerCase() === "fixed"
+          ? "fixed" : "track_mid";
+        // Prompt: confidence (default 0.95 = active-penny mode)
+        const confRaw = prompt(
+          `Confidence (0.0–1.0):\n` +
+          `  ≥ 0.95 → penny INSIDE best (most aggressive)\n` +
+          `  ≥ 0.70 → match best\n` +
+          `  ≥ 0.10 → 1¢ behind best`,
+          "0.95",
+        );
+        if (confRaw === null) return;
+        const confidence = parseFloat(confRaw);
+        if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+          return showToast("confidence must be 0..1");
+        }
+        // For fixed mode, also need a yes_cents — but in the panic case
+        // operators want track_mid. Skip the cents prompt for track_mid;
+        // ask for it only when fixed.
+        let yes_cents = 50;  // ignored at quote time when mode=track_mid
+        if (mode === "fixed") {
+          const centsRaw = prompt(
+            "Yes cents (1–99) — applied to all strikes in this event:",
+            "50",
+          );
+          if (centsRaw === null) return;
+          yes_cents = parseInt(centsRaw, 10);
+          if (!Number.isInteger(yes_cents) || yes_cents < 1 || yes_cents > 99) {
+            return showToast("yes_cents must be 1..99");
+          }
+        }
+        const reason = prompt(
+          "Reason (≥4 chars, audit string):",
+          "panic-batch quote",
+        );
+        if (reason === null) return;
+        if (!reason || reason.trim().length < 4) {
+          return showToast("reason must be ≥4 chars");
+        }
+        // Final confirm — operator-typed event ticker safety check.
+        const typed = prompt(
+          `FINAL CONFIRM: type "${ev}" to apply ${mode} mode + ` +
+          `confidence ${confidence} to all ${strikes.length} strikes:`,
+        );
+        if (typed === null) return;
+        if (typed.trim() !== ev) {
+          return showToast(
+            `aborted — typed "${typed}" did not match "${ev}"`,
+          );
+        }
+        // Bulk-apply. Run sequentially to be polite to the audit log
+        // and to surface per-strike errors clearly. Concurrent would
+        // be faster but spam audit; sequential ~50ms each is fine.
+        showToast(`Applying ${mode} to ${strikes.length} strikes…`);
+        let ok = 0, fail = 0;
+        for (const t of strikes) {
+          try {
+            await callJson("/control/set_theo_override", {
+              ticker: t, yes_cents, confidence, reason: reason.trim(),
+              mode,
+            });
+            ok += 1;
+          } catch {
+            fail += 1;
+          }
+        }
+        showToast(
+          `Quote-all done: ${ok} applied` +
+          (fail > 0 ? `, ${fail} failed` : ""),
+        );
+        return;
+      }
     });
   }
 
@@ -623,15 +721,26 @@
       } else if (kind === "theo-override" || kind === "theo-override-inline") {
         const ticker = (fd.get("ticker") || form.dataset.ticker || "").trim();
         const mode = (fd.get("mode") || "fixed").trim();
-        const yes_cents = parseInt(fd.get("yes_cents"), 10);
         const confidence = parseFloat(fd.get("confidence"));
         const reason = (fd.get("reason") || "").trim();
+        // yes_cents handling: in track_mid mode it's a server-side
+        // placeholder (the runner ignores it). Don't gate the submit on
+        // it being readable from the form — readonly/disabled state
+        // history has burned this path before. If the form has no
+        // usable value, default to 50 in track_mid; require valid in
+        // fixed mode.
+        const rawCents = fd.get("yes_cents");
+        let yes_cents = parseInt(rawCents, 10);
+        if (!Number.isInteger(yes_cents) || yes_cents < 1 || yes_cents > 99) {
+          if (mode === "track_mid") {
+            yes_cents = 50;  // unused at quote time; just keep Pydantic happy
+          } else {
+            return showToast("yes_cents must be 1..99");
+          }
+        }
         if (!ticker) return showToast("ticker required");
         if (mode !== "fixed" && mode !== "track_mid") {
           return showToast(`unknown mode "${mode}"`);
-        }
-        if (!Number.isInteger(yes_cents) || yes_cents < 1 || yes_cents > 99) {
-          return showToast("yes_cents must be 1..99");
         }
         if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
           return showToast("confidence must be 0..1");

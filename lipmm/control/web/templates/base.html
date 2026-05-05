@@ -12,7 +12,10 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/ws.js"></script>
-  <script src="/static/dashboard.js" defer></script>
+  {# Cache-bust dashboard.js with the boot timestamp so restarting
+     the bot forces every browser to fetch the fresh JS. Without this
+     the operator can ship a JS fix and not see it for hours/days. #}
+  <script src="/static/dashboard.js?v={{ boot_ts }}" defer></script>
 
   <style>
     /* Phase 10 design tokens (from interface-overhaul/data.jsx).

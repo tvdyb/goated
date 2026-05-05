@@ -39,6 +39,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _templates = Jinja2Templates(directory=str(_paths.TEMPLATES_DIR))
+# Cache-bust static asset URLs (esp. dashboard.js). Restart of the bot
+# bumps this, so every browser pulls fresh JS on the next page load.
+import time as _time
+_BOOT_TS = int(_time.time())
+_templates.env.globals["boot_ts"] = _BOOT_TS
 
 
 def mount_dashboard(
