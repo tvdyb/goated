@@ -112,7 +112,11 @@ def join_strike_data(
         incs.setdefault(ip["market_ticker"], []).append(ip)
     obs = {ob["ticker"]: ob for ob in orderbooks.get("strikes", [])}
 
-    universe = set(obs) | set(positions) | set(resting) | set(incs) | set(overrides)
+    # Strike universe = strikes the bot has skin in OR is actively
+    # tracking. Incentives are an ATTRIBUTE attached to a strike, not
+    # a reason to add a strike (otherwise we'd render every LIP-active
+    # ticker on Kalshi as a "strike", flooding the grid).
+    universe = set(obs) | set(positions) | set(resting) | set(overrides)
     out: list[dict[str, Any]] = []
     for ticker in sorted(universe):
         ob = obs.get(ticker, {})

@@ -40,39 +40,51 @@
       </div>
     </div>
 
-    {# % chance + mini bar #}
+    {# % chance + mini bar (only meaningful with orderbook data) #}
     <div class="text-right">
-      <div class="font-mono text-[15px] font-semibold tabular-nums" style="color: var(--ink-hi);">
-        {{ s.chance }}%
-      </div>
-      <div class="mt-1 ml-auto h-[3px] w-full max-w-[60px] rounded-full overflow-hidden"
-           style="background: var(--surface-2);">
-        <div class="h-full rounded-full" style="width: {{ s.chance }}%; background: var(--info);"></div>
-      </div>
+      {% if s.ob_present %}
+        <div class="font-mono text-[15px] font-semibold tabular-nums" style="color: var(--ink-hi);">
+          {{ s.chance }}%
+        </div>
+        <div class="mt-1 ml-auto h-[3px] w-full max-w-[60px] rounded-full overflow-hidden"
+             style="background: var(--surface-2);">
+          <div class="h-full rounded-full" style="width: {{ s.chance }}%; background: var(--info);"></div>
+        </div>
+      {% else %}
+        <span class="text-[12px]" style="color: var(--ink-dim);">—</span>
+      {% endif %}
     </div>
 
     {# Yes price chip #}
     <div class="flex justify-center">
-      <span data-action="seed-manual" data-side="yes" data-price="{{ s.yesC }}" data-ticker="{{ s.ticker }}"
-            role="button" tabindex="0"
-            class="inline-flex flex-col items-center justify-center rounded leading-none border transition-colors hover:brightness-125 select-none"
-            style="background: #0a1f17; color: var(--yes); border-color: #164d3a;
-                   font-family: 'JetBrains Mono', ui-monospace; width: 52px; padding: 4px 8px;">
-        <span class="text-[9px] uppercase tracking-wider opacity-70">Yes</span>
-        <span class="text-[13px] font-semibold">{{ s.yesC }}¢</span>
-      </span>
+      {% if s.ob_present %}
+        <span data-action="seed-manual" data-side="yes" data-price="{{ s.yesC }}" data-ticker="{{ s.ticker }}"
+              role="button" tabindex="0"
+              class="inline-flex flex-col items-center justify-center rounded leading-none border transition-colors hover:brightness-125 select-none"
+              style="background: #0a1f17; color: var(--yes); border-color: #164d3a;
+                     font-family: 'JetBrains Mono', ui-monospace; width: 52px; padding: 4px 8px;">
+          <span class="text-[9px] uppercase tracking-wider opacity-70">Yes</span>
+          <span class="text-[13px] font-semibold">{{ s.yesC }}¢</span>
+        </span>
+      {% else %}
+        <span class="text-[12px]" style="color: var(--ink-dim);">—</span>
+      {% endif %}
     </div>
 
     {# No price chip #}
     <div class="flex justify-center">
-      <span data-action="seed-manual" data-side="no" data-price="{{ s.noC }}" data-ticker="{{ s.ticker }}"
-            role="button" tabindex="0"
-            class="inline-flex flex-col items-center justify-center rounded leading-none border transition-colors hover:brightness-125 select-none"
-            style="background: #1f0a0e; color: var(--no); border-color: #4d1a23;
-                   font-family: 'JetBrains Mono', ui-monospace; width: 52px; padding: 4px 8px;">
-        <span class="text-[9px] uppercase tracking-wider opacity-70">No</span>
-        <span class="text-[13px] font-semibold">{{ s.noC }}¢</span>
-      </span>
+      {% if s.ob_present %}
+        <span data-action="seed-manual" data-side="no" data-price="{{ s.noC }}" data-ticker="{{ s.ticker }}"
+              role="button" tabindex="0"
+              class="inline-flex flex-col items-center justify-center rounded leading-none border transition-colors hover:brightness-125 select-none"
+              style="background: #1f0a0e; color: var(--no); border-color: #4d1a23;
+                     font-family: 'JetBrains Mono', ui-monospace; width: 52px; padding: 4px 8px;">
+          <span class="text-[9px] uppercase tracking-wider opacity-70">No</span>
+          <span class="text-[13px] font-semibold">{{ s.noC }}¢</span>
+        </span>
+      {% else %}
+        <span class="text-[12px]" style="color: var(--ink-dim);">—</span>
+      {% endif %}
     </div>
 
     {# Position #}
