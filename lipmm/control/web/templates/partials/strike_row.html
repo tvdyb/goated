@@ -162,8 +162,8 @@
             no orderbook data yet — runner cycle hasn't pushed
           </div>
         {% else %}
-          {% set max_yes = (s.yes_levels | map(attribute='size') | max) if s.yes_levels else 1 %}
-          {% set max_no  = (s.no_levels  | map(attribute='size') | max) if s.no_levels  else 1 %}
+          {% set max_yes = (s.yes_levels[:5] | map(attribute='size') | max) if s.yes_levels else 1 %}
+          {% set max_no  = (s.no_levels[:5]  | map(attribute='size') | max) if s.no_levels  else 1 %}
           {% set max_sz = (max_yes if max_yes > max_no else max_no) or 1 %}
           <div class="grid grid-cols-2 gap-2 text-[11px]"
                style="font-family: 'JetBrains Mono', ui-monospace;">

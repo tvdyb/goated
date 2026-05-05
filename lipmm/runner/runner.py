@@ -297,19 +297,22 @@ class LIPRunner:
         )
 
         # Per-strike orderbook view for the dashboard's strike grid.
-        # Top 5 levels each side keeps the broadcast small; the depth
-        # ladder UI only ever shows top 5.
+        # We push the FULL visible book (capped defensively at 50 levels
+        # each side) because the LIP scorer needs to walk down to the
+        # qualifying threshold (Target Size can be up to 20,000 contracts
+        # per Appendix A — far past top-5 in any realistic book). The
+        # depth-ladder UI slices to top 5 at render time.
         self._cycle_orderbooks.append({
             "ticker": ticker,
             "best_bid_c": int(best_bid),
             "best_ask_c": int(best_ask),
             "yes_levels": [
                 {"price_cents": int(p), "size": float(sz)}
-                for (p, sz) in ob_levels.yes_levels[:5]
+                for (p, sz) in ob_levels.yes_levels[:50]
             ],
             "no_levels": [
                 {"price_cents": int(p), "size": float(sz)}
-                for (p, sz) in ob_levels.no_levels[:5]
+                for (p, sz) in ob_levels.no_levels[:50]
             ],
             "ts": now_ts,
         })

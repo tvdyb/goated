@@ -202,12 +202,14 @@ async def test_runner_aggregates_orderbooks_per_cycle_and_broadcasts() -> None:
     assert "strikes" in snap
     assert "last_cycle_ts" in snap
     assert len(snap["strikes"]) == 2
-    # Top-5 cap on yes_levels
-    assert all(len(s["yes_levels"]) <= 5 for s in snap["strikes"])
-    # First strike has 7 yes levels in source → trimmed to 5
+    # Defensive 50-level cap on yes_levels (the LIP scorer needs full
+    # depth to walk down to Target Size; the depth-ladder UI slices to
+    # top 5 at render time).
+    assert all(len(s["yes_levels"]) <= 50 for s in snap["strikes"])
+    # First strike has 7 yes levels in source → all 7 preserved (under cap)
     s1 = snap["strikes"][0]
-    assert len(s1["yes_levels"]) == 5
-    # And 3 no-levels (under cap) → all 3 preserved
+    assert len(s1["yes_levels"]) == 7
+    # And 3 no-levels → all 3 preserved
     assert len(s1["no_levels"]) == 3
     # Best bid/ask present
     assert s1["best_bid_c"] >= 0
