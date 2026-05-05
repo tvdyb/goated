@@ -525,10 +525,13 @@
   }
 
   // Sequentially POST /control/set_theo_override for each ticker. Toast
-  // a running progress count + a final summary.
+  // a running progress count + a final summary. Per-strike failures
+  // are logged to the console so the operator can F12-inspect when the
+  // bulk apply doesn't fully succeed.
   async function bulkApplyTheoToStrikes(strikes, params) {
     showToast(`Applying ${params.mode} to ${strikes.length} strikes…`);
-    let ok = 0, fail = 0;
+    let ok = 0;
+    const failures = [];
     for (const t of strikes) {
       try {
         await callJson("/control/set_theo_override", {
@@ -539,14 +542,39 @@
           mode: params.mode,
         });
         ok += 1;
-      } catch {
-        fail += 1;
+      } catch (err) {
+        failures.push({ ticker: t, error: String(err && err.message || err) });
       }
     }
-    showToast(
-      `Quote-all done: ${ok} applied` +
-      (fail > 0 ? `, ${fail} failed (see decision feed for reasons)` : ""),
-    );
+    if (failures.length > 0) {
+      // Loud + non-self-clearing summary so the operator knows.
+      console.error(
+        `bulkApplyTheoToStrikes: ${failures.length}/${strikes.length} FAILED:`,
+        failures,
+      );
+      showToast(
+        `Quote-all: ${ok}/${strikes.length} applied, ${failures.length} FAILED. ` +
+        `Open browser console (F12) for per-strike error.`,
+      );
+    } else {
+      showToast(`Quote-all done: ${ok}/${strikes.length} applied`);
+    }
+  }
+
+  // Wait up to ~6s for at least one strike row matching the prefix to
+  // appear in the DOM. Returns the discovered strike list (possibly
+  // empty if timeout). Used by both ⚡ and "add & quote" flows so a
+  // freshly-added event auto-waits for its orderbook to broadcast
+  // before bulk-applying.
+  async function waitForStrikes(eventTicker, maxWaitMs = 6000) {
+    const stepMs = 300;
+    const steps = Math.ceil(maxWaitMs / stepMs);
+    for (let i = 0; i < steps; i += 1) {
+      const found = strikesForEvent(eventTicker);
+      if (found.length > 0) return found;
+      await new Promise((r) => setTimeout(r, stepMs));
+    }
+    return strikesForEvent(eventTicker);  // final attempt
   }
 
   function bindEventStrip() {
@@ -629,10 +657,17 @@
         e.stopPropagation();
         const ev = quoteAllBtn.dataset.eventTicker;
         if (!ev) return;
-        const strikes = strikesForEvent(ev);
+        // Try immediately first; if no strikes in DOM yet (fresh event,
+        // runner hasn't pushed an orderbook snapshot), wait up to 6s.
+        let strikes = strikesForEvent(ev);
+        if (strikes.length === 0) {
+          showToast(`Waiting for ${ev} strikes to load…`);
+          strikes = await waitForStrikes(ev);
+        }
         if (strikes.length === 0) {
           return showToast(
-            `No strikes loaded for ${ev} yet — wait one runner cycle.`,
+            `No strikes loaded for ${ev} after 6s — runner may be stuck. ` +
+            `Check server logs.`,
           );
         }
         // ONE-CLICK panic flow: single confirm, sensible defaults
@@ -678,14 +713,10 @@
         } catch {
           return;  // callJson already toasted
         }
-        // Wait up to ~5s for the runner cycle to push strikes into the DOM.
-        // The orderbook_snapshot WS message refreshes the grid each cycle.
-        let strikes = [];
-        for (let i = 0; i < 20; i += 1) {
-          strikes = strikesForEvent(ev);
-          if (strikes.length > 0) break;
-          await new Promise((r) => setTimeout(r, 300));
-        }
+        // Wait up to ~6s for the runner cycle to push strikes into the
+        // DOM. The orderbook_snapshot WS message refreshes the grid
+        // each cycle.
+        const strikes = await waitForStrikes(ev);
         if (strikes.length === 0) {
           return showToast(
             `Added ${ev} but no strikes appeared after 6s — runner may be slow. ` +
