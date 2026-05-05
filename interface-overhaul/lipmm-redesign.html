@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>lipmm control — dashboard redesign</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <style>
+    html, body { background: #070b14; color: #e6edf7; font-family: 'Inter', system-ui, sans-serif; }
+    * { -webkit-font-smoothing: antialiased; }
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0c1320; }
+    ::-webkit-scrollbar-thumb { background: #1e2a40; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #2a3a55; }
+    input[type="range"] { height: 4px; background: #161f30; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <template id="__bundler_thumbnail">
+    <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+      <rect width="200" height="200" fill="#070b14"/>
+      <g transform="translate(40,40)">
+        <rect x="0" y="0" width="120" height="14" rx="2" fill="#1e2a40"/>
+        <rect x="0" y="22" width="120" height="14" rx="2" fill="#0f1623" stroke="#3ddc97" stroke-width="2"/>
+        <rect x="0" y="44" width="120" height="14" rx="2" fill="#1e2a40"/>
+        <rect x="0" y="66" width="120" height="14" rx="2" fill="#0f1623" stroke="#e6c065" stroke-width="2"/>
+        <rect x="0" y="88" width="120" height="14" rx="2" fill="#1e2a40"/>
+        <rect x="0" y="110" width="120" height="14" rx="2" fill="#1e2a40"/>
+      </g>
+    </svg>
+  </template>
+
+  <div id="root"></div>
+
+  <script type="text/babel" src="design-canvas.jsx"></script>
+  <script type="text/babel" src="data.jsx"></script>
+  <script type="text/babel" src="primitives.jsx"></script>
+  <script type="text/babel" src="comps.jsx"></script>
+
+  <script type="text/babel" data-presets="env,react">
+    function App() {
+      return (
+        <DesignCanvas storageKey="lipmm-redesign-v1" defaultZoom={0.7}>
+          <DCSection id="desktop" title="① Desktop dashboard — 1280px" subtitle="zone 1 status + zone 2 market grid + collapsible feed + collapsed operator drawer">
+            <DCArtboard id="desktop-main" label="Default state" width={1280} height={900}>
+              <DesktopDashboard />
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection id="mobile" title="② Mobile — 390px" subtitle="single column, status compact, bottom-sheet operator + feed buttons">
+            <DCArtboard id="mobile-main" label="iPhone width" width={390} height={844}>
+              <MobileDashboard />
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection id="drawer" title="③ Operator drawer — expanded" subtitle="5 tabs · Theos / Pauses / Knobs / Locks / Manual orders">
+            <DCArtboard id="drawer-main" label="Theos tab open (most active)" width={1280} height={780}>
+              <OperatorDrawerComp />
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection id="expanded" title="④ Expanded strike row" subtitle="inline order book + resting orders + LIP detail + theo override form">
+            <DCArtboard id="expanded-main" label="Strike 'At least 51' expanded" width={1280} height={680}>
+              <ExpandedRowComp />
+            </DCArtboard>
+          </DCSection>
+
+          <DCSection id="tokens" title="⑤ Color tokens + type scale" subtitle="all tokens used — drop into tailwind.config.theme.extend">
+            <DCArtboard id="tokens-main" label="Tokens reference" width={1280} height={1100}>
+              <TokensComp />
+            </DCArtboard>
+          </DCSection>
+        </DesignCanvas>
+      );
+    }
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
