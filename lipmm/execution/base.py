@@ -62,10 +62,18 @@ class Order:
 class OrderbookLevels:
     """Snapshot of one market's book. Each list is sorted highest-first.
     `yes_levels` are bids on Yes (descending price); `no_levels` are bids
-    on No (= asks on Yes when inverted)."""
+    on No (= asks on Yes when inverted).
+
+    `has_subcent_ticks` is set True when the source orderbook contained
+    any price level at a fractional-cent granularity (e.g., $0.4510 =
+    45.1¢). Kalshi's order-placement API is integer-cents-only, so the
+    bot cannot quote competitively in such markets — the runner skips
+    them with a warning. Operator-visible flag so they know which
+    markets are blocked."""
     ticker: str
     yes_levels: list[tuple[int, float]]   # [(price_cents, size), ...]
     no_levels: list[tuple[int, float]]
+    has_subcent_ticks: bool = False
 
 
 @dataclass(frozen=True)

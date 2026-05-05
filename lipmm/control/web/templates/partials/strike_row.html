@@ -40,6 +40,11 @@
                   style="background: #2b2410; color: var(--lip); border-color: #5a4923;">manual</span>
           {% endif %}
         {% endif %}
+        {% if s.has_subcent_ticks %}
+          <span class="px-1 py-0 text-[8px] font-medium uppercase tracking-wider rounded-sm border"
+                style="background: #1f0a0e; color: var(--no); border-color: #4d1a23;"
+                title="this market has sub-cent tick granularity (e.g. 45.1¢ levels). The bot only places integer-cent orders so it cannot quote competitively here. The bot is SKIPPING this strike automatically — remove the event or wait for it to settle.">⚠ subcent</span>
+        {% endif %}
       </div>
       <div class="font-mono text-[10px] tabular-nums whitespace-nowrap" style="color: var(--ink-dim);">
         …{{ s.ticker[-12:] }}

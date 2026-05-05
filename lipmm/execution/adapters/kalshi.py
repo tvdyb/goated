@@ -214,10 +214,13 @@ class KalshiExchangeAdapter:
         ob_fp = resp.get("orderbook_fp", {}) or {}
         yes_dollars = ob_fp.get("yes_dollars", []) or []
         no_dollars = ob_fp.get("no_dollars", []) or []
+        yes_lv, yes_subcent = _parse_depth(yes_dollars)
+        no_lv, no_subcent = _parse_depth(no_dollars)
         return OrderbookLevels(
             ticker=ticker,
-            yes_levels=_parse_depth(yes_dollars),
-            no_levels=_parse_depth(no_dollars),
+            yes_levels=yes_lv,
+            no_levels=no_lv,
+            has_subcent_ticks=yes_subcent or no_subcent,
         )
 
     async def list_resting_orders(self) -> list[Order]:
@@ -274,23 +277,35 @@ class KalshiExchangeAdapter:
 # ── Parsing helpers ───────────────────────────────────────────────────
 
 
-def _parse_depth(levels: list) -> list[tuple[int, float]]:
+def _parse_depth(levels: list) -> tuple[list[tuple[int, float]], bool]:
     """Parse Kalshi `[[price_str_dollars, size_str], ...]` into
-    `[(price_cents, size), ...]` sorted highest-first."""
+    `[(price_cents, size), ...]` sorted highest-first.
+
+    Returns `(levels, has_subcent)`. `has_subcent` is True when any
+    input price had a non-integer cent value (e.g., "0.4510" → 45.1¢).
+    Kalshi order placement is integer-cents-only, so a True flag means
+    the bot cannot competitively quote this market."""
     if not levels:
-        return []
+        return [], False
     parsed: list[tuple[int, float]] = []
+    has_subcent = False
     for lv in levels:
         if not isinstance(lv, (list, tuple)) or len(lv) < 2:
             continue
         try:
-            px = int(round(float(lv[0]) * 100))
+            cents_float = float(lv[0]) * 100.0
             sz = float(lv[1])
         except (ValueError, TypeError):
             continue
+        # Detect fractional cents (e.g., 45.1 → not equal to its rounded
+        # integer). Tolerance handles float-rep noise from "0.4500".
+        rounded = round(cents_float)
+        if abs(cents_float - rounded) > 1e-3:
+            has_subcent = True
+        px = int(rounded)
         parsed.append((px, sz))
     parsed.sort(key=lambda x: -x[0])  # highest-first
-    return parsed
+    return parsed, has_subcent
 
 
 def _parse_order(

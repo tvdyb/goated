@@ -209,6 +209,7 @@ def join_strike_data(
             "lip_period_duration_s": period_duration_s,
             "side_lock_bid": locks.get((ticker, "bid")),
             "side_lock_ask": locks.get((ticker, "ask")),
+            "has_subcent_ticks": bool(ob.get("has_subcent_ticks", False)),
         })
     return out
 
