@@ -108,6 +108,7 @@ def mount_dashboard(
         event = event_meta_from_strikes(strikes)
         pnl_total = (runtime or {}).get("total_realized_pnl_dollars", 0.0)
         balance = (runtime or {}).get("balance") or {}
+        rate_limit = (runtime or {}).get("rate_limit")
         ctx = {
             "snapshot": snap,
             "presence": broadcaster.presence(),
@@ -122,6 +123,7 @@ def mount_dashboard(
             "event": event,
             "pnl_total": pnl_total,
             "balance": balance,
+            "rate_limit": rate_limit,
         }
         return _templates.TemplateResponse(request, "dashboard.html", ctx)
 

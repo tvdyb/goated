@@ -373,6 +373,7 @@ async def _amain(args: argparse.Namespace) -> int:
         broadcaster=broadcaster,
         mount_dashboard=True,
         event_validator=_validator,
+        rate_limit_stats=lambda: client.rate_limiter.stats(),
         runtime_refresh_s=5.0,
         incentive_provider=KalshiIncentiveProvider(),
         incentives_refresh_s=3600.0,

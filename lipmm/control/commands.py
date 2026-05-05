@@ -330,6 +330,19 @@ class BalanceEntry(BaseModel):
     portfolio_value_dollars: float
 
 
+class RateLimitStatsEntry(BaseModel):
+    """Token-bucket + 429 stats from the Kalshi client. Used by the
+    dashboard to show whether we're getting rate-limited."""
+    read_tokens_available: float
+    read_capacity: float
+    write_tokens_available: float
+    write_capacity: float
+    total_429s: int
+    last_429_ts: float
+    total_throttle_waits: int
+    total_throttle_wait_s: float
+
+
 class RuntimeSnapshotResponse(BaseModel):
     """GET /control/runtime — current positions + resting orders + balance.
 
@@ -342,6 +355,7 @@ class RuntimeSnapshotResponse(BaseModel):
     balance: BalanceEntry | None = None
     total_realized_pnl_dollars: float = 0.0
     total_fees_paid_dollars: float = 0.0
+    rate_limit: RateLimitStatsEntry | None = None
     errors: list[str] = Field(default_factory=list)
     ts: float
 

@@ -83,6 +83,30 @@ class KalshiRateLimiter:
             last_refill=now,
         )
         self._lock = asyncio.Lock()
+        # Diagnostic counters surfaced by the dashboard so the operator
+        # can see whether they're getting rate-limited.
+        self._total_429s: int = 0
+        self._last_429_ts: float = 0.0
+        self._total_throttle_waits: int = 0
+        self._total_throttle_wait_s: float = 0.0
+
+    def note_429(self) -> None:
+        """KalshiClient calls this on each observed 429 response."""
+        self._total_429s += 1
+        self._last_429_ts = time.time()
+
+    def stats(self) -> dict:
+        """Snapshot of rate-limiter state for diagnostics."""
+        return {
+            "read_tokens_available": self.read_tokens_available,
+            "read_capacity": self._read_bucket.capacity,
+            "write_tokens_available": self.write_tokens_available,
+            "write_capacity": self._write_bucket.capacity,
+            "total_429s": self._total_429s,
+            "last_429_ts": self._last_429_ts,
+            "total_throttle_waits": self._total_throttle_waits,
+            "total_throttle_wait_s": self._total_throttle_wait_s,
+        }
 
     async def acquire_read(self, cost: float = DEFAULT_REQUEST_COST) -> None:
         """Wait until ``cost`` read tokens are available, then consume them."""
@@ -99,6 +123,8 @@ class KalshiRateLimiter:
                 if wait == 0.0:
                     return
             # Sleep outside the lock so other callers can proceed
+            self._total_throttle_waits += 1
+            self._total_throttle_wait_s += wait
             await asyncio.sleep(wait)
 
     @property

@@ -254,46 +254,19 @@ class LIPRunner:
         # overrides need best_bid/best_ask to compute the mid).
         ob_levels = await self._exchange.get_orderbook(ticker)
 
-        # Sub-cent tick guard: Kalshi's order-placement API is integer-
-        # cents-only. If this market's orderbook contains any sub-cent
-        # level (e.g., 45.1¢), competitors can quote at granularity we
-        # cannot match — we'd quote 46 thinking we're "1c inside 45"
-        # while real best is 45.1, so we're 0.9¢ above and constantly
-        # pennied. Skip strategy processing + emit a warning. The
-        # orderbook still gets broadcast (with the subcent flag) so the
-        # dashboard can surface the strike with a "blocked" badge.
+        # Sub-cent tick detection: Kalshi's place_order API is
+        # integer-cents-only. Some markets show fractional-cent levels
+        # in the orderbook (e.g., 97.8¢). The bot rounds those to the
+        # nearest integer cent and quotes anyway — we'd rather quote
+        # slightly suboptimally than not at all. The badge on the
+        # dashboard tells the operator which markets are affected so
+        # they can choose to pause manually if the adverse selection
+        # is unacceptable.
         if ob_levels.has_subcent_ticks:
-            self._cycle_orderbooks.append({
-                "ticker": ticker,
-                "best_bid_c": 0, "best_ask_c": 100,
-                "yes_levels": [], "no_levels": [],
-                "has_subcent_ticks": True,
-                "ts": now_ts,
-            })
-            if self._decision_recorder is not None:
-                rec = {
-                    "schema_version": 1,
-                    "record_type": "skip_subcent_market",
-                    "ticker": ticker,
-                    "ts": now_ts,
-                    "reason": (
-                        "Kalshi market has sub-cent tick granularity; "
-                        "lipmm only places integer-cent orders, so we "
-                        "cannot quote competitively. Skipping."
-                    ),
-                }
-                try:
-                    out = self._decision_recorder(rec)
-                    if asyncio.iscoroutine(out):
-                        await out
-                except Exception as exc:  # noqa: BLE001
-                    logger.info("decision_recorder raised on subcent skip: %s", exc)
-            else:
-                logger.warning(
-                    "skip_subcent_market: %s has sub-cent tick granularity; "
-                    "skipping until operator removes from event set", ticker,
-                )
-            return
+            logger.info(
+                "subcent_market: %s has sub-cent tick granularity in book; "
+                "quoting at rounded integer cents", ticker,
+            )
 
         # Compute best_bid / best_ask excluding our own resting orders
         cur_bid = self._om.get_resting(ticker, "bid")

@@ -111,6 +111,7 @@ def build_app(
     mount_dashboard: bool = False,
     incentive_cache: IncentiveCache | None = None,
     event_validator: Any = None,
+    rate_limit_stats: Any = None,
 ) -> FastAPI:
     """Construct the FastAPI app. Caller wires in the ControlState and
     optional collaborators:
@@ -146,6 +147,10 @@ def build_app(
     # Used by /control/add_event to confirm the ticker exists on the
     # exchange before adding to active_events. Raises on failure.
     app.state.event_validator = event_validator
+    # Optional callable returning a dict of rate-limit stats (read/write
+    # tokens available, total 429s, total throttle waits). When wired,
+    # surfaces in the GET /control/runtime payload + dashboard.
+    app.state.rate_limit_stats = rate_limit_stats
     if broadcaster is not None:
         broadcaster.attach_state(state)
 
@@ -894,12 +899,23 @@ def build_app(
                     "portfolio_value_dollars": balance_result.portfolio_value_dollars,
                 }
 
+        # Rate-limit stats from the Kalshi client (when wired). Lets the
+        # dashboard show whether we're getting throttled / 429'd.
+        rate_limit = None
+        rls = app.state.rate_limit_stats
+        if callable(rls):
+            try:
+                rate_limit = rls()
+            except Exception as exc:
+                errors.append(f"rate_limit_stats: {exc}")
+
         return {
             "positions": position_entries,
             "resting_orders": resting_entries,
             "balance": balance_entry,
             "total_realized_pnl_dollars": total_realized,
             "total_fees_paid_dollars": total_fees,
+            "rate_limit": rate_limit,
             "errors": errors,
             "ts": time.time(),
         }
@@ -1253,6 +1269,7 @@ class ControlServer:
         incentive_provider: "Any | None" = None,
         incentives_refresh_s: float | None = 3600.0,
         event_validator: Any = None,
+        rate_limit_stats: Any = None,
     ) -> None:
         self._state = state
         # Auto-create a broadcaster if none provided — the server's WS
@@ -1278,6 +1295,7 @@ class ControlServer:
             mount_dashboard=mount_dashboard,
             incentive_cache=self._incentive_cache,
             event_validator=event_validator,
+            rate_limit_stats=rate_limit_stats,
         )
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None

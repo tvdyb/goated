@@ -42,6 +42,29 @@
         </span>
       </div>
     {% endif %}
+    {% if rate_limit %}
+      {# Rate-limit pill: green when healthy, yellow when throttled
+         (any wait), red when 429s observed. Tooltip has the details. #}
+      {% set rl_429s = rate_limit.total_429s or 0 %}
+      {% set rl_throttle = rate_limit.total_throttle_waits or 0 %}
+      {% set rl_color = 'var(--no)' if rl_429s > 0 else ('var(--lip)' if rl_throttle > 0 else 'var(--yes)') %}
+      <div class="flex items-center gap-1.5"
+           title="429s: {{ rl_429s }} | last 429: {% if rate_limit.last_429_ts %}{{ '%.0f'|format(rate_limit.last_429_ts) }}{% else %}never{% endif %} | throttle waits: {{ rl_throttle }} ({{ '%.1f'|format(rate_limit.total_throttle_wait_s or 0) }}s total) | read tokens: {{ '%.0f'|format(rate_limit.read_tokens_available or 0) }}/{{ '%.0f'|format(rate_limit.read_capacity or 0) }} | write tokens: {{ '%.0f'|format(rate_limit.write_tokens_available or 0) }}/{{ '%.0f'|format(rate_limit.write_capacity or 0) }}">
+        <span class="text-[10px] uppercase tracking-wider" style="color: var(--ink-lo);">rl</span>
+        <span class="font-mono tabular-nums text-[11px]" style="color: {{ rl_color }};">
+          {% if rl_429s > 0 %}
+            ⚠ {{ rl_429s }} 429
+          {% elif rl_throttle > 0 %}
+            ⏳ {{ rl_throttle }}
+          {% else %}
+            ok
+          {% endif %}
+        </span>
+        <span class="font-mono tabular-nums text-[10px]" style="color: var(--ink-dim);">
+          R{{ '%.0f'|format(rate_limit.read_tokens_available or 0) }}/W{{ '%.0f'|format(rate_limit.write_tokens_available or 0) }}
+        </span>
+      </div>
+    {% endif %}
     <span class="font-mono text-[10px] tabular-nums ml-2" style="color: var(--ink-dim);">
       v{{ snapshot.version if snapshot else 0 }}
     </span>

@@ -353,10 +353,11 @@ def render_initial(
     ctx = _build_grid_context(snapshot, runtime, incentives, orderbooks)
     pnl_total = (runtime or {}).get("total_realized_pnl_dollars", 0.0)
     balance = (runtime or {}).get("balance") or {}
+    rate_limit = (runtime or {}).get("rate_limit")
     return "\n".join([
         _env.get_template("partials/status_bar.html").render(
             snapshot=snapshot, presence=presence, total_tabs=total_tabs,
-            pnl_total=pnl_total, balance=balance,
+            pnl_total=pnl_total, balance=balance, rate_limit=rate_limit,
         ),
         _env.get_template("partials/event_header.html").render(
             event=ctx["event"], summary=ctx["summary"], groups=ctx["groups"],
@@ -384,6 +385,7 @@ def render_state(
     lives there) + strike grid (theo overrides change row borders)."""
     ctx = _build_grid_context(snapshot, runtime, incentives, orderbooks)
     balance = (runtime or {}).get("balance") or {}
+    rate_limit = (runtime or {}).get("rate_limit")
     return "\n".join([
         _env.get_template("partials/status_bar.html").render(
             snapshot=snapshot,
@@ -391,6 +393,7 @@ def render_state(
             total_tabs=total_tabs or 1,
             pnl_total=pnl_total,
             balance=balance,
+            rate_limit=rate_limit,
         ),
         _env.get_template("partials/event_header.html").render(
             event=ctx["event"], summary=ctx["summary"], groups=ctx["groups"],
@@ -421,6 +424,7 @@ def render_runtime(
     ctx = _build_grid_context(snapshot, runtime, incentives, orderbooks)
     pnl_total = (runtime or {}).get("total_realized_pnl_dollars", 0.0)
     balance = (runtime or {}).get("balance") or {}
+    rate_limit = (runtime or {}).get("rate_limit")
     return "\n".join([
         _env.get_template("partials/status_bar.html").render(
             snapshot=snapshot or {},
@@ -428,6 +432,7 @@ def render_runtime(
             total_tabs=total_tabs or 1,
             pnl_total=pnl_total,
             balance=balance,
+            rate_limit=rate_limit,
         ),
         _env.get_template("partials/event_header.html").render(
             event=ctx["event"], summary=ctx["summary"], groups=ctx["groups"],
@@ -576,12 +581,14 @@ class HtmlWebSocketAdapter:
                 "total_realized_pnl_dollars", 0.0,
             )
             balance = (self._last_runtime or {}).get("balance") or {}
+            rate_limit = (self._last_runtime or {}).get("rate_limit")
             return _env.get_template("partials/status_bar.html").render(
                 snapshot=self._last_state or {},
                 presence=self._last_presence,
                 total_tabs=self._last_total_tabs,
                 pnl_total=pnl,
                 balance=balance,
+                rate_limit=rate_limit,
             )
         if et == "decision":
             self._records.append(self._normalize(event.get("record", {})))

@@ -75,6 +75,11 @@ class KalshiClient:
         self._max_retries = max_retries
         self._client: httpx.AsyncClient | None = None
 
+    @property
+    def rate_limiter(self) -> "KalshiRateLimiter":
+        """Public accessor used by the dashboard / diagnostics."""
+        return self._rate_limiter
+
     async def __aenter__(self) -> KalshiClient:
         await self.open()
         return self
@@ -170,6 +175,7 @@ class KalshiClient:
 
             if status == 429:
                 wait = _BACKOFF_BASE_S * (2 ** attempt)
+                self._rate_limiter.note_429()
                 logger.warning(
                     "Kalshi 429 rate limit: %s %s (attempt %d/%d), backing off %.1fs",
                     method, path, attempt + 1, self._max_retries, wait,
