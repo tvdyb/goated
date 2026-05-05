@@ -202,6 +202,32 @@
     });
   }
 
+  // Mode select toggles yes_cents enabled/disabled. In track_mid mode
+  // the cents input is just a placeholder (server ignores it), so we
+  // grey it out to make the UI honest.
+  function applyModeToggle(form) {
+    const sel = form.querySelector("[data-mode-select]");
+    const cents = form.querySelector("[data-yes-cents]");
+    if (!sel || !cents) return;
+    const isMid = sel.value === "track_mid";
+    cents.disabled = isMid;
+    cents.style.opacity = isMid ? "0.4" : "";
+    cents.title = isMid ? "ignored in market-following mode (theo = mid)" : "";
+  }
+
+  function applyAllModeToggles() {
+    document.querySelectorAll('form[data-form="theo-override-inline"]')
+      .forEach(applyModeToggle);
+  }
+
+  function bindModeToggle() {
+    document.body.addEventListener("change", (e) => {
+      if (!e.target.matches("[data-mode-select]")) return;
+      const form = e.target.closest('form[data-form="theo-override-inline"]');
+      if (form) applyModeToggle(form);
+    });
+  }
+
   function applyPersistedExpansions() {
     const open = getExpandedSet();
     let changed = false;
@@ -384,12 +410,14 @@
       applyPersistedDrawerState();
       applyPersistedExpansions();
       applyTheoDrafts();
+      applyAllModeToggles();
       tickCountdowns();
     });
     document.body.addEventListener("htmx:wsAfterMessage", () => {
       applyPersistedDrawerState();
       applyPersistedExpansions();
       applyTheoDrafts();
+      applyAllModeToggles();
       tickCountdowns();
     });
   }
@@ -487,10 +515,14 @@
         form.reset();
       } else if (kind === "theo-override" || kind === "theo-override-inline") {
         const ticker = (fd.get("ticker") || form.dataset.ticker || "").trim();
+        const mode = (fd.get("mode") || "fixed").trim();
         const yes_cents = parseInt(fd.get("yes_cents"), 10);
         const confidence = parseFloat(fd.get("confidence"));
         const reason = (fd.get("reason") || "").trim();
         if (!ticker) return showToast("ticker required");
+        if (mode !== "fixed" && mode !== "track_mid") {
+          return showToast(`unknown mode "${mode}"`);
+        }
         if (!Number.isInteger(yes_cents) || yes_cents < 1 || yes_cents > 99) {
           return showToast("yes_cents must be 1..99");
         }
@@ -498,17 +530,35 @@
           return showToast("confidence must be 0..1");
         }
         if (reason.length < 4) return showToast("reason must be ≥4 chars");
-        const yes_p = (yes_cents / 100).toFixed(2);
-        // Step 1: rich preview confirm()
-        const msg = (
-          `OVERRIDE THEO for ${ticker}?\n\n` +
-          `  Setting fair value = ${yes_cents}c (P(Yes) = ${yes_p})\n` +
-          `  confidence = ${confidence}\n` +
-          `  reason = ${reason}\n\n` +
-          `The bot will quote this strike as if its fair value is ` +
-          `${yes_cents} cents until you clear the override or restart ` +
-          `the bot.\n\nClick OK to continue to ticker confirmation.`
-        );
+        // Step 1: rich preview confirm() — different message per mode
+        let msg;
+        if (mode === "track_mid") {
+          msg = (
+            `MARKET-FOLLOWING MODE for ${ticker}?\n\n` +
+            `  Theo will track the orderbook MID each cycle\n` +
+            `  (yes_cents=${yes_cents} is just a placeholder; ignored)\n` +
+            `  confidence = ${confidence}\n` +
+            `  reason = ${reason}\n\n` +
+            `The bot will quote this strike at best±N each cycle ` +
+            `(N depends on confidence) using live mid as theo. If the ` +
+            `book becomes one-sided or crossed, both sides skip until ` +
+            `the book recovers.\n\n` +
+            `This is RISKIER than a fixed override because the bot ` +
+            `follows whatever the market does — including bad ticks.\n\n` +
+            `Click OK to continue to ticker confirmation.`
+          );
+        } else {
+          const yes_p = (yes_cents / 100).toFixed(2);
+          msg = (
+            `OVERRIDE THEO for ${ticker}?\n\n` +
+            `  Setting fair value = ${yes_cents}c (P(Yes) = ${yes_p})\n` +
+            `  confidence = ${confidence}\n` +
+            `  reason = ${reason}\n\n` +
+            `The bot will quote this strike as if its fair value is ` +
+            `${yes_cents} cents until you clear the override or restart ` +
+            `the bot.\n\nClick OK to continue to ticker confirmation.`
+          );
+        }
         if (!confirm(msg)) return;
         // Step 2: type the ticker exactly
         const typed = prompt(`To confirm, type the ticker name "${ticker}" exactly:`);
@@ -517,7 +567,7 @@
           return showToast(`override aborted — typed "${typed}" did not match "${ticker}"`);
         }
         await callJson("/control/set_theo_override", {
-          ticker, yes_cents, confidence, reason,
+          ticker, yes_cents, confidence, reason, mode,
         });
         // Clear the draft for this strike — submission succeeded, the
         // server-side state is now the source of truth and the next
@@ -753,6 +803,7 @@
     bindKnobInline();
     bindCmdEnterManualOrder();
     bindTheoDraftSave();
+    bindModeToggle();
     bindNotionalPreview();
     if (location.pathname === "/dashboard") {
       if (!getJwt()) { location.href = "/login"; return; }
@@ -761,6 +812,7 @@
       applyPersistedDrawerState();
       applyPersistedExpansions();
       applyTheoDrafts();
+      applyAllModeToggles();
     }
   });
 })();

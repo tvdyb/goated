@@ -31,8 +31,14 @@
           {{ s.label }}
         </span>
         {% if has_override %}
-          <span class="px-1 py-0 text-[8px] font-medium uppercase tracking-wider rounded-sm border"
-                style="background: #2b2410; color: var(--lip); border-color: #5a4923;">manual</span>
+          {% if s.override.mode == 'track_mid' %}
+            <span class="px-1 py-0 text-[8px] font-medium uppercase tracking-wider rounded-sm border"
+                  style="background: #2b2410; color: var(--lip); border-color: #5a4923;"
+                  title="market-following: theo = orderbook mid each cycle">mid</span>
+          {% else %}
+            <span class="px-1 py-0 text-[8px] font-medium uppercase tracking-wider rounded-sm border"
+                  style="background: #2b2410; color: var(--lip); border-color: #5a4923;">manual</span>
+          {% endif %}
         {% endif %}
       </div>
       <div class="font-mono text-[10px] tabular-nums whitespace-nowrap" style="color: var(--ink-dim);">
@@ -132,10 +138,19 @@
     {# Theo #}
     <div class="text-right">
       {% if has_override %}
-        <div class="font-mono text-[12px] font-semibold tabular-nums" style="color: var(--lip);">
-          {{ s.override.yes_cents }}¢
-        </div>
-        <div class="text-[9px]" style="color: var(--ink-dim);">manual</div>
+        {% if s.override.mode == 'track_mid' %}
+          {% set live_mid = ((s.best_bid_c + s.best_ask_c) / 2) if (s.ob_present and s.best_bid_c > 0 and s.best_ask_c < 100) else None %}
+          <div class="font-mono text-[12px] font-semibold tabular-nums" style="color: var(--lip);">
+            {% if live_mid is not none %}{{ live_mid | round(0, 'common') | int }}¢{% else %}—{% endif %}
+          </div>
+          <div class="text-[9px]" style="color: var(--ink-dim);"
+               title="theo follows orderbook mid each cycle">mid · auto</div>
+        {% else %}
+          <div class="font-mono text-[12px] font-semibold tabular-nums" style="color: var(--lip);">
+            {{ s.override.yes_cents }}¢
+          </div>
+          <div class="text-[9px]" style="color: var(--ink-dim);">manual</div>
+        {% endif %}
       {% else %}
         <span class="text-[11px]" style="color: var(--ink-lo);">auto</span>
       {% endif %}
@@ -396,18 +411,32 @@
     <div class="px-3 pb-3 pt-3 border-t" style="border-color: var(--border);">
       <div class="text-[9px] uppercase tracking-[0.12em] mb-2" style="color: var(--ink-lo);">
         {% if has_override %}
-          Theo override — set by {{ s.override.actor }} @ {{ "%.0f"|format(s.override.set_at or 0) }}
+          Theo override
+          {% if s.override.mode == 'track_mid' %}
+            <span class="px-1 rounded-sm border" style="background: #1f1a08; color: var(--lip); border-color: #7a6230;">market-following</span>
+          {% endif %}
+          — set by {{ s.override.actor }} @ {{ "%.0f"|format(s.override.set_at or 0) }}
         {% else %}
           Set theo override
         {% endif %}
       </div>
       <form class="grid gap-3" data-form="theo-override-inline" data-ticker="{{ s.ticker }}"
-            style="grid-template-columns: 110px 110px 1fr auto;">
+            style="grid-template-columns: 130px 110px 110px 1fr auto;">
         <input type="hidden" name="ticker" value="{{ s.ticker }}">
         <label class="rounded border px-2 py-1 flex flex-col"
                style="background: var(--surface); border-color: var(--border);">
+          <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Mode</span>
+          <select name="mode" data-mode-select
+                  class="bg-transparent outline-none text-[13px]"
+                  style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+            <option value="fixed" {% if not has_override or s.override.mode != 'track_mid' %}selected{% endif %}>fixed cents</option>
+            <option value="track_mid" {% if has_override and s.override.mode == 'track_mid' %}selected{% endif %}>market mid</option>
+          </select>
+        </label>
+        <label class="rounded border px-2 py-1 flex flex-col"
+               style="background: var(--surface); border-color: var(--border);">
           <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Yes (cents)</span>
-          <input type="number" name="yes_cents" min="1" max="99" required
+          <input type="number" name="yes_cents" min="1" max="99" required data-yes-cents
                  value="{{ s.override.yes_cents if has_override else (s.chance or 50) }}"
                  class="bg-transparent outline-none tabular-nums text-[13px]"
                  style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">

@@ -250,27 +250,8 @@ class LIPRunner:
             if self._cfg.settlement_time_ts else 0.0
         )
 
-        # 1. Theo. If the operator has plugged in a manual override via
-        # the dashboard for this ticker, skip the registered TheoProvider
-        # entirely and feed the strategy a TheoResult derived from the
-        # override. Source string is "manual-override:{actor}" so analysts
-        # can identify override-driven decisions in the log.
-        override = (
-            self._control.get_theo_override(ticker)
-            if self._control is not None else None
-        )
-        if override is not None:
-            theo = TheoResult(
-                yes_probability=override.yes_probability,
-                confidence=override.confidence,
-                computed_at=override.set_at,
-                source=f"manual-override:{override.actor}",
-                extras={"override_reason": override.reason},
-            )
-        else:
-            theo = await self._theo.theo(ticker)
-
-        # 2. Orderbook (will be ExchangeClient's job)
+        # 1. Orderbook (must come before theo because market-following
+        # overrides need best_bid/best_ask to compute the mid).
         ob_levels = await self._exchange.get_orderbook(ticker)
         # Compute best_bid / best_ask excluding our own resting orders
         cur_bid = self._om.get_resting(ticker, "bid")
@@ -295,6 +276,56 @@ class LIPRunner:
             best_bid=best_bid,
             best_ask=best_ask,
         )
+
+        # 2. Theo. If the operator has plugged in a manual override via
+        # the dashboard for this ticker, skip the registered TheoProvider
+        # entirely and feed the strategy a TheoResult derived from the
+        # override. Source string is "manual-override:{actor}" or
+        # "manual-override-mid:{actor}" so analysts can identify
+        # override-driven decisions in the log.
+        override = (
+            self._control.get_theo_override(ticker)
+            if self._control is not None else None
+        )
+        if override is not None and override.mode == "track_mid":
+            # Market-following: theo = orderbook mid each cycle.
+            # Degenerate book (one-sided or crossed) → confidence=0
+            # so the strategy skips both sides safely.
+            if best_bid > 0 and best_ask < 100 and best_bid < best_ask:
+                mid_cents = (best_bid + best_ask) / 2.0
+                theo = TheoResult(
+                    yes_probability=mid_cents / 100.0,
+                    confidence=override.confidence,
+                    computed_at=now_ts,
+                    source=f"manual-override-mid:{override.actor}",
+                    extras={
+                        "override_reason": override.reason,
+                        "mid_cents": mid_cents,
+                        "best_bid_c": best_bid, "best_ask_c": best_ask,
+                    },
+                )
+            else:
+                theo = TheoResult(
+                    yes_probability=0.5,
+                    confidence=0.0,
+                    computed_at=now_ts,
+                    source=f"manual-override-mid:{override.actor}",
+                    extras={
+                        "override_reason": override.reason,
+                        "skip_reason": "degenerate book — track-mid disabled",
+                        "best_bid_c": best_bid, "best_ask_c": best_ask,
+                    },
+                )
+        elif override is not None:
+            theo = TheoResult(
+                yes_probability=override.yes_probability,
+                confidence=override.confidence,
+                computed_at=override.set_at,
+                source=f"manual-override:{override.actor}",
+                extras={"override_reason": override.reason},
+            )
+        else:
+            theo = await self._theo.theo(ticker)
 
         # Per-strike orderbook view for the dashboard's strike grid.
         # We push the FULL visible book (capped defensively at 50 levels

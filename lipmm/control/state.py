@@ -88,7 +88,18 @@ class TheoOverride:
     exists, the override wins and the provider is skipped entirely.
 
     The strategy doesn't know it's an override; it just receives a
-    `TheoResult` whose `source` reads `manual-override:{actor}`.
+    `TheoResult` whose `source` reads `manual-override:{actor}` or
+    `manual-override-mid:{actor}` for the market-following variant.
+
+    Two `mode`s are supported:
+      - `"fixed"`: theo = yes_probability (operator-typed, static).
+      - `"track_mid"`: theo = (best_bid + best_ask) / 200 each cycle,
+        computed live from the orderbook. `yes_probability` is unused
+        at quote time but kept as a placeholder so the dataclass stays
+        well-formed. The strategy still uses `confidence` to pick its
+        3-tier mode (penny-inside / match / follow). One-sided or
+        crossed books force confidence to 0 that cycle so the strategy
+        skips the strike.
 
     Runtime-only: cleared on bot restart by virtue of being in-memory
     (matches the knob-override convention). The dashboard surfaces a
@@ -100,6 +111,7 @@ class TheoOverride:
     reason: str               # operator-provided audit string
     set_at: float             # unix timestamp
     actor: str                # who set it (from JWT)
+    mode: Literal["fixed", "track_mid"] = "fixed"
 
 
 @dataclass(frozen=True)
@@ -275,6 +287,7 @@ class ControlState:
                     "reason": ov.reason,
                     "set_at": ov.set_at,
                     "actor": ov.actor,
+                    "mode": ov.mode,
                 }
                 for ticker, ov in sorted(self._theo_overrides.items())
             ],
@@ -416,6 +429,7 @@ class ControlState:
         confidence: float = 1.0,
         reason: str,
         actor: str = "operator",
+        mode: Literal["fixed", "track_mid"] = "fixed",
     ) -> int:
         """Plug a manual theo value for `ticker`. Strict bounds:
         `yes_probability ∈ [0,1]`, `confidence ∈ [0,1]`, reason non-empty
@@ -425,6 +439,11 @@ class ControlState:
         Once set, the runner skips the TheoProvider for this ticker and
         feeds the strategy a TheoResult derived from these values. Use
         `clear_theo_override(ticker)` to undo.
+
+        `mode="track_mid"` enables market-following mode: at quote time
+        the runner computes theo from the orderbook mid each cycle.
+        `yes_probability` is then unused but still validated for shape;
+        a sensible placeholder (e.g. 0.5) is fine.
         """
         if not (0.0 <= yes_probability <= 1.0):
             raise ValueError(
@@ -436,6 +455,10 @@ class ControlState:
             )
         if not reason or not reason.strip():
             raise ValueError("reason required for theo override")
+        if mode not in ("fixed", "track_mid"):
+            raise ValueError(
+                f"mode must be 'fixed' or 'track_mid', got {mode!r}"
+            )
         import time as _t
         async with self._lock:
             self._theo_overrides[ticker] = TheoOverride(
@@ -444,6 +467,7 @@ class ControlState:
                 reason=reason.strip(),
                 set_at=_t.time(),
                 actor=actor,
+                mode=mode,
             )
             return self._bump_version()
 

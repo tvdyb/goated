@@ -624,6 +624,7 @@ def build_app(
                 confidence=req.confidence,
                 reason=req.reason,
                 actor=actor,
+                mode=req.mode,
             )
         except ValueError as exc:
             emit_audit(

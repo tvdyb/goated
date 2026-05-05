@@ -161,6 +161,17 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
   "Our resting" panel surfaces a "lift lock" button per side so the
   operator can manually resume quoting. Pass `auto_lock: false` in
   the request body to opt out.
+- **Market-following theo mode.** `TheoOverride` carries a `mode:
+  "fixed" | "track_mid"` field. `mode="track_mid"` makes the runner
+  recompute theo each cycle as the orderbook mid `(best_bid +
+  best_ask) / 2`, with `confidence` still operator-controlled (so
+  the 3-tier strategy modes still apply). Degenerate books (one-
+  sided / crossed / 99¢ best) force confidence to 0 → strategy
+  skips that strike that cycle. The dashboard's theo override form
+  has a "Mode" select (fixed cents / market mid); activation
+  requires the operator to type the ticker (same 2-step confirm
+  pattern as fixed overrides). Strike chip shows "mid" badge in
+  market-following mode and the Theo column displays the live mid.
 - **Deploy partially smoked.** Bot stands up against KXISMPMI-26MAY,
   dashboard renders, manual orders + theo overrides + LIP scoring
   all work. First full live trading session still pending.

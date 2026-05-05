@@ -220,15 +220,28 @@ class SetTheoOverrideRequest(BaseModel):
     storing. `confidence` is on the framework's calibrated scale; 1.0 =
     "trust this within 1c on a 100c scale." `reason` is required and
     must be ≥4 chars to make the audit trail useful.
+
+    `mode="track_mid"` switches to **market-following mode**: the runner
+    recomputes theo from the orderbook mid each cycle. `yes_cents` is
+    then a placeholder (still required for shape; ignored at quote
+    time). The dashboard requires the operator to type the ticker
+    before activating, since a runaway market mid is dangerous.
     """
     ticker: str = Field(min_length=1, max_length=128)
     yes_cents: int = Field(ge=1, le=99,
-                           description="Operator's fair-value estimate in cents (1..99)")
+                           description="Operator's fair-value estimate in cents (1..99). Placeholder when mode=track_mid.")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     reason: str = Field(min_length=4, max_length=512,
                         description="Required audit string — why this override?")
     request_id: str = Field(min_length=8, max_length=128)
     if_version: int | None = Field(default=None, ge=0)
+    mode: Literal["fixed", "track_mid"] = Field(
+        default="fixed",
+        description=(
+            "fixed (default): theo = yes_cents, static. "
+            "track_mid: theo follows the orderbook mid each cycle."
+        ),
+    )
 
 
 class ClearTheoOverrideRequest(BaseModel):

@@ -103,6 +103,31 @@ async def test_snapshot_includes_theo_overrides() -> None:
     assert entry["confidence"] == 0.8
     assert entry["reason"] == "bayesian guess"
     assert entry["actor"] == "alice"
+    # Default mode is "fixed"
+    assert entry["mode"] == "fixed"
+
+
+@pytest.mark.asyncio
+async def test_set_theo_override_mode_track_mid_persists() -> None:
+    state = ControlState()
+    await state.set_theo_override(
+        "KX-T1", 0.50, confidence=0.7, reason="market-following on",
+        actor="alice", mode="track_mid",
+    )
+    ov = state.get_theo_override("KX-T1")
+    assert ov is not None
+    assert ov.mode == "track_mid"
+    snap_entry = state.snapshot()["theo_overrides"][0]
+    assert snap_entry["mode"] == "track_mid"
+
+
+@pytest.mark.asyncio
+async def test_set_theo_override_rejects_invalid_mode() -> None:
+    state = ControlState()
+    with pytest.raises(ValueError, match="mode"):
+        await state.set_theo_override(
+            "KX-T1", 0.50, reason="x", mode="bogus",  # type: ignore[arg-type]
+        )
 
 
 # ── HTTP endpoints ──────────────────────────────────────────────────
@@ -126,6 +151,24 @@ def test_post_set_theo_override_updates_state() -> None:
     assert ov.yes_probability == 0.55
     assert ov.confidence == 0.9
     assert ov.actor == "alice"
+    assert ov.mode == "fixed"
+
+
+def test_post_set_theo_override_track_mid_mode() -> None:
+    client, state, _ = _client()
+    r = client.post("/control/set_theo_override", json={
+        "ticker": "KX-T1",
+        "yes_cents": 50,  # placeholder, ignored at quote time
+        "confidence": 0.7,
+        "reason": "market-following mode",
+        "request_id": "req-theo-mid-1",
+        "mode": "track_mid",
+    }, headers=_h())
+    assert r.status_code == 200
+    ov = state.get_theo_override("KX-T1")
+    assert ov is not None
+    assert ov.mode == "track_mid"
+    assert ov.confidence == 0.7
 
 
 def test_post_set_theo_override_requires_auth() -> None:
@@ -309,6 +352,164 @@ async def test_runner_uses_theo_override_when_set(monkeypatch) -> None:
     assert t1.source.startswith("manual-override:")
     assert t1.extras.get("override_reason") == "manual estimate"
     assert t2.source == "STUB"
+
+
+@pytest.mark.asyncio
+async def test_runner_track_mid_builds_theo_from_orderbook_mid() -> None:
+    """When override.mode == 'track_mid', the runner ignores
+    yes_probability and computes theo = (best_bid + best_ask) / 200
+    each cycle from the live orderbook."""
+    from lipmm.runner import LIPRunner, RunnerConfig
+    from lipmm.theo import TheoRegistry, TheoResult
+    from lipmm.execution import OrderManager
+    from lipmm.execution.base import OrderbookLevels, Balance
+
+    captured: list[TheoResult] = []
+
+    class _CapturingStrategy:
+        name = "capturing"
+        async def warmup(self) -> None: pass
+        async def shutdown(self) -> None: pass
+        async def quote(self, *, ticker, theo, orderbook, our_state,
+                        now_ts, time_to_settle_s, control_overrides=None):
+            captured.append(theo)
+            from lipmm.quoting import QuotingDecision, SideDecision
+            return QuotingDecision(
+                bid=SideDecision(price=0, size=0, skip=True, reason="t"),
+                ask=SideDecision(price=0, size=0, skip=True, reason="t"),
+            )
+
+    class _StubProvider:
+        series_prefix = "KX"
+        async def warmup(self) -> None: pass
+        async def shutdown(self) -> None: pass
+        async def theo(self, t):
+            raise AssertionError("provider should not be called when override is set")
+
+    class _StubExchange:
+        def __init__(self, ticker, yes_levels, no_levels):
+            self._ticker, self._y, self._n = ticker, yes_levels, no_levels
+        async def get_orderbook(self, t):
+            return OrderbookLevels(ticker=t, yes_levels=self._y, no_levels=self._n)
+        async def list_resting_orders(self): return []
+        async def list_positions(self): return []
+        async def get_balance(self): return Balance(0.0, 0.0)
+        async def place_order(self, *a, **k): return None
+        async def amend_order(self, *a, **k): return None
+        async def cancel_order(self, *a, **k): return True
+        async def cancel_orders(self, ids): return {i: True for i in ids}
+
+    class _Source:
+        async def list_active_tickers(self, exchange): return ["KX-T1"]
+
+    # Best yes bid 80, best yes ask 84 → mid = 82
+    yes_levels = [(80, 100.0)]
+    # No bid at 16 = yes ask 84
+    no_levels = [(16, 100.0)]
+
+    state = ControlState()
+    await state.set_theo_override(
+        "KX-T1", yes_probability=0.50, confidence=0.7,
+        reason="market-following", actor="alice", mode="track_mid",
+    )
+    registry = TheoRegistry()
+    registry.register(_StubProvider())
+    runner = LIPRunner(
+        config=RunnerConfig(cycle_seconds=0.05),
+        theo_registry=registry,
+        strategy=_CapturingStrategy(),
+        order_manager=OrderManager(),
+        exchange=_StubExchange("KX-T1", yes_levels, no_levels),
+        ticker_source=_Source(),
+        control_state=state,
+    )
+    await runner._theo.warmup_all()  # noqa: SLF001
+    await runner._strategy.warmup()  # noqa: SLF001
+    await runner._cycle()  # noqa: SLF001
+
+    assert len(captured) == 1
+    theo = captured[0]
+    assert theo.yes_probability == 0.82          # mid in [0,1]
+    assert theo.yes_cents == 82                  # mid in cents
+    assert theo.confidence == 0.7                # operator-set
+    assert theo.source.startswith("manual-override-mid:")
+    assert theo.extras["mid_cents"] == 82.0
+    assert theo.extras["best_bid_c"] == 80
+    assert theo.extras["best_ask_c"] == 84
+
+
+@pytest.mark.asyncio
+async def test_runner_track_mid_skips_on_degenerate_book() -> None:
+    """One-sided / crossed books → confidence forced to 0 so the
+    strategy skips the strike that cycle."""
+    from lipmm.runner import LIPRunner, RunnerConfig
+    from lipmm.theo import TheoRegistry, TheoResult
+    from lipmm.execution import OrderManager
+    from lipmm.execution.base import OrderbookLevels, Balance
+
+    captured: list[TheoResult] = []
+
+    class _CapturingStrategy:
+        name = "capturing"
+        async def warmup(self) -> None: pass
+        async def shutdown(self) -> None: pass
+        async def quote(self, *, ticker, theo, orderbook, our_state,
+                        now_ts, time_to_settle_s, control_overrides=None):
+            captured.append(theo)
+            from lipmm.quoting import QuotingDecision, SideDecision
+            return QuotingDecision(
+                bid=SideDecision(price=0, size=0, skip=True, reason="t"),
+                ask=SideDecision(price=0, size=0, skip=True, reason="t"),
+            )
+
+    class _StubProvider:
+        series_prefix = "KX"
+        async def warmup(self) -> None: pass
+        async def shutdown(self) -> None: pass
+        async def theo(self, t): raise AssertionError("not used")
+
+    class _StubExchange:
+        async def get_orderbook(self, t):
+            # Empty book — best_bid=0, best_ask=100 (the runner's
+            # "no best" defaults) → degenerate
+            return OrderbookLevels(ticker=t, yes_levels=[], no_levels=[])
+        async def list_resting_orders(self): return []
+        async def list_positions(self): return []
+        async def get_balance(self): return Balance(0.0, 0.0)
+        async def place_order(self, *a, **k): return None
+        async def amend_order(self, *a, **k): return None
+        async def cancel_order(self, *a, **k): return True
+        async def cancel_orders(self, ids): return {i: True for i in ids}
+
+    class _Source:
+        async def list_active_tickers(self, exchange): return ["KX-T1"]
+
+    state = ControlState()
+    await state.set_theo_override(
+        "KX-T1", yes_probability=0.50, confidence=0.9,
+        reason="market-following", actor="alice", mode="track_mid",
+    )
+    registry = TheoRegistry()
+    registry.register(_StubProvider())
+    runner = LIPRunner(
+        config=RunnerConfig(cycle_seconds=0.05),
+        theo_registry=registry,
+        strategy=_CapturingStrategy(),
+        order_manager=OrderManager(),
+        exchange=_StubExchange(),
+        ticker_source=_Source(),
+        control_state=state,
+    )
+    await runner._theo.warmup_all()  # noqa: SLF001
+    await runner._strategy.warmup()  # noqa: SLF001
+    await runner._cycle()  # noqa: SLF001
+
+    assert len(captured) == 1
+    theo = captured[0]
+    # Confidence forced to 0 → strategy will skip both sides
+    assert theo.confidence == 0.0
+    assert theo.source.startswith("manual-override-mid:")
+    assert "skip_reason" in theo.extras
 
 
 # ── Dashboard rendering ────────────────────────────────────────────
