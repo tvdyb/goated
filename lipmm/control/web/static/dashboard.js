@@ -270,25 +270,61 @@
       e.preventDefault();
       e.stopPropagation();
       const ticker = chip.dataset.ticker;
-      // Yes click → bid (buy Yes); No click → ask (sell Yes).
-      // Either way, limit_price_cents = the chip's value.
-      const side = chip.dataset.side === "yes" ? "bid" : "ask";
+      // The chip displays cents in ITS OWN side's terms. Yes chip
+      // shows yesC (= best_ask_yes), No chip shows noC (= 100 - best_bid_yes).
+      // Both seed "Buy {Side} @ chip-price" — the form does the
+      // semantic-to-wire translation on submit.
+      const semanticSide = chip.dataset.side === "yes" ? "buy_yes" : "buy_no";
       const priceC = chip.dataset.price;
-      seedManualOrderForm({ ticker, side, price_cents: priceC });
+      seedManualOrderForm({ ticker, semantic_side: semanticSide, price_cents: priceC });
       openDrawer("manual");
-      showToast(`seeded manual order: ${ticker} ${side} ${priceC}¢`);
+      const label = semanticSide === "buy_yes" ? "Buy Yes" : "Buy No";
+      showToast(`seeded: ${label} @ ${priceC}¢ on ${ticker}`);
     });
   }
 
-  function seedManualOrderForm({ ticker, side, price_cents }) {
+  function seedManualOrderForm({ ticker, semantic_side, price_cents }) {
     const form = document.querySelector('form[data-form="manual-order"]');
     if (!form) return;
-    const t = form.querySelector('[name="ticker"]');     if (t) t.value = ticker || "";
-    const s = form.querySelector('[name="side"]');       if (s) s.value = side || "bid";
+    const t = form.querySelector('[name="ticker"]');  if (t) t.value = ticker || "";
+    const s = form.querySelector('[name="side"]');    if (s) s.value = semantic_side || "buy_yes";
     const p = form.querySelector('[name="limit_price_cents"]');
     if (p) p.value = price_cents || "";
-    // Trigger notional preview recalc
+    // Trigger live preview recalc.
     form.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  // Translate a semantic side ({buy_yes, sell_yes, buy_no, sell_no})
+  // and a price in THAT side's cents → the wire-format Yes-cents
+  // {bid, ask} that the backend expects. The framework's
+  // OrderManager / ExchangeClient only handle Yes-side orders, so
+  // every operator intent collapses into Yes-bid or Yes-ask.
+  //   buy_yes  @ X  →  bid Yes @ X   (pay X to enter long Yes)
+  //   sell_yes @ X  →  ask Yes @ X   (collect X to exit Yes)
+  //   buy_no   @ X  →  ask Yes @ 100-X  (sell Yes at 100-X = buy No at X)
+  //   sell_no  @ X  →  bid Yes @ 100-X  (buy Yes at 100-X = sell No at X)
+  function semanticToWire(semanticSide, priceCents) {
+    const p = parseInt(priceCents, 10);
+    if (!Number.isFinite(p) || p < 1 || p > 99) return null;
+    switch (semanticSide) {
+      case "buy_yes":  return { side: "bid", priceYes: p,
+                                yesCents: p, noCents: 100 - p,
+                                label: `Buy Yes @ ${p}¢`,
+                                equiv: `Bid Yes ${p}¢` };
+      case "sell_yes": return { side: "ask", priceYes: p,
+                                yesCents: p, noCents: 100 - p,
+                                label: `Sell Yes @ ${p}¢`,
+                                equiv: `Ask Yes ${p}¢` };
+      case "buy_no":   return { side: "ask", priceYes: 100 - p,
+                                yesCents: 100 - p, noCents: p,
+                                label: `Buy No @ ${p}¢`,
+                                equiv: `Ask Yes ${100 - p}¢` };
+      case "sell_no":  return { side: "bid", priceYes: 100 - p,
+                                yesCents: 100 - p, noCents: p,
+                                label: `Sell No @ ${p}¢`,
+                                equiv: `Bid Yes ${100 - p}¢` };
+      default: return null;
+    }
   }
 
   // ── Operator drawer (Phase 10c) ────────────────────────────────
@@ -492,36 +528,104 @@
         const conf = form.querySelector("[name=confidence]");
         if (conf) conf.value = "1.0";
       } else if (kind === "manual-order") {
-        const body = {
-          ticker: fd.get("ticker"),
-          side: fd.get("side"),
-          count: parseInt(fd.get("count"), 10),
-          limit_price_cents: parseInt(fd.get("limit_price_cents"), 10),
-          lock_after: fd.get("lock_after") === "true",
-          reason: fd.get("reason") || "",
-        };
-        const notional = (body.count * body.limit_price_cents) / 100;
-        const msg = `Submit MANUAL ORDER?\n\n  ticker: ${body.ticker}\n  side: ${body.side}\n  count: ${body.count}\n  limit: ${body.limit_price_cents}c\n  notional: $${notional.toFixed(2)}\n  lock_after: ${body.lock_after}`;
+        const semanticSide = fd.get("side") || "buy_yes";
+        const ticker = fd.get("ticker");
+        const count = parseInt(fd.get("count"), 10);
+        const cents = parseInt(fd.get("limit_price_cents"), 10);
+        const lockAfter = fd.get("lock_after") === "true";
+        const reason = fd.get("reason") || "";
+        const wire = semanticToWire(semanticSide, cents);
+        if (!ticker) return showToast("ticker required");
+        if (!Number.isInteger(count) || count <= 0) return showToast("count must be positive integer");
+        if (!wire) return showToast("limit price must be 1..99 cents");
+        const isBuy = semanticSide.startsWith("buy_");
+        const cost = (cents * count) / 100;
+        const maxLoss = isBuy ? cost : ((100 - cents) * count) / 100;
+        const maxProfit = isBuy ? ((100 - cents) * count) / 100 : cost;
+        const msg = (
+          `Submit MANUAL ORDER?\n\n` +
+          `  ticker: ${ticker}\n` +
+          `  ${wire.label}\n` +
+          `  ≡ ${wire.equiv} (wire-level)\n` +
+          `  count: ${count}\n` +
+          `  ${isBuy ? 'cost' : 'proceeds'}: $${cost.toFixed(2)}\n` +
+          `  max loss: $${maxLoss.toFixed(2)}\n` +
+          `  max profit: $${maxProfit.toFixed(2)}\n` +
+          `  lock_after: ${lockAfter}`
+        );
         if (!confirm(msg)) return;
-        await callJson("/control/manual_order", body);
+        // Backend wire format: side ∈ {bid, ask}, limit_price_cents in
+        // Yes-cents. Translation of semantic No-side intents happens
+        // here via semanticToWire — backend stays Yes-only.
+        await callJson("/control/manual_order", {
+          ticker,
+          side: wire.side,
+          count,
+          limit_price_cents: wire.priceYes,
+          lock_after: lockAfter,
+          reason,
+        });
       }
     });
+  }
+
+  function recalcManualPreview(form) {
+    const fd = new FormData(form);
+    const semanticSide = fd.get("side") || "buy_yes";
+    const count = parseInt(fd.get("count"), 10);
+    const cents = parseInt(fd.get("limit_price_cents"), 10);
+    const wire = semanticToWire(semanticSide, cents);
+
+    const equivEl = form.querySelector("[data-equiv]");
+    const notionalEl = form.querySelector("[data-notional]");
+    const currencyEl = form.querySelector("[data-side-currency]");
+
+    if (currencyEl) {
+      currencyEl.textContent =
+        semanticSide.endsWith("_yes") ? "Yes" : "No";
+    }
+
+    if (!wire || !Number.isInteger(count) || count <= 0) {
+      if (equivEl) equivEl.textContent = "≡ enter price + count";
+      if (notionalEl) notionalEl.textContent = "cost: —";
+      return;
+    }
+
+    if (equivEl) equivEl.textContent = `≡ ${wire.equiv}   (${cents}¢ on chosen side / ${100 - cents}¢ on other)`;
+
+    // Cost / max-loss / max-profit framing in the operator's chosen
+    // semantic side (consistent: a "buy" pays its limit price upfront,
+    // max loss = limit × count; a "sell" collects upfront, max loss =
+    // (100 - limit) × count if held to settlement).
+    const isBuy = semanticSide.startsWith("buy_");
+    const cost = (cents * count) / 100;
+    const maxLoss = isBuy
+      ? cost
+      : ((100 - cents) * count) / 100;
+    const maxProfit = isBuy
+      ? ((100 - cents) * count) / 100
+      : cost;
+
+    if (notionalEl) {
+      const verb = isBuy ? "cost" : "proceeds";
+      notionalEl.textContent =
+        `${verb}: $${cost.toFixed(2)}   ·   max loss: $${maxLoss.toFixed(2)}   ·   max profit: $${maxProfit.toFixed(2)}`;
+    }
   }
 
   function bindNotionalPreview() {
     document.body.addEventListener("input", (e) => {
       const form = e.target.closest('form[data-form="manual-order"]');
       if (!form) return;
-      const fd = new FormData(form);
-      const count = parseInt(fd.get("count"), 10);
-      const cents = parseInt(fd.get("limit_price_cents"), 10);
-      const el = form.querySelector("[data-notional]");
-      if (!el) return;
-      if (Number.isFinite(count) && Number.isFinite(cents) && count > 0 && cents > 0) {
-        el.textContent = `notional: $${((count * cents) / 100).toFixed(2)} (max payout ${count}.00)`;
-      } else {
-        el.textContent = "notional: —";
-      }
+      recalcManualPreview(form);
+    });
+    // <select> change events don't fire `input` consistently across
+    // browsers — listen explicitly so flipping the side dropdown
+    // recalculates the preview.
+    document.body.addEventListener("change", (e) => {
+      const form = e.target.closest('form[data-form="manual-order"]');
+      if (!form) return;
+      recalcManualPreview(form);
     });
   }
 

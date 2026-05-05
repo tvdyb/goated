@@ -22,11 +22,13 @@
     </label>
     <div class="grid grid-cols-2 gap-2">
       <label class="block">
-        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Side</span>
+        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">I want to</span>
         <select name="side" required class="w-full bg-transparent outline-none text-[12px] mt-0.5"
                 style="color: var(--ink-hi);">
-          <option value="bid">bid (buy Yes)</option>
-          <option value="ask">ask (sell Yes)</option>
+          <option value="buy_yes">Buy Yes</option>
+          <option value="sell_yes">Sell Yes</option>
+          <option value="buy_no">Buy No</option>
+          <option value="sell_no">Sell No</option>
         </select>
       </label>
       <label class="block">
@@ -38,7 +40,9 @@
     </div>
     <div class="grid grid-cols-2 gap-2">
       <label class="block">
-        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Limit (cents)</span>
+        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">
+          Limit (cents in <span data-side-currency>chosen side's</span> terms)
+        </span>
         <input name="limit_price_cents" type="number" min="1" max="99" required placeholder="49"
                class="w-full bg-transparent outline-none text-[12px] mt-0.5"
                style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
@@ -58,9 +62,13 @@
              class="w-full bg-transparent outline-none text-[12px] mt-0.5"
              style="color: var(--ink-hi);">
     </label>
+    <p class="text-[10px] leading-relaxed" data-equiv
+       style="color: var(--ink-mid); font-family: 'JetBrains Mono', ui-monospace;">
+      ≡ enter price + count
+    </p>
     <p class="text-[10px]" data-notional
        style="color: var(--ink-lo); font-family: 'JetBrains Mono', ui-monospace;">
-      notional: —
+      cost: —
     </p>
     <button type="submit"
             class="w-full text-[11px] font-semibold px-2 py-1.5 rounded border"
