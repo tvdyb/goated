@@ -206,6 +206,11 @@
   // cents input is just a placeholder (server ignores it), so we make
   // it OBVIOUSLY non-functional: dim the whole cell, strike-through
   // the value, retitle the label, and surface a yellow note row.
+  //
+  // NOTE: We use `readOnly` (not `disabled`) so the input still submits
+  // as part of FormData. A disabled input is omitted from the form
+  // submission entirely, which would break the server's required-field
+  // validation on yes_cents in track_mid mode.
   function applyModeToggle(form) {
     const sel = form.querySelector("[data-mode-select]");
     const cents = form.querySelector("[data-yes-cents]");
@@ -215,7 +220,8 @@
       && form.parentElement.querySelector("[data-track-mid-note]");
     if (!sel || !cents || !cell || !lbl) return;
     const isMid = sel.value === "track_mid";
-    cents.disabled = isMid;
+    cents.readOnly = isMid;
+    cents.disabled = false;  // never disable — that strips it from FormData
     if (isMid) {
       cell.style.opacity = "0.35";
       cell.style.background = "#1a1a1a";
