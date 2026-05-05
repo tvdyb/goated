@@ -257,7 +257,10 @@ async def test_event_ticker_source_dedupes_when_both_paths_populated() -> None:
 
 
 @pytest.mark.asyncio
-async def test_event_ticker_source_skips_non_open_markets() -> None:
+async def test_event_ticker_source_treats_active_as_tradable() -> None:
+    """Kalshi's actual market status for a tradable market is "active",
+    not "open". The TickerSource has to accept it (and other unrecognized
+    values), only rejecting the deny-listed end-of-life statuses."""
     from deploy.lipmm_run import _EventTickerSource
 
     class _Stub:
@@ -265,15 +268,25 @@ async def test_event_ticker_source_skips_non_open_markets() -> None:
             return {
                 "event": {"event_ticker": event_ticker},
                 "markets": [
-                    {"ticker": "KX-A", "status": "open"},
-                    {"ticker": "KX-B", "status": "settled"},
-                    {"ticker": "KX-C", "status": "closed"},
+                    {"ticker": "KX-ACTIVE", "status": "active"},
+                    {"ticker": "KX-OPEN", "status": "open"},        # legacy/alt
+                    {"ticker": "KX-NEW", "status": "some-future-status"},
+                    {"ticker": "KX-MISSING-STATUS"},                 # default
+                    {"ticker": "KX-SETTLED", "status": "settled"},
+                    {"ticker": "KX-CLOSED", "status": "closed"},
+                    {"ticker": "KX-FINALIZED", "status": "finalized"},
+                    {"ticker": "KX-UNOPENED", "status": "unopened"},
+                    {"ticker": "KX-DEACTIVATED", "status": "deactivated"},
                 ],
             }
 
     src = _EventTickerSource(_Stub(), "KX-EVENT")
     tickers = await src.list_active_tickers(None)
-    assert tickers == ["KX-A"]
+    # The 4 tradable / unknown / missing-status markets are kept;
+    # the 5 deny-listed end-of-life markets are dropped.
+    assert sorted(tickers) == [
+        "KX-ACTIVE", "KX-MISSING-STATUS", "KX-NEW", "KX-OPEN",
+    ]
 
 
 @pytest.mark.asyncio

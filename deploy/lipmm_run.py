@@ -123,10 +123,22 @@ class _EventTickerSource:
         event = resp.get("event") or {}
         nested = event.get("markets") or []
         sibling = resp.get("markets") or []
+        # Status filter: deny-list, not allow-list. Kalshi uses "active"
+        # for tradable markets (NOT "open" which my earlier code assumed).
+        # Skip markets that are explicitly past their tradable window.
+        # Any other / new / unexpected status is treated as tradable —
+        # better to over-quote and have the strategy / risk gates filter
+        # than to silently drop strikes the operator expected to see.
+        skipped_statuses = {
+            "settled", "finalized", "closed", "unopened", "deactivated",
+        }
         seen: set[str] = set()
+        seen_statuses: set[str] = set()
         out: list[str] = []
         for m in (nested + sibling):
-            if m.get("status", "open") != "open":
+            status = m.get("status", "active")
+            seen_statuses.add(status)
+            if status in skipped_statuses:
                 continue
             t = m.get("ticker") or m.get("market_ticker")
             if not t or t in seen:
@@ -135,9 +147,11 @@ class _EventTickerSource:
             out.append(t)
         if not out:
             logger.warning(
-                "TickerSource: 0 open markets for %s — runner will iterate "
-                "nothing this cycle. Response keys: %s",
-                self._event_ticker, sorted(resp.keys()),
+                "TickerSource: 0 tradable markets for %s. Response keys: %s; "
+                "market statuses seen: %s",
+                self._event_ticker,
+                sorted(resp.keys()),
+                sorted(seen_statuses),
             )
         return out
 
