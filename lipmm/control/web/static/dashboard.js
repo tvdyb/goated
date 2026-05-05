@@ -122,6 +122,59 @@
     });
   }
 
+  function bindStrikeExpand() {
+    document.body.addEventListener("click", (e) => {
+      // Don't expand if the click was on an actionable child (price chip,
+      // button, etc.). Those have their own data-action handlers that
+      // run via stopPropagation.
+      if (e.target.closest("[data-action]")) return;
+      if (e.target.closest("button")) return;
+      const row = e.target.closest(".strike-row");
+      if (!row) return;
+      const slug = row.dataset.slug;
+      const expand = document.getElementById("expand-" + slug);
+      if (!expand) return;
+      const opening = expand.classList.contains("hidden");
+      expand.classList.toggle("hidden");
+      row.classList.toggle("expanded", opening);
+      const caret = row.querySelector(".strike-caret");
+      if (caret) caret.style.transform = opening ? "rotate(90deg)" : "";
+    });
+  }
+
+  function bindFeedToggle() {
+    document.body.addEventListener("click", (e) => {
+      const btn = e.target.closest('[data-action="toggle-feed"]');
+      if (!btn) return;
+      e.preventDefault();
+      const feed = document.getElementById("decision-feed");
+      if (!feed) return;
+      const extras = feed.querySelectorAll(".feed-extra");
+      const opening = extras.length > 0 && extras[0].classList.contains("hidden");
+      extras.forEach((el) => el.classList.toggle("hidden", !opening));
+      const caret = btn.querySelector(".feed-caret");
+      if (caret) caret.style.transform = opening ? "rotate(90deg)" : "";
+      const counter = btn.querySelector("[data-feed-count]");
+      if (counter) counter.textContent = String(opening ? extras.length + 3 : 3);
+    });
+  }
+
+  function bindPriceChipSeed() {
+    // Phase 10b: clicking a Yes/No chip just shows a toast for now.
+    // Phase 10c will open the operator drawer to the Manual tab and
+    // pre-fill the form.
+    document.body.addEventListener("click", (e) => {
+      const chip = e.target.closest('[data-action="seed-manual"]');
+      if (!chip) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const ticker = chip.dataset.ticker;
+      const side = chip.dataset.side;
+      const price = chip.dataset.price;
+      showToast(`(10c) clicking ${side} chip → manual order: ${ticker} ${side} ${price}¢`);
+    });
+  }
+
   function bindGenericCalls() {
     document.body.addEventListener("click", async (e) => {
       const btn = e.target.closest("[data-call]");
@@ -328,6 +381,9 @@
     bindLoginForm();
     bindLogout();
     bindKillPanel();
+    bindStrikeExpand();
+    bindFeedToggle();
+    bindPriceChipSeed();
     bindGenericCalls();
     bindForms();
     bindNotionalPreview();

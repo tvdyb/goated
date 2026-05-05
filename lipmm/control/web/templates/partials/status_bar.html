@@ -1,0 +1,72 @@
+<header id="status-bar" hx-swap-oob="true"
+        class="flex items-center justify-between px-4 border-b text-[13px]"
+        style="background: var(--bg-raise); border-color: var(--border); height: 48px;">
+  <div class="flex items-center gap-3 min-w-0">
+    <div class="flex items-center gap-2">
+      <div class="w-1 h-5 rounded-sm"
+           style="background: var(--yes); box-shadow: 0 0 8px var(--yes);"></div>
+      <span class="font-semibold tracking-tight" style="color: var(--ink-hi);">lipmm</span>
+    </div>
+    <span id="connection-pill"
+          class="inline-flex items-center gap-1.5 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-sm border"
+          style="background: #0f2a1f; color: var(--yes); border-color: #1f6e54;">
+      <span class="w-1.5 h-1.5 rounded-full" style="background: var(--yes); box-shadow: 0 0 6px var(--yes);"></span>
+      live
+    </span>
+    <span id="presence-pill"
+          class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-sm border"
+          style="background: var(--surface-2); color: var(--ink-mid); border-color: var(--border);"
+          title="{{ presence | join(', ') if presence else '' }}">
+      {{ total_tabs or 1 }} tab{{ '' if (total_tabs or 1) == 1 else 's' }}
+    </span>
+    <div class="h-5 w-px" style="background: var(--border);"></div>
+    <div class="flex items-center gap-1.5">
+      <span class="text-[10px] uppercase tracking-wider" style="color: var(--ink-lo);">PnL</span>
+      <span id="pnl-pill"
+            class="font-mono font-semibold tabular-nums"
+            style="color: {% if pnl_total >= 0 %}var(--yes){% else %}var(--no){% endif %};">
+        {{ '+' if pnl_total >= 0 else '' }}${{ "%.2f"|format(pnl_total) }}
+      </span>
+    </div>
+    {% if balance %}
+      <div class="flex items-center gap-1.5">
+        <span class="text-[10px] uppercase tracking-wider" style="color: var(--ink-lo);">cash</span>
+        <span class="font-mono tabular-nums" style="color: var(--ink-hi);">
+          ${{ "%.2f"|format(balance.cash_dollars or 0) }}
+        </span>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <span class="text-[10px] uppercase tracking-wider" style="color: var(--ink-lo);">port</span>
+        <span class="font-mono tabular-nums" style="color: var(--ink-hi);">
+          ${{ "%.2f"|format(balance.portfolio_value_dollars or 0) }}
+        </span>
+      </div>
+    {% endif %}
+    <span class="font-mono text-[10px] tabular-nums ml-2" style="color: var(--ink-dim);">
+      v{{ snapshot.version if snapshot else 0 }}
+    </span>
+  </div>
+  <div class="flex items-center gap-2">
+    {% set ks = snapshot.get('kill_state', 'off') if snapshot else 'off' %}
+    {% if ks == 'off' %}
+      <button data-action="kill"
+              class="px-3 py-1 text-[12px] font-semibold rounded border transition-colors"
+              style="background: var(--danger-dim); color: var(--danger); border-color: #7a2a32;">
+        KILL
+      </button>
+    {% elif ks == 'killed' %}
+      <button data-action="arm"
+              class="px-3 py-1 text-[12px] font-semibold rounded border transition-colors"
+              style="background: #5a1820; color: var(--danger); border-color: #7a2a32;">
+        ARM
+      </button>
+    {% else %}
+      <button data-action="resume-after-kill"
+              class="px-3 py-1 text-[12px] font-semibold rounded border transition-colors"
+              style="background: #3a2810; color: var(--warn); border-color: #7a4220;">
+        RESUME
+      </button>
+    {% endif %}
+    <button id="logout-btn" class="text-[12px] hover:underline" style="color: var(--ink-lo);">Sign out</button>
+  </div>
+</header>

@@ -385,14 +385,19 @@ def test_html_ws_receives_incentives_snapshot() -> None:
         finally:
             loop.close()
         html = ws.receive_text()
-        assert 'id="incentives-panel"' in html
+        # Phase 10: incentives are folded into the strike grid (LIP $
+        # column per row) + event header (total LIP $/period). The
+        # standalone incentives panel is gone.
+        assert 'id="strike-grid"' in html or 'id="event-header"' in html
         assert "KXISMPMI-26MAY-T50.0" in html
 
 
 # ── Dashboard render ───────────────────────────────────────────────
 
 
-def test_dashboard_renders_incentives_with_programs() -> None:
+def test_dashboard_renders_incentives_in_strike_grid_and_header() -> None:
+    """Phase 10: LIP info appears inline per strike in the grid (LIP $
+    column) and aggregated in the event header ($N LIP/period pill)."""
     p = _StubProvider()
     p.programs = [
         IncentiveProgram.from_api(_sample_entry(
@@ -412,20 +417,24 @@ def test_dashboard_renders_incentives_with_programs() -> None:
     r = client.get("/dashboard")
     assert r.status_code == 200
     body = r.text
-    assert 'id="incentives-panel"' in body
+    assert 'id="strike-grid"' in body
+    assert 'id="event-header"' in body
     assert "KX-PMI-T50" in body
-    assert "$1000.00" in body
+    # LIP $1000/period in the row + total in the event header
+    assert "$1000" in body
 
 
-def test_dashboard_renders_empty_state_without_cache() -> None:
+def test_dashboard_renders_cleanly_without_incentive_cache() -> None:
+    """Phase 10: missing incentive cache doesn't surface a panel error;
+    grid just renders without the LIP pill in the header."""
     state = ControlState()
     b = Broadcaster()
     app = build_app(state, secret=SECRET, broadcaster=b, mount_dashboard=True)
     client = TestClient(app)
     r = client.get("/dashboard")
     body = r.text
-    assert 'id="incentives-panel"' in body
-    assert "provider not wired" in body or "not wired" in body
+    assert 'id="strike-grid"' in body
+    assert 'id="event-header"' in body
 
 
 # ── feeds/kalshi/lip_pool heal ─────────────────────────────────────

@@ -314,7 +314,10 @@ async def test_runner_uses_theo_override_when_set(monkeypatch) -> None:
 # ── Dashboard rendering ────────────────────────────────────────────
 
 
-def test_dashboard_renders_theo_overrides_panel() -> None:
+def test_dashboard_renders_theo_override_in_strike_row() -> None:
+    """Phase 10: theo overrides are surfaced inline in the strike grid
+    (gold left-border, "manual" pill, override cents in the Theo column),
+    NOT a separate panel."""
     state = ControlState()
     asyncio.get_event_loop().run_until_complete(
         state.set_theo_override(
@@ -328,18 +331,22 @@ def test_dashboard_renders_theo_overrides_panel() -> None:
     r = client.get("/dashboard")
     assert r.status_code == 200
     body = r.text
-    assert 'id="theo-overrides-panel"' in body
+    assert 'id="strike-grid"' in body
     assert "KX-T1" in body
-    assert "55c" in body
-    assert "dashboard render test" in body
+    # Override cents shown in the Theo column (55¢)
+    assert "55¢" in body
+    # "manual" pill on the row indicates override is active
+    assert "manual" in body
 
 
-def test_dashboard_empty_theo_overrides_shows_placeholder() -> None:
+def test_dashboard_empty_theo_overrides_renders_strike_grid_anyway() -> None:
+    """Phase 10: the dashboard renders cleanly with no overrides; the
+    strike grid just shows no rows yet (waiting for runner cycle)."""
     state = ControlState()
     b = Broadcaster()
     app = build_app(state, secret=SECRET, broadcaster=b, mount_dashboard=True)
     client = TestClient(app)
     r = client.get("/dashboard")
     body = r.text
-    assert 'id="theo-overrides-panel"' in body
-    assert "no overrides" in body
+    assert 'id="strike-grid"' in body
+    assert "no strikes yet" in body or "waiting for runner cycle" in body

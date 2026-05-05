@@ -1,34 +1,20 @@
 {% extends "base.html" %}
 {% block title %}lipmm control — dashboard{% endblock %}
 {% block body %}
-<header class="border-b border-slate-800 bg-slate-900/80 px-6 py-3">
-  <div class="flex items-center justify-between">
-    <div class="flex items-center gap-3">
-      <h1 class="text-lg font-semibold">lipmm control</h1>
-      <span id="connection-pill" class="pill bg-slate-700 text-slate-300">connecting…</span>
-      {% include "partials/presence.html" %}
-      {% include "partials/pnl_pill.html" %}
-      {% include "partials/balance_strip.html" %}
-    </div>
-    <div class="flex items-center gap-2">
-      {% include "partials/kill_panel.html" %}
-      <button id="logout-btn" class="btn btn-muted">Sign out</button>
-    </div>
-  </div>
-</header>
+<div class="h-screen flex flex-col" style="background: var(--bg-base); color: var(--ink-hi);">
+  {% include "partials/status_bar.html" %}
 
-<main id="ws-mount" hx-ext="ws" class="grid gap-4 p-6 lg:grid-cols-2 xl:grid-cols-3">
-  {% include "partials/state_panel.html" %}
-  {% include "partials/positions_panel.html" %}
-  {% include "partials/resting_orders_panel.html" %}
-  {% include "partials/theo_overrides_panel.html" %}
-  {% include "partials/knob_panel.html" %}
-  {% include "partials/lock_panel.html" %}
-  {% include "partials/manual_order_panel.html" %}
-  {% include "partials/incentives_panel.html" %}
-  <section class="panel xl:col-span-3">
-    <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Decision feed</h2>
+  <main id="ws-mount" hx-ext="ws" class="flex-1 overflow-auto">
+    {% include "partials/event_header.html" %}
+    {% include "partials/strike_grid.html" %}
     {% include "partials/decision_feed.html" %}
-  </section>
-</main>
+  </main>
+
+  {# Phase 10c: operator drawer + FAB go here #}
+  <div class="fixed bottom-3 left-4 text-[10px] flex items-center gap-3"
+       style="color: var(--ink-dim); font-family: 'JetBrains Mono', ui-monospace;">
+    <span>v{{ snapshot.version if snapshot else 0 }}</span>
+    <span id="connection-pill-foot">connecting…</span>
+  </div>
+</div>
 {% endblock %}

@@ -1,0 +1,31 @@
+<section id="strike-grid" hx-swap-oob="true" class="px-4 pb-3">
+  <div class="rounded border overflow-hidden"
+       style="border-color: var(--border); background: var(--surface);">
+    {# Column header — matches strike_row.html grid #}
+    <div class="grid items-center gap-3 px-3 py-1.5 border-b text-[9px] uppercase tracking-[0.12em]"
+         style="border-color: var(--border); color: var(--ink-lo);
+                grid-template-columns: 1fr 70px 52px 52px 90px 130px 78px 90px 16px;">
+      <div>Strike</div>
+      <div class="text-right">% chance</div>
+      <div class="text-center">Yes</div>
+      <div class="text-center">No</div>
+      <div class="text-right">Position</div>
+      <div class="text-right">Resting</div>
+      <div class="text-right">LIP</div>
+      <div class="text-right">Theo</div>
+      <div></div>
+    </div>
+    {% if strikes %}
+      {% for s in strikes %}
+        {% include "partials/strike_row.html" %}
+      {% endfor %}
+    {% else %}
+      <div class="px-3 py-6 text-center text-[12px]" style="color: var(--ink-lo);">
+        no strikes yet — waiting for runner cycle…
+      </div>
+    {% endif %}
+  </div>
+  <div class="mt-2 text-[10px] text-right" style="color: var(--ink-dim);">
+    showing {{ strikes | length }} strike{{ '' if (strikes | length) == 1 else 's' }} for {{ event.event_ticker }}
+  </div>
+</section>

@@ -86,6 +86,18 @@ def mount_dashboard(
                 incentives = collect_inc()
             except Exception as exc:
                 logger.info("first-paint incentives collect failed: %s", exc)
+        orderbooks = broadcaster.last_orderbook
+        # Phase 10b: build joined strike views + event meta server-side
+        # so the very first HTML the browser sees is fully populated
+        # (no flash of empty grid before WS opens).
+        from lipmm.control.web.renderer import (
+            event_meta_from_strikes,
+            join_strike_data,
+        )
+        strikes = join_strike_data(snap, runtime, incentives, orderbooks)
+        event = event_meta_from_strikes(strikes)
+        pnl_total = (runtime or {}).get("total_realized_pnl_dollars", 0.0)
+        balance = (runtime or {}).get("balance") or {}
         ctx = {
             "snapshot": snap,
             "presence": broadcaster.presence(),
@@ -93,6 +105,11 @@ def mount_dashboard(
             "records": [],
             "runtime": runtime,
             "incentives": incentives,
+            "orderbooks": orderbooks,
+            "strikes": strikes,
+            "event": event,
+            "pnl_total": pnl_total,
+            "balance": balance,
         }
         return _templates.TemplateResponse(request, "dashboard.html", ctx)
 
@@ -132,10 +149,13 @@ def mount_dashboard(
                     incentives = collect_inc()
                 except Exception as exc:
                     logger.info("ws initial incentives collect failed: %s", exc)
-            # Seed the adapter so any subsequent `incentives_snapshot` /
-            # `runtime_snapshot` event has the right context for cross-render.
+            orderbooks = broadcaster.last_orderbook
+            # Seed the adapter's "last seen" snapshots so subsequent
+            # events (state_change, runtime, incentives, orderbook)
+            # render with full context.
             adapter._last_runtime = runtime  # noqa: SLF001
             adapter._last_incentives = incentives  # noqa: SLF001
+            adapter._last_orderbooks = orderbooks  # noqa: SLF001
             initial_html = render_initial(
                 state.snapshot(),
                 presence=broadcaster.presence(),
@@ -143,6 +163,7 @@ def mount_dashboard(
                 records=[],
                 runtime=runtime,
                 incentives=incentives,
+                orderbooks=orderbooks,
             )
             await websocket.send_text(initial_html)
             await broadcaster.notify_join(tab_id)

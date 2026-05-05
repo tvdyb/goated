@@ -298,10 +298,11 @@ def test_html_ws_receives_runtime_snapshot_html() -> None:
         finally:
             loop.close()
         html = ws.receive_text()
-        assert 'id="positions-panel"' in html
-        assert 'id="resting-orders-panel"' in html
-        assert 'id="balance-strip"' in html
-        assert 'id="pnl-pill"' in html
+        # Phase 10: runtime data is folded into the status bar (PnL +
+        # cash + port pills) and the strike grid (per-row position +
+        # resting). A single OOB push updates both.
+        assert 'id="status-bar"' in html
+        assert 'id="strike-grid"' in html
         assert "KX-A" in html
 
 
@@ -320,16 +321,18 @@ def test_dashboard_first_paint_includes_runtime_when_wired() -> None:
     r = client.get("/dashboard")
     assert r.status_code == 200
     body = r.text
-    assert 'id="positions-panel"' in body
-    assert 'id="resting-orders-panel"' in body
-    # Shows the populated position + resting orders
+    # Phase 10 strike grid replaces the separate positions/resting panels.
+    assert 'id="strike-grid"' in body
+    assert "KX-A" in body
+    # Position rendered inline in the strike row (e.g. "+7 Y")
     assert "+7 Y" in body
-    assert "oid-1" in body or "BID" in body  # resting orders rendered
+    # Resting orders rendered as "B 41¢ × 10" / "A 58¢ × 10" inline
+    assert "B 41¢" in body or "A 58¢" in body
 
 
 def test_dashboard_first_paint_renders_empty_when_unwired() -> None:
-    """Without an exchange or order_manager wired, the runtime panels
-    show 'not connected' rather than crashing."""
+    """Without an exchange or order_manager wired, the dashboard still
+    renders cleanly — the strike grid just shows 'no strikes yet'."""
     state = ControlState()
     b = Broadcaster()
     app = build_app(state, secret=SECRET, broadcaster=b, mount_dashboard=True)
@@ -337,8 +340,8 @@ def test_dashboard_first_paint_renders_empty_when_unwired() -> None:
     r = client.get("/dashboard")
     assert r.status_code == 200
     body = r.text
-    assert 'id="positions-panel"' in body
-    assert "not connected" in body or "no open positions" in body
+    assert 'id="strike-grid"' in body
+    assert "no strikes yet" in body or "waiting for runner cycle" in body
 
 
 # ── Periodic loop on ControlServer ─────────────────────────────────

@@ -41,6 +41,142 @@ _env = Environment(
 )
 
 
+# ── Phase 10 strike-data join ───────────────────────────────────────
+
+
+def _ticker_slug(ticker: str) -> str:
+    """Sanitize a Kalshi ticker for use as an HTML element id /
+    data attribute. Replaces non-alphanumerics with `-`."""
+    out = []
+    for ch in ticker:
+        out.append(ch if ch.isalnum() else "-")
+    return "".join(out)
+
+
+def _ticker_label(ticker: str) -> tuple[str, int | None]:
+    """Best-effort human label + threshold from a Kalshi ticker.
+
+    For binary-threshold markets (KXISMPMI-26MAY-51 etc.) the trailing
+    integer is the threshold; we render "At least N". Falls back to the
+    raw suffix for non-binary markets.
+    """
+    if "-" not in ticker:
+        return ticker, None
+    suffix = ticker.rsplit("-", 1)[-1]
+    # Strip "T" prefix some series use (e.g. KXSOYBEANMON-26APR3017-T1186.99)
+    raw = suffix[1:] if suffix.startswith("T") and len(suffix) > 1 else suffix
+    try:
+        # Integer thresholds: "At least 51"
+        n = int(raw)
+        return f"At least {n}", n
+    except ValueError:
+        try:
+            # Float thresholds: leave as raw text, no human label
+            float(raw)
+            return suffix, None
+        except ValueError:
+            return suffix, None
+
+
+def join_strike_data(
+    state_snapshot: dict[str, Any] | None,
+    runtime: dict[str, Any] | None,
+    incentives: dict[str, Any] | None,
+    orderbooks: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Build per-strike views by joining state + runtime + incentives +
+    orderbooks. Returns a list of dicts ready to feed `strike_row.html`.
+
+    Price convention (matches Kalshi UI, NOT the comp's mock):
+
+      - `yesC` (chip)   = `best_ask_c`        — what you'd PAY to buy Yes
+      - `noC`  (chip)   = 100 - best_bid_c    — what you'd PAY to buy No
+      - `chance`        = best_bid_c          — implied probability of Yes
+      - `spread`        = best_ask_c - best_bid_c
+
+    Universe of strikes = orderbook tickers (most current). When the
+    runner hasn't pushed yet we fall back to runtime+incentive tickers.
+    """
+    state_snapshot = state_snapshot or {}
+    runtime = runtime or {}
+    incentives = incentives or {}
+    orderbooks = orderbooks or {}
+
+    overrides = {ov["ticker"]: ov for ov in state_snapshot.get("theo_overrides", [])}
+    positions = {p["ticker"]: p for p in runtime.get("positions", [])}
+    resting: dict[str, list[dict]] = {}
+    for r in runtime.get("resting_orders", []):
+        resting.setdefault(r["ticker"], []).append(r)
+    incs: dict[str, list[dict]] = {}
+    for ip in incentives.get("programs", []):
+        incs.setdefault(ip["market_ticker"], []).append(ip)
+    obs = {ob["ticker"]: ob for ob in orderbooks.get("strikes", [])}
+
+    universe = set(obs) | set(positions) | set(resting) | set(incs) | set(overrides)
+    out: list[dict[str, Any]] = []
+    for ticker in sorted(universe):
+        ob = obs.get(ticker, {})
+        best_bid = int(ob.get("best_bid_c", 0))
+        best_ask = int(ob.get("best_ask_c", 100))
+        label, threshold = _ticker_label(ticker)
+        out.append({
+            "ticker": ticker,
+            "slug": _ticker_slug(ticker),
+            "label": label,
+            "threshold": threshold,
+            "best_bid_c": best_bid,
+            "best_ask_c": best_ask,
+            "yesC": best_ask,
+            "noC": max(0, 100 - best_bid),
+            "chance": best_bid,
+            "spread": max(0, best_ask - best_bid),
+            "yes_levels": ob.get("yes_levels", []),
+            "no_levels": ob.get("no_levels", []),
+            "ob_present": bool(ob),
+            "override": overrides.get(ticker),
+            "position": positions.get(ticker),
+            "resting": resting.get(ticker, []),
+            "lip": (incs.get(ticker) or [None])[0],
+        })
+    return out
+
+
+def event_meta_from_strikes(
+    strikes: list[dict[str, Any]],
+    fallback_event: str | None = None,
+) -> dict[str, Any]:
+    """Derive event-header metadata from the joined strikes list.
+
+    Picks the event ticker by stripping the trailing strike segment off
+    the first ticker (e.g. KXISMPMI-26MAY-51 → KXISMPMI-26MAY). Counts
+    `quoting` as strikes with an active theo override (the only thing
+    that lifts confidence above the strategy's default skip threshold
+    when StubTheoProvider is in use). Sums LIP rewards across strikes.
+    """
+    if not strikes:
+        return {
+            "event_ticker": fallback_event or "—",
+            "strike_count": 0,
+            "quoting_count": 0,
+            "lip_total_dollars": 0.0,
+        }
+    first = strikes[0]["ticker"]
+    event_ticker = first.rsplit("-", 1)[0] if "-" in first else first
+    quoting = sum(1 for s in strikes if s["override"] is not None)
+    lip_total = sum(
+        (s["lip"] or {}).get("period_reward_dollars", 0.0) for s in strikes
+    )
+    return {
+        "event_ticker": event_ticker,
+        "strike_count": len(strikes),
+        "quoting_count": quoting,
+        "lip_total_dollars": lip_total,
+    }
+
+
+# ── existing helpers ──────────────────────────────────────────────
+
+
 def _summarize_record(rec: dict[str, Any]) -> str:
     """Pull a one-line description out of a decision-log record. Records
     are heterogeneous; we surface a sensible default and fall back to a
@@ -61,71 +197,125 @@ def render_initial(
     records: list[dict[str, Any]] | None = None,
     runtime: dict[str, Any] | None = None,
     incentives: dict[str, Any] | None = None,
+    orderbooks: dict[str, Any] | None = None,
 ) -> str:
-    """Render every panel as a single HTML blob — used both by GET
-    /dashboard's first-paint and by the WS `initial` event."""
+    """Render the full first-paint HTML — status bar, event header,
+    strike grid, decision feed. Joined data per strike; one blob.
+    Used both by GET /dashboard and the WS `initial` frame."""
     records = records or []
-    parts = [
-        _env.get_template("partials/state_panel.html").render(snapshot=snapshot),
-        _env.get_template("partials/kill_panel.html").render(snapshot=snapshot),
-        _env.get_template("partials/knob_panel.html").render(snapshot=snapshot),
-        _env.get_template("partials/lock_panel.html").render(snapshot=snapshot),
-        _env.get_template("partials/theo_overrides_panel.html").render(snapshot=snapshot),
-        _env.get_template("partials/manual_order_panel.html").render(snapshot=snapshot),
+    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
+    event = event_meta_from_strikes(strikes)
+    pnl_total = (runtime or {}).get("total_realized_pnl_dollars", 0.0)
+    balance = (runtime or {}).get("balance") or {}
+    return "\n".join([
+        _env.get_template("partials/status_bar.html").render(
+            snapshot=snapshot, presence=presence, total_tabs=total_tabs,
+            pnl_total=pnl_total, balance=balance,
+        ),
+        _env.get_template("partials/event_header.html").render(event=event),
+        _env.get_template("partials/strike_grid.html").render(
+            strikes=strikes, event=event,
+        ),
         _env.get_template("partials/decision_feed.html").render(records=records),
-        _env.get_template("partials/presence.html").render(
-            presence=presence, total_tabs=total_tabs,
+    ])
+
+
+def render_state(
+    snapshot: dict[str, Any],
+    *,
+    presence: list[str] | None = None,
+    total_tabs: int | None = None,
+    runtime: dict[str, Any] | None = None,
+    incentives: dict[str, Any] | None = None,
+    orderbooks: dict[str, Any] | None = None,
+    pnl_total: float = 0.0,
+) -> str:
+    """Re-render after a `state_change` event. Status bar (kill_state
+    lives there) + strike grid (theo overrides change row borders)."""
+    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
+    event = event_meta_from_strikes(strikes)
+    balance = (runtime or {}).get("balance") or {}
+    return "\n".join([
+        _env.get_template("partials/status_bar.html").render(
+            snapshot=snapshot,
+            presence=presence or [],
+            total_tabs=total_tabs or 1,
+            pnl_total=pnl_total,
+            balance=balance,
         ),
-        _env.get_template("partials/positions_panel.html").render(runtime=runtime),
-        _env.get_template("partials/resting_orders_panel.html").render(runtime=runtime),
-        _env.get_template("partials/balance_strip.html").render(runtime=runtime),
-        _env.get_template("partials/pnl_pill.html").render(runtime=runtime),
-        _env.get_template("partials/incentives_panel.html").render(
-            incentives=incentives, runtime=runtime,
+        _env.get_template("partials/event_header.html").render(event=event),
+        _env.get_template("partials/strike_grid.html").render(
+            strikes=strikes, event=event,
         ),
-    ]
-    return "\n".join(parts)
+    ])
+
+
+def render_runtime(
+    runtime: dict[str, Any] | None,
+    *,
+    snapshot: dict[str, Any] | None = None,
+    incentives: dict[str, Any] | None = None,
+    orderbooks: dict[str, Any] | None = None,
+    presence: list[str] | None = None,
+    total_tabs: int | None = None,
+) -> str:
+    """Re-render after a `runtime_snapshot` event. Status bar (PnL/
+    cash/port) + strike grid (positions + resting per row)."""
+    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
+    event = event_meta_from_strikes(strikes)
+    pnl_total = (runtime or {}).get("total_realized_pnl_dollars", 0.0)
+    balance = (runtime or {}).get("balance") or {}
+    return "\n".join([
+        _env.get_template("partials/status_bar.html").render(
+            snapshot=snapshot or {},
+            presence=presence or [],
+            total_tabs=total_tabs or 1,
+            pnl_total=pnl_total,
+            balance=balance,
+        ),
+        _env.get_template("partials/event_header.html").render(event=event),
+        _env.get_template("partials/strike_grid.html").render(
+            strikes=strikes, event=event,
+        ),
+    ])
+
+
+def render_orderbooks(
+    orderbooks: dict[str, Any] | None,
+    *,
+    snapshot: dict[str, Any] | None = None,
+    runtime: dict[str, Any] | None = None,
+    incentives: dict[str, Any] | None = None,
+) -> str:
+    """Re-render after an `orderbook_snapshot` event. Just the strike
+    grid; status bar isn't affected by orderbook updates."""
+    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
+    event = event_meta_from_strikes(strikes)
+    return "\n".join([
+        _env.get_template("partials/event_header.html").render(event=event),
+        _env.get_template("partials/strike_grid.html").render(
+            strikes=strikes, event=event,
+        ),
+    ])
 
 
 def render_incentives(
     incentives: dict[str, Any] | None,
+    *,
+    snapshot: dict[str, Any] | None = None,
     runtime: dict[str, Any] | None = None,
+    orderbooks: dict[str, Any] | None = None,
 ) -> str:
-    """Re-render the incentives panel on `incentives_snapshot` events.
-    `runtime` is optional; when present, rows for tickers we have
-    skin in are highlighted."""
-    return _env.get_template("partials/incentives_panel.html").render(
-        incentives=incentives, runtime=runtime,
-    )
-
-
-def render_state(snapshot: dict[str, Any]) -> str:
-    """Re-render every panel that derives from the snapshot. Each panel
-    is its own OOB block, so the swap is atomic from htmx's POV."""
+    """Re-render after an `incentives_snapshot` event. The grid pulls
+    LIP $/period per strike, so we re-render the whole grid."""
+    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
+    event = event_meta_from_strikes(strikes)
     return "\n".join([
-        _env.get_template("partials/state_panel.html").render(snapshot=snapshot),
-        _env.get_template("partials/kill_panel.html").render(snapshot=snapshot),
-        _env.get_template("partials/knob_panel.html").render(snapshot=snapshot),
-        _env.get_template("partials/lock_panel.html").render(snapshot=snapshot),
-        _env.get_template("partials/theo_overrides_panel.html").render(snapshot=snapshot),
+        _env.get_template("partials/event_header.html").render(event=event),
+        _env.get_template("partials/strike_grid.html").render(
+            strikes=strikes, event=event,
+        ),
     ])
-
-
-def render_runtime(runtime: dict[str, Any] | None) -> str:
-    """Re-render the four runtime-derived blocks (positions, resting
-    orders, balance, PnL pill) on every `runtime_snapshot` event."""
-    return "\n".join([
-        _env.get_template("partials/positions_panel.html").render(runtime=runtime),
-        _env.get_template("partials/resting_orders_panel.html").render(runtime=runtime),
-        _env.get_template("partials/balance_strip.html").render(runtime=runtime),
-        _env.get_template("partials/pnl_pill.html").render(runtime=runtime),
-    ])
-
-
-def render_presence(presence: list[str], total_tabs: int) -> str:
-    return _env.get_template("partials/presence.html").render(
-        presence=presence, total_tabs=total_tabs,
-    )
 
 
 def render_decision_feed(records: list[dict[str, Any]]) -> str:
@@ -146,11 +336,16 @@ class HtmlWebSocketAdapter:
     def __init__(self, websocket: Any) -> None:
         self._ws = websocket
         self._records: deque[dict[str, Any]] = deque(maxlen=DECISION_FEED_SIZE)
-        # Last-known runtime + incentives snapshots so cross-event
-        # renders (e.g. incentives panel highlighting tickers we have
-        # positions on) have the right context.
+        # Last-known snapshots so cross-event renders have the right
+        # context. Phase 10: state + runtime + incentives + orderbooks
+        # all feed into the joined strike grid; any event re-renders
+        # the grid using the most recent value of every input.
+        self._last_state: dict[str, Any] | None = None
         self._last_runtime: dict[str, Any] | None = None
         self._last_incentives: dict[str, Any] | None = None
+        self._last_orderbooks: dict[str, Any] | None = None
+        self._last_presence: list[str] = []
+        self._last_total_tabs: int = 1
 
     async def send_json(self, event: dict[str, Any]) -> None:
         try:
@@ -184,28 +379,75 @@ class HtmlWebSocketAdapter:
     def _render(self, event: dict[str, Any]) -> str:
         et = event.get("event_type")
         if et == "initial":
+            self._last_state = event.get("snapshot")
+            self._last_presence = event.get("presence", [])
+            self._last_total_tabs = event.get("total_tabs", 1)
             return render_initial(
-                event["snapshot"],
-                presence=event.get("presence", []),
-                total_tabs=event.get("total_tabs", 1),
+                self._last_state or {},
+                presence=self._last_presence,
+                total_tabs=self._last_total_tabs,
                 records=list(self._records),
+                runtime=self._last_runtime,
+                incentives=self._last_incentives,
+                orderbooks=self._last_orderbooks,
             )
         if et == "state_change":
-            return render_state(event["snapshot"])
+            self._last_state = event.get("snapshot")
+            pnl = (self._last_runtime or {}).get(
+                "total_realized_pnl_dollars", 0.0,
+            )
+            return render_state(
+                self._last_state or {},
+                presence=self._last_presence,
+                total_tabs=self._last_total_tabs,
+                runtime=self._last_runtime,
+                incentives=self._last_incentives,
+                orderbooks=self._last_orderbooks,
+                pnl_total=pnl,
+            )
         if et in ("tab_connected", "tab_disconnected"):
-            return render_presence(
-                event.get("presence", []), event.get("total_tabs", 1),
+            self._last_presence = event.get("presence", [])
+            self._last_total_tabs = event.get("total_tabs", 1)
+            # Re-render status bar to refresh the tab count pill.
+            pnl = (self._last_runtime or {}).get(
+                "total_realized_pnl_dollars", 0.0,
+            )
+            balance = (self._last_runtime or {}).get("balance") or {}
+            return _env.get_template("partials/status_bar.html").render(
+                snapshot=self._last_state or {},
+                presence=self._last_presence,
+                total_tabs=self._last_total_tabs,
+                pnl_total=pnl,
+                balance=balance,
             )
         if et == "decision":
             self._records.append(self._normalize(event.get("record", {})))
             return render_decision_feed(list(self._records))
         if et == "runtime_snapshot":
             self._last_runtime = event.get("snapshot")
-            return render_runtime(event.get("snapshot"))
+            return render_runtime(
+                self._last_runtime,
+                snapshot=self._last_state,
+                incentives=self._last_incentives,
+                orderbooks=self._last_orderbooks,
+                presence=self._last_presence,
+                total_tabs=self._last_total_tabs,
+            )
+        if et == "orderbook_snapshot":
+            self._last_orderbooks = event.get("snapshot")
+            return render_orderbooks(
+                self._last_orderbooks,
+                snapshot=self._last_state,
+                runtime=self._last_runtime,
+                incentives=self._last_incentives,
+            )
         if et == "incentives_snapshot":
             self._last_incentives = event.get("snapshot")
             return render_incentives(
-                event.get("snapshot"), self._last_runtime,
+                self._last_incentives,
+                snapshot=self._last_state,
+                runtime=self._last_runtime,
+                orderbooks=self._last_orderbooks,
             )
         if et == "heartbeat":
             # Keep the feed silent on heartbeats; presence stays in sync.

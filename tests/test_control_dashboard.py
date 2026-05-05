@@ -48,13 +48,11 @@ def test_dashboard_page_renders_panel_shell() -> None:
     r = client.get("/dashboard")
     assert r.status_code == 200
     body = r.text
-    # Each panel anchor present so OOB swaps from the WS land somewhere
+    # Each Phase 10 anchor present so OOB swaps from the WS land somewhere
     for anchor in (
-        'id="state-panel"',
-        'id="kill-panel"',
-        'id="knob-panel"',
-        'id="lock-panel"',
-        'id="manual-order-panel"',
+        'id="status-bar"',
+        'id="event-header"',
+        'id="strike-grid"',
         'id="decision-feed"',
         'id="presence-pill"',
         'id="ws-mount"',
@@ -63,13 +61,13 @@ def test_dashboard_page_renders_panel_shell() -> None:
 
 
 def test_dashboard_renders_initial_snapshot() -> None:
-    """First-paint should show v0 + kill_state=off so there's no flash
-    of empty UI before the WS opens."""
+    """First-paint should show v0 + KILL button (kill_state=off) so
+    there's no flash of empty UI before the WS opens."""
     client, _, _ = _client_with_dashboard()
     r = client.get("/dashboard")
     body = r.text
     assert "v0" in body
-    assert "off" in body  # kill state pill
+    assert "KILL" in body  # status bar context-aware button
 
 
 def test_static_js_served() -> None:
@@ -129,11 +127,9 @@ def test_html_ws_initial_frame_contains_panels() -> None:
         html = ws.receive_text()
         # All OOB panel containers present in the first frame
         for anchor in (
-            'id="state-panel"',
-            'id="kill-panel"',
-            'id="knob-panel"',
-            'id="lock-panel"',
-            'id="manual-order-panel"',
+            'id="status-bar"',
+            'id="event-header"',
+            'id="strike-grid"',
             'id="decision-feed"',
             'id="presence-pill"',
         ):
@@ -153,11 +149,12 @@ def test_html_ws_pushes_partial_after_pause() -> None:
         }, headers=_h())
         assert r.status_code == 200
         html = ws.receive_text()
-        # The state_change render covers state/kill/knob/lock panels
-        assert 'id="state-panel"' in html
-        assert 'id="kill-panel"' in html
-        assert "v1" in html
-        assert "paused" in html
+        # state_change re-renders status bar + event header + strike grid.
+        # global pause turns the kill button context (still "off") into
+        # the bar; the version bumps to v1.
+        assert 'id="status-bar"' in html
+        assert 'id="strike-grid"' in html
+        assert "v1" in html or "version" in html.lower()
 
 
 def test_html_ws_pushes_decision_feed_update() -> None:

@@ -1,0 +1,147 @@
+{# Per-strike row. Expects `s` from the join_strike_data() output.
+   Rendered inside `strike_grid.html`. The expand pane is a sibling
+   `div` toggled by dashboard.js (Phase 10b: placeholder content). #}
+{% set has_pos = s.position and s.position.quantity != 0 %}
+{% set has_resting = s.resting and (s.resting | length) > 0 %}
+{% set has_override = s.override is not none %}
+{% set tint = '' %}
+{% if has_pos and s.position.quantity > 0 %}
+  {% set tint = 'background: rgba(61, 220, 151, 0.04);' %}
+{% elif has_pos and s.position.quantity < 0 %}
+  {% set tint = 'background: rgba(255, 122, 138, 0.04);' %}
+{% endif %}
+{% set lb = 'transparent' %}
+{% if has_override %}
+  {% set lb = 'var(--lip)' %}
+{% elif has_resting %}
+  {% set lb = 'var(--info)' %}
+{% endif %}
+<div class="strike-row-wrap" data-slug="{{ s.slug }}">
+  <div class="strike-row grid items-center gap-3 px-3 py-2 cursor-pointer transition-colors"
+       data-slug="{{ s.slug }}" data-ticker="{{ s.ticker }}"
+       role="button" tabindex="0"
+       style="grid-template-columns: 1fr 70px 52px 52px 90px 130px 78px 90px 16px;
+              border-bottom: 1px solid var(--border);
+              border-left: 2px solid {{ lb }};
+              {{ tint }}">
+    {# Strike name + ticker tail #}
+    <div class="min-w-0">
+      <div class="flex items-center gap-1.5">
+        <span class="text-[13px] font-semibold whitespace-nowrap" style="color: var(--ink-hi);">
+          {{ s.label }}
+        </span>
+        {% if has_override %}
+          <span class="px-1 py-0 text-[8px] font-medium uppercase tracking-wider rounded-sm border"
+                style="background: #2b2410; color: var(--lip); border-color: #5a4923;">manual</span>
+        {% endif %}
+      </div>
+      <div class="font-mono text-[10px] tabular-nums whitespace-nowrap" style="color: var(--ink-dim);">
+        …{{ s.ticker[-12:] }}
+      </div>
+    </div>
+
+    {# % chance + mini bar #}
+    <div class="text-right">
+      <div class="font-mono text-[15px] font-semibold tabular-nums" style="color: var(--ink-hi);">
+        {{ s.chance }}%
+      </div>
+      <div class="mt-1 ml-auto h-[3px] w-full max-w-[60px] rounded-full overflow-hidden"
+           style="background: var(--surface-2);">
+        <div class="h-full rounded-full" style="width: {{ s.chance }}%; background: var(--info);"></div>
+      </div>
+    </div>
+
+    {# Yes price chip #}
+    <div class="flex justify-center">
+      <span data-action="seed-manual" data-side="yes" data-price="{{ s.yesC }}" data-ticker="{{ s.ticker }}"
+            role="button" tabindex="0"
+            class="inline-flex flex-col items-center justify-center rounded leading-none border transition-colors hover:brightness-125 select-none"
+            style="background: #0a1f17; color: var(--yes); border-color: #164d3a;
+                   font-family: 'JetBrains Mono', ui-monospace; width: 52px; padding: 4px 8px;">
+        <span class="text-[9px] uppercase tracking-wider opacity-70">Yes</span>
+        <span class="text-[13px] font-semibold">{{ s.yesC }}¢</span>
+      </span>
+    </div>
+
+    {# No price chip #}
+    <div class="flex justify-center">
+      <span data-action="seed-manual" data-side="no" data-price="{{ s.noC }}" data-ticker="{{ s.ticker }}"
+            role="button" tabindex="0"
+            class="inline-flex flex-col items-center justify-center rounded leading-none border transition-colors hover:brightness-125 select-none"
+            style="background: #1f0a0e; color: var(--no); border-color: #4d1a23;
+                   font-family: 'JetBrains Mono', ui-monospace; width: 52px; padding: 4px 8px;">
+        <span class="text-[9px] uppercase tracking-wider opacity-70">No</span>
+        <span class="text-[13px] font-semibold">{{ s.noC }}¢</span>
+      </span>
+    </div>
+
+    {# Position #}
+    <div class="text-right">
+      {% if has_pos %}
+        <div class="font-mono text-[13px] font-semibold tabular-nums"
+             style="color: {% if s.position.quantity > 0 %}var(--yes){% else %}var(--no){% endif %};">
+          {{ '+' if s.position.quantity > 0 else '' }}{{ s.position.quantity }} {{ 'Y' if s.position.quantity > 0 else 'N' }}
+        </div>
+        <div class="font-mono text-[10px] tabular-nums" style="color: var(--ink-lo);">
+          @{{ s.position.avg_cost_cents }}¢
+        </div>
+      {% else %}
+        <span class="text-[12px]" style="color: var(--ink-dim);">—</span>
+      {% endif %}
+    </div>
+
+    {# Resting #}
+    <div class="text-right">
+      {% if has_resting %}
+        <div class="font-mono text-[11px] tabular-nums">
+          {% for r in s.resting[:3] %}
+            <div style="color: {% if r.side == 'bid' %}var(--yes){% else %}var(--no){% endif %};">
+              {{ 'B' if r.side == 'bid' else 'A' }} {{ r.price_cents }}¢ × {{ r.size }}
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <span class="text-[12px]" style="color: var(--ink-dim);">—</span>
+      {% endif %}
+    </div>
+
+    {# LIP #}
+    <div class="text-right">
+      {% if s.lip %}
+        <div class="inline-flex items-center gap-1 font-mono text-[11px] font-semibold tabular-nums px-1.5 py-0.5 rounded-sm border"
+             style="background: #1f1a08; color: var(--lip); border-color: #5a4923;">
+          ${{ "%.0f"|format(s.lip.period_reward_dollars or 0) }}
+        </div>
+      {% else %}
+        <span class="text-[12px]" style="color: var(--ink-dim);">—</span>
+      {% endif %}
+    </div>
+
+    {# Theo #}
+    <div class="text-right">
+      {% if has_override %}
+        <div class="font-mono text-[12px] font-semibold tabular-nums" style="color: var(--lip);">
+          {{ s.override.yes_cents }}¢
+        </div>
+        <div class="text-[9px]" style="color: var(--ink-dim);">manual</div>
+      {% else %}
+        <span class="text-[11px]" style="color: var(--ink-lo);">auto</span>
+      {% endif %}
+    </div>
+
+    {# Caret #}
+    <div class="text-[10px] strike-caret transition-transform" style="color: var(--ink-dim);">▶</div>
+  </div>
+
+  {# Expanded panel (Phase 10b: placeholder; 10c builds full content) #}
+  <div class="strike-expand hidden border-b" id="expand-{{ s.slug }}"
+       style="background: var(--bg-base); border-color: var(--border);">
+    <div class="px-3 py-3 text-[11px]" style="color: var(--ink-lo);">
+      <span style="color: var(--ink-mid);">{{ s.ticker }}</span>
+      · expanded view (L2 depth, resting cancel, LIP detail, theo override form) ships in 10c
+      {% if s.ob_present %}
+        · book: {{ s.yes_levels | length }} yes-levels, {{ s.no_levels | length }} no-levels
+      {% endif %}
+    </div>
+  </div>
+</div>

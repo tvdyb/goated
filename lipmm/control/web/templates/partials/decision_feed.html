@@ -1,15 +1,46 @@
-<div id="decision-feed" hx-swap-oob="true" class="max-h-72 overflow-y-auto rounded bg-slate-950 p-2 font-mono text-xs">
-  {% if records %}
-    <ul class="space-y-1">
-      {% for rec in records %}
-        <li class="text-slate-300">
-          <span class="text-slate-500">{{ rec.ts | round(2) }}</span>
-          <span class="text-sky-300">{{ rec.record_type or "decision" }}</span>
-          <span>{{ rec.summary }}</span>
-        </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p class="text-slate-500">waiting for events…</p>
-  {% endif %}
-</div>
+<section id="decision-feed" hx-swap-oob="true" class="px-4 pb-3">
+  <div class="rounded border" style="border-color: var(--border); background: var(--surface);">
+    <button data-action="toggle-feed"
+            class="w-full flex items-center justify-between px-3 py-2 text-[11px] uppercase tracking-wider"
+            style="color: var(--ink-lo);">
+      <span class="flex items-center gap-2">
+        <span class="feed-caret transition-transform inline-block">▶</span>
+        Decision feed
+        <span class="normal-case" style="color: var(--ink-dim); letter-spacing: 0;">
+          · last <span data-feed-count>3</span> of {{ records | length }}
+        </span>
+      </span>
+      <span class="flex items-center gap-1.5 normal-case" style="letter-spacing: 0;">
+        <span class="w-1.5 h-1.5 rounded-full"
+              style="background: var(--yes); box-shadow: 0 0 4px var(--yes);"></span>
+        <span style="color: var(--ink-lo);">streaming</span>
+      </span>
+    </button>
+    <div class="px-3 pb-3 font-mono text-[11px]">
+      {% if records %}
+        {% set type_meta = {
+          'fill': ('var(--yes)', 'fill'),
+          'theo_override': ('var(--lip)', 'theo'),
+          'order_placed': ('var(--info)', 'order'),
+          'order_canceled': ('var(--no)', 'cancel'),
+          'cycle': ('var(--ink-lo)', 'cycle'),
+        } %}
+        {% set count = records | length %}
+        {% for rec in records %}
+          {% set entry_type = rec.get('record_type') or rec.get('type') or 'event' %}
+          {% set meta = type_meta.get(entry_type, ('var(--ink-mid)', entry_type)) %}
+          {% set hidden_cls = '' if loop.index <= 3 else 'feed-extra hidden' %}
+          <div class="grid items-baseline gap-2 py-1 border-b {{ hidden_cls }}"
+               style="border-color: rgba(30,42,64,0.5); grid-template-columns: 60px 70px 200px 1fr;">
+            <span style="color: var(--ink-dim);">{{ "%.2f"|format(rec.ts or 0) }}</span>
+            <span style="color: {{ meta[0] }};">{{ meta[1] }}</span>
+            <span class="truncate" style="color: var(--ink-lo);">…{{ (rec.ticker or '*')[-12:] }}</span>
+            <span style="color: var(--ink-hi);">{{ rec.summary }}</span>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p style="color: var(--ink-dim);">waiting for events…</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
