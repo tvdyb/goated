@@ -1,0 +1,88 @@
+{# Operator drawer (Phase 10c). Single OOB target id="operator-drawer";
+   the FAB lives inside this same div so the close→open swap stays
+   atomic. Toggle persisted to localStorage by dashboard.js. #}
+<div id="operator-drawer" hx-swap-oob="true"
+     class="operator-drawer-wrap"
+     data-active-tab="theos">
+  {# FAB — visible when drawer is closed #}
+  <button data-action="toggle-drawer"
+          class="operator-fab fixed right-4 bottom-16 px-3 py-2 rounded border text-[11px] flex items-center gap-2 shadow-lg"
+          style="background: var(--surface-2); color: var(--ink-hi);
+                 border-color: var(--border-strong); font-family: Inter, system-ui;">
+    <span style="color: var(--info);">⚙</span>
+    Operator
+    {% set total_active = (
+      (snapshot.theo_overrides | length if snapshot and snapshot.theo_overrides else 0)
+      + (snapshot.knob_overrides | length if snapshot and snapshot.knob_overrides else 0)
+      + (snapshot.side_locks | length if snapshot and snapshot.side_locks else 0)
+      + (snapshot.paused_tickers | length if snapshot and snapshot.paused_tickers else 0)
+    ) %}
+    {% if total_active > 0 %}
+      <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-sm border"
+            style="background: #0e2238; color: var(--info); border-color: #28486e;">
+        {{ total_active }} active
+      </span>
+    {% endif %}
+  </button>
+
+  {# Drawer aside — visible when drawer is open. CSS hides one or
+     the other based on the `drawer-open` class on <body>. #}
+  <aside class="operator-drawer fixed top-12 right-0 bottom-0 w-[380px] border-l flex flex-col shadow-2xl z-30"
+         style="background: var(--bg-raise); border-color: var(--border);">
+    <div class="flex items-center justify-between px-3 py-2 border-b"
+         style="border-color: var(--border);">
+      <div class="flex items-center gap-2">
+        <span style="color: var(--info);">⚙</span>
+        <span class="text-[12px] font-semibold tracking-tight" style="color: var(--ink-hi);">Operator</span>
+      </div>
+      <button data-action="toggle-drawer" class="text-[14px] leading-none px-1"
+              style="color: var(--ink-lo);">✕</button>
+    </div>
+
+    {# Tab strip #}
+    <div class="flex border-b" style="border-color: var(--border);">
+      {% for key, label, count in [
+        ('theos',  'Theos',  (snapshot.theo_overrides | length) if snapshot and snapshot.theo_overrides else 0),
+        ('pauses', 'Pauses', (snapshot.paused_tickers | length + snapshot.paused_sides | length) if snapshot and snapshot.paused_tickers is defined and snapshot.paused_sides is defined else 0),
+        ('knobs',  'Knobs',  (snapshot.knob_overrides | length) if snapshot and snapshot.knob_overrides else 0),
+        ('locks',  'Locks',  (snapshot.side_locks | length) if snapshot and snapshot.side_locks else 0),
+        ('manual', 'Manual', None),
+      ] %}
+        <button data-tab="{{ key }}"
+                class="flex-1 px-2 py-2 text-[11px] uppercase tracking-wider relative drawer-tab"
+                style="color: var(--ink-lo);">
+          <span class="flex items-center justify-center gap-1.5">
+            {{ label }}
+            {% if count is not none and count > 0 %}
+              <span class="text-[9px] px-1 rounded-sm tabular-nums"
+                    style="background: var(--surface-2); color: var(--info); font-family: 'JetBrains Mono', ui-monospace;">
+                {{ count }}
+              </span>
+            {% endif %}
+          </span>
+          <span class="drawer-tab-underline absolute -bottom-px left-2 right-2 h-px hidden"
+                style="background: var(--info);"></span>
+        </button>
+      {% endfor %}
+    </div>
+
+    {# Tab panels — only one visible at a time, controlled by JS #}
+    <div class="flex-1 overflow-auto p-3">
+      <div data-tab-panel="theos">
+        {% include "partials/tab_theos.html" %}
+      </div>
+      <div data-tab-panel="pauses" class="hidden">
+        {% include "partials/tab_pauses.html" %}
+      </div>
+      <div data-tab-panel="knobs" class="hidden">
+        {% include "partials/tab_knobs.html" %}
+      </div>
+      <div data-tab-panel="locks" class="hidden">
+        {% include "partials/tab_locks.html" %}
+      </div>
+      <div data-tab-panel="manual" class="hidden">
+        {% include "partials/tab_manual.html" %}
+      </div>
+    </div>
+  </aside>
+</div>

@@ -1,0 +1,57 @@
+<div>
+  {% set knobs = [
+    ('min_theo_confidence',           0.10, 0.0, 1.0,  0.05),
+    ('theo_tolerance_c',              2.0,  0.0, 50.0, 0.5),
+    ('max_distance_from_best',        5.0,  0.0, 50.0, 0.5),
+    ('dollars_per_side',              5.0,  0.0, 100.0, 1.0),
+    ('sticky_min_distance_from_theo', 3.0,  0.0, 50.0, 0.5),
+    ('sticky_desert_jump_cents',      5.0,  0.0, 50.0, 0.5),
+    ('max_notional_per_side_dollars', 50.0, 0.0, 1000.0, 5.0),
+  ] %}
+  <div class="text-[9px] uppercase tracking-wider mb-2" style="color: var(--ink-lo);">
+    Active overrides ({{ snapshot.knob_overrides | length if snapshot and snapshot.knob_overrides else 0 }})
+  </div>
+  <div class="space-y-3">
+    {% for name, default, lo, hi, step in knobs %}
+      {% set cur = (snapshot.knob_overrides[name] if snapshot and snapshot.knob_overrides and name in snapshot.knob_overrides else None) %}
+      <div class="rounded border p-2.5"
+           style="background: var(--surface); border-color: var(--border);">
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-[11px] tabular-nums" style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+            {{ name }}
+          </span>
+          {% if cur is not none %}
+            <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-sm border"
+                  style="background: #0e2238; color: var(--info); border-color: #28486e;">override</span>
+          {% else %}
+            <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-dim);">default</span>
+          {% endif %}
+        </div>
+        <form data-form="knob-inline" class="flex items-center gap-2">
+          <input type="hidden" name="name" value="{{ name }}">
+          <input type="range" name="value" min="{{ lo }}" max="{{ hi }}" step="{{ step }}"
+                 value="{{ cur if cur is not none else default }}"
+                 class="flex-1" style="accent-color: var(--info);">
+          <span class="text-[12px] tabular-nums w-12 text-right knob-value"
+                style="color: {% if cur is not none %}var(--info){% else %}var(--ink-lo){% endif %};
+                       font-family: 'JetBrains Mono', ui-monospace;">
+            {{ "%.2f"|format(cur if cur is not none else default) }}
+          </span>
+        </form>
+        <div class="flex items-center justify-between text-[9px] mt-1"
+             style="color: var(--ink-dim); font-family: 'JetBrains Mono', ui-monospace;">
+          <span>{{ lo }}</span>
+          <span>default {{ "%.2f"|format(default) }}</span>
+          <span>{{ hi }}</span>
+        </div>
+        {% if cur is not none %}
+          <div class="mt-1.5 flex justify-end">
+            <button data-call="/control/clear_knob"
+                    data-payload='{"name":"{{ name }}"}'
+                    class="text-[10px] hover:underline" style="color: var(--no);">clear override</button>
+          </div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+</div>

@@ -1,0 +1,63 @@
+<div>
+  <div class="text-[10px] mb-3 px-2 py-1.5 rounded border flex items-start gap-2"
+       style="background: var(--surface); border-color: var(--border); color: var(--ink-lo);">
+    <span style="color: var(--warn);">⚠</span>
+    Manual orders are blocked when kill is engaged. Press <kbd class="px-1 rounded" style="background: var(--surface-2); color: var(--ink-mid);">⌘ + Enter</kbd> to submit.
+  </div>
+  <form data-form="manual-order" class="rounded border p-2 space-y-2"
+        style="background: var(--surface); border-color: var(--border);">
+    <label class="block">
+      <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Ticker</span>
+      <input name="ticker" required placeholder="KX… (or click a Yes/No badge)"
+             class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+             style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+    </label>
+    <div class="grid grid-cols-2 gap-2">
+      <label class="block">
+        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Side</span>
+        <select name="side" required class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+                style="color: var(--ink-hi);">
+          <option value="bid">bid (buy Yes)</option>
+          <option value="ask">ask (sell Yes)</option>
+        </select>
+      </label>
+      <label class="block">
+        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Count</span>
+        <input name="count" type="number" min="1" max="100000" required placeholder="10"
+               class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+               style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+      </label>
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <label class="block">
+        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Limit (cents)</span>
+        <input name="limit_price_cents" type="number" min="1" max="99" required placeholder="49"
+               class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+               style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+      </label>
+      <label class="block">
+        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Lock side after?</span>
+        <select name="lock_after" class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+                style="color: var(--ink-hi);">
+          <option value="false">no</option>
+          <option value="true">yes</option>
+        </select>
+      </label>
+    </div>
+    <label class="block">
+      <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Reason</span>
+      <input name="reason" placeholder="audit string"
+             class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+             style="color: var(--ink-hi);">
+    </label>
+    <p class="text-[10px]" data-notional
+       style="color: var(--ink-lo); font-family: 'JetBrains Mono', ui-monospace;">
+      notional: —
+    </p>
+    <button type="submit"
+            class="w-full text-[11px] font-semibold px-2 py-1.5 rounded border"
+            style="background: #0a1f17; color: var(--yes); border-color: #164d3a;">
+      Submit (⌘+Enter)
+    </button>
+  </form>
+</div>

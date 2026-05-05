@@ -1,6 +1,20 @@
 {% extends "base.html" %}
 {% block title %}lipmm control — dashboard{% endblock %}
 {% block body %}
+<style>
+  /* Drawer / FAB visibility — body class drawer-open toggles which is shown */
+  body:not(.drawer-open) .operator-drawer { display: none; }
+  body.drawer-open .operator-fab { display: none; }
+  body.drawer-open #ws-mount { padding-right: 380px; }
+
+  /* Active drawer tab */
+  .drawer-tab.active { color: var(--ink-hi) !important; }
+  .drawer-tab.active .drawer-tab-underline { display: block !important; }
+
+  /* Strike row hover (set inline since base.html scope) */
+  .strike-row:hover { background: rgba(255,255,255,0.02) !important; }
+  .strike-row.expanded .strike-caret { transform: rotate(90deg); }
+</style>
 <div class="h-screen flex flex-col" style="background: var(--bg-base); color: var(--ink-hi);">
   {% include "partials/status_bar.html" %}
 
@@ -10,11 +24,6 @@
     {% include "partials/decision_feed.html" %}
   </main>
 
-  {# Phase 10c: operator drawer + FAB go here #}
-  <div class="fixed bottom-3 left-4 text-[10px] flex items-center gap-3"
-       style="color: var(--ink-dim); font-family: 'JetBrains Mono', ui-monospace;">
-    <span>v{{ snapshot.version if snapshot else 0 }}</span>
-    <span id="connection-pill-foot">connecting…</span>
-  </div>
+  {% include "partials/operator_drawer.html" %}
 </div>
 {% endblock %}

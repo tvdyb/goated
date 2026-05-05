@@ -160,18 +160,126 @@
   }
 
   function bindPriceChipSeed() {
-    // Phase 10b: clicking a Yes/No chip just shows a toast for now.
-    // Phase 10c will open the operator drawer to the Manual tab and
-    // pre-fill the form.
     document.body.addEventListener("click", (e) => {
       const chip = e.target.closest('[data-action="seed-manual"]');
       if (!chip) return;
       e.preventDefault();
       e.stopPropagation();
       const ticker = chip.dataset.ticker;
-      const side = chip.dataset.side;
-      const price = chip.dataset.price;
-      showToast(`(10c) clicking ${side} chip → manual order: ${ticker} ${side} ${price}¢`);
+      // Yes click → bid (buy Yes); No click → ask (sell Yes).
+      // Either way, limit_price_cents = the chip's value.
+      const side = chip.dataset.side === "yes" ? "bid" : "ask";
+      const priceC = chip.dataset.price;
+      seedManualOrderForm({ ticker, side, price_cents: priceC });
+      openDrawer("manual");
+      showToast(`seeded manual order: ${ticker} ${side} ${priceC}¢`);
+    });
+  }
+
+  function seedManualOrderForm({ ticker, side, price_cents }) {
+    const form = document.querySelector('form[data-form="manual-order"]');
+    if (!form) return;
+    const t = form.querySelector('[name="ticker"]');     if (t) t.value = ticker || "";
+    const s = form.querySelector('[name="side"]');       if (s) s.value = side || "bid";
+    const p = form.querySelector('[name="limit_price_cents"]');
+    if (p) p.value = price_cents || "";
+    // Trigger notional preview recalc
+    form.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  // ── Operator drawer (Phase 10c) ────────────────────────────────
+  const DRAWER_KEY = "lipmm_drawer_open";
+  const TAB_KEY = "lipmm_drawer_tab";
+  const VALID_TABS = new Set(["theos", "pauses", "knobs", "locks", "manual"]);
+
+  function openDrawer(tab) {
+    document.body.classList.add("drawer-open");
+    localStorage.setItem(DRAWER_KEY, "1");
+    if (tab) setActiveTab(tab);
+  }
+  function closeDrawer() {
+    document.body.classList.remove("drawer-open");
+    localStorage.setItem(DRAWER_KEY, "0");
+  }
+  function toggleDrawer() {
+    if (document.body.classList.contains("drawer-open")) closeDrawer();
+    else openDrawer();
+  }
+  function setActiveTab(name) {
+    if (!VALID_TABS.has(name)) name = "theos";
+    localStorage.setItem(TAB_KEY, name);
+    document.querySelectorAll(".drawer-tab").forEach((b) => {
+      b.classList.toggle("active", b.dataset.tab === name);
+    });
+    document.querySelectorAll("[data-tab-panel]").forEach((p) => {
+      p.classList.toggle("hidden", p.dataset.tabPanel !== name);
+    });
+  }
+  function applyPersistedDrawerState() {
+    if (localStorage.getItem(DRAWER_KEY) === "1") {
+      document.body.classList.add("drawer-open");
+    }
+    setActiveTab(localStorage.getItem(TAB_KEY) || "theos");
+  }
+
+  function bindDrawer() {
+    // Toggle (FAB or close button)
+    document.body.addEventListener("click", (e) => {
+      const t = e.target.closest('[data-action="toggle-drawer"]');
+      if (!t) return;
+      e.preventDefault();
+      toggleDrawer();
+    });
+    // Tab buttons
+    document.body.addEventListener("click", (e) => {
+      const tab = e.target.closest("[data-tab]");
+      if (!tab) return;
+      e.preventDefault();
+      setActiveTab(tab.dataset.tab);
+    });
+    // After every htmx OOB swap of the drawer, re-apply the active tab
+    // (the swap blew away the .active class).
+    document.body.addEventListener("htmx:afterSwap", () => {
+      applyPersistedDrawerState();
+    });
+    document.body.addEventListener("htmx:wsAfterMessage", () => {
+      applyPersistedDrawerState();
+    });
+  }
+
+  function bindKnobInline() {
+    // Drawer's Knobs tab uses live sliders. Debounce-submit on change
+    // (after the user releases the slider).
+    document.body.addEventListener("change", async (e) => {
+      const form = e.target.closest('form[data-form="knob-inline"]');
+      if (!form) return;
+      const fd = new FormData(form);
+      const name = fd.get("name");
+      const value = parseFloat(fd.get("value"));
+      if (!name || Number.isNaN(value)) return;
+      // Update the inline value display immediately
+      const display = form.querySelector(".knob-value");
+      if (display) display.textContent = value.toFixed(2);
+      await callJson("/control/set_knob", { name, value });
+    });
+    // Live-update the inline value on input (no API call yet)
+    document.body.addEventListener("input", (e) => {
+      const form = e.target.closest('form[data-form="knob-inline"]');
+      if (!form) return;
+      const value = parseFloat(form.querySelector('[name="value"]').value);
+      if (Number.isNaN(value)) return;
+      const display = form.querySelector(".knob-value");
+      if (display) display.textContent = value.toFixed(2);
+    });
+  }
+
+  function bindCmdEnterManualOrder() {
+    document.body.addEventListener("keydown", (e) => {
+      if (!(e.key === "Enter" && (e.metaKey || e.ctrlKey))) return;
+      const form = e.target.closest('form[data-form="manual-order"]');
+      if (!form) return;
+      e.preventDefault();
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
   }
 
@@ -223,8 +331,8 @@
         if (ttl) body.auto_unlock_seconds = parseFloat(ttl);
         await callJson("/control/lock_side", body);
         form.reset();
-      } else if (kind === "theo-override") {
-        const ticker = (fd.get("ticker") || "").trim();
+      } else if (kind === "theo-override" || kind === "theo-override-inline") {
+        const ticker = (fd.get("ticker") || form.dataset.ticker || "").trim();
         const yes_cents = parseInt(fd.get("yes_cents"), 10);
         const confidence = parseFloat(fd.get("confidence"));
         const reason = (fd.get("reason") || "").trim();
@@ -386,11 +494,15 @@
     bindPriceChipSeed();
     bindGenericCalls();
     bindForms();
+    bindDrawer();
+    bindKnobInline();
+    bindCmdEnterManualOrder();
     bindNotionalPreview();
     if (location.pathname === "/dashboard") {
       if (!getJwt()) { location.href = "/login"; return; }
       openWebSocket();
       startCountdownTicker();
+      applyPersistedDrawerState();
     }
   });
 })();

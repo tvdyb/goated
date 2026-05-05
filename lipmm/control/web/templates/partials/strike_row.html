@@ -133,15 +133,187 @@
     <div class="text-[10px] strike-caret transition-transform" style="color: var(--ink-dim);">▶</div>
   </div>
 
-  {# Expanded panel (Phase 10b: placeholder; 10c builds full content) #}
+  {# Expanded panel (Phase 10c) — L2 depth + resting + LIP detail +
+     theo override form. Inline so a single OOB swap on the row's
+     parent re-renders both row and panel together. #}
   <div class="strike-expand hidden border-b" id="expand-{{ s.slug }}"
        style="background: var(--bg-base); border-color: var(--border);">
-    <div class="px-3 py-3 text-[11px]" style="color: var(--ink-lo);">
-      <span style="color: var(--ink-mid);">{{ s.ticker }}</span>
-      · expanded view (L2 depth, resting cancel, LIP detail, theo override form) ships in 10c
-      {% if s.ob_present %}
-        · book: {{ s.yes_levels | length }} yes-levels, {{ s.no_levels | length }} no-levels
-      {% endif %}
+    <div class="grid gap-4 px-3 py-3"
+         style="grid-template-columns: 1.4fr 1fr 1.2fr;">
+      {# ── L2 depth ladder ──────────────────────────────── #}
+      <div>
+        <div class="text-[9px] uppercase tracking-[0.12em] mb-2" style="color: var(--ink-lo);">
+          Order book — top 5
+        </div>
+        {% if not s.ob_present %}
+          <div class="text-[11px]" style="color: var(--ink-dim);">
+            no orderbook data yet — runner cycle hasn't pushed
+          </div>
+        {% else %}
+          {% set max_yes = (s.yes_levels | map(attribute='size') | max) if s.yes_levels else 1 %}
+          {% set max_no  = (s.no_levels  | map(attribute='size') | max) if s.no_levels  else 1 %}
+          {% set max_sz = (max_yes if max_yes > max_no else max_no) or 1 %}
+          <div class="grid grid-cols-2 gap-2 text-[11px]"
+               style="font-family: 'JetBrains Mono', ui-monospace;">
+            <div>
+              <div class="text-[9px] uppercase tracking-wider mb-1"
+                   style="color: var(--ink-dim);">Bids (Yes)</div>
+              {% for lvl in s.yes_levels[:5] %}
+                <div class="relative flex justify-between px-1.5 py-0.5">
+                  <div class="absolute inset-y-0 left-0 rounded-sm"
+                       style="width: {{ (lvl.size / max_sz * 100) | round(0) }}%; background: rgba(61, 220, 151, 0.10);"></div>
+                  <span class="relative tabular-nums" style="color: var(--yes);">{{ lvl.price_cents }}¢</span>
+                  <span class="relative tabular-nums" style="color: var(--ink-mid);">{{ lvl.size | int }}</span>
+                </div>
+              {% else %}
+                <div class="text-[10px]" style="color: var(--ink-dim);">no bids</div>
+              {% endfor %}
+            </div>
+            <div>
+              <div class="text-[9px] uppercase tracking-wider mb-1"
+                   style="color: var(--ink-dim);">Asks (Yes)</div>
+              {% for lvl in s.no_levels[:5] %}
+                {% set ask_c = 100 - lvl.price_cents %}
+                <div class="relative flex justify-between px-1.5 py-0.5">
+                  <div class="absolute inset-y-0 right-0 rounded-sm"
+                       style="width: {{ (lvl.size / max_sz * 100) | round(0) }}%; background: rgba(255, 122, 138, 0.10);"></div>
+                  <span class="relative tabular-nums" style="color: var(--no);">{{ ask_c }}¢</span>
+                  <span class="relative tabular-nums" style="color: var(--ink-mid);">{{ lvl.size | int }}</span>
+                </div>
+              {% else %}
+                <div class="text-[10px]" style="color: var(--ink-dim);">no asks</div>
+              {% endfor %}
+            </div>
+          </div>
+        {% endif %}
+      </div>
+
+      {# ── Resting orders + cancel ──────────────────────── #}
+      <div>
+        <div class="text-[9px] uppercase tracking-[0.12em] mb-2" style="color: var(--ink-lo);">
+          Our resting ({{ s.resting | length }})
+        </div>
+        {% if not s.resting %}
+          <div class="text-[11px]" style="color: var(--ink-dim);">no working orders</div>
+        {% else %}
+          <div class="space-y-1.5">
+            {% for r in s.resting %}
+              <div class="flex items-center justify-between gap-2 px-2 py-1.5 rounded border"
+                   style="background: var(--surface); border-color: var(--border);">
+                <div class="flex items-center gap-2 text-[11px] tabular-nums"
+                     style="font-family: 'JetBrains Mono', ui-monospace;">
+                  <span class="px-1.5 py-0.5 rounded-sm border text-[9px] uppercase tracking-wider"
+                        style="background: {% if r.side == 'bid' %}#0a1f17{% else %}#1f0a0e{% endif %};
+                               color: {% if r.side == 'bid' %}var(--yes){% else %}var(--no){% endif %};
+                               border-color: {% if r.side == 'bid' %}#164d3a{% else %}#4d1a23{% endif %};">
+                    {{ r.side }}
+                  </span>
+                  <span style="color: var(--ink-hi);">{{ r.price_cents }}¢ × {{ r.size }}</span>
+                </div>
+                <button data-call="/control/cancel_order"
+                        data-confirm="Cancel order {{ r.order_id }} ({{ s.ticker }} {{ r.side }} {{ r.size }}@{{ r.price_cents }}¢)?"
+                        data-payload='{"order_id":"{{ r.order_id }}"}'
+                        class="text-[10px] px-2 py-1 rounded border hover:brightness-125"
+                        style="background: var(--surface-2); color: var(--no); border-color: var(--no-dim); font-family: Inter, system-ui;">
+                  cancel
+                </button>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+
+      {# ── LIP incentive detail ──────────────────────────── #}
+      <div>
+        <div class="text-[9px] uppercase tracking-[0.12em] mb-2" style="color: var(--ink-lo);">
+          LIP incentive
+        </div>
+        {% if not s.lip %}
+          <div class="text-[11px]" style="color: var(--ink-dim);">no LIP program for this ticker</div>
+        {% else %}
+          <div class="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]"
+               style="font-family: 'JetBrains Mono', ui-monospace;">
+            <div class="flex items-center justify-between">
+              <span style="color: var(--ink-lo);">reward</span>
+              <span style="color: var(--lip);">${{ "%.2f"|format(s.lip.period_reward_dollars or 0) }}</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span style="color: var(--ink-lo);">target</span>
+              <span style="color: var(--ink-hi);">{{ (s.lip.target_size_contracts or 0) | int }} ct</span>
+            </div>
+            {% if s.lip.discount_factor_bps is not none %}
+              <div class="flex items-center justify-between">
+                <span style="color: var(--ink-lo);">discount</span>
+                <span style="color: var(--ink-hi);">{{ "%.2f"|format((s.lip.discount_factor_bps or 0) / 100) }}%</span>
+              </div>
+            {% endif %}
+            <div class="flex items-center justify-between">
+              <span style="color: var(--ink-lo);">type</span>
+              <span style="color: var(--ink-hi);">{{ s.lip.incentive_type or '—' }}</span>
+            </div>
+            <div class="flex items-center justify-between col-span-2">
+              <span style="color: var(--ink-lo);">time left</span>
+              <span data-time-remaining="true" data-end-ts="{{ s.lip.end_date_ts or 0 }}"
+                    style="color: var(--ink-hi);">—</span>
+            </div>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Theo override form (full width) ──────────────────── #}
+    <div class="px-3 pb-3 pt-3 border-t" style="border-color: var(--border);">
+      <div class="text-[9px] uppercase tracking-[0.12em] mb-2" style="color: var(--ink-lo);">
+        {% if has_override %}
+          Theo override — set by {{ s.override.actor }} @ {{ "%.0f"|format(s.override.set_at or 0) }}
+        {% else %}
+          Set theo override
+        {% endif %}
+      </div>
+      <form class="grid gap-3" data-form="theo-override-inline" data-ticker="{{ s.ticker }}"
+            style="grid-template-columns: 110px 110px 1fr auto;">
+        <input type="hidden" name="ticker" value="{{ s.ticker }}">
+        <label class="rounded border px-2 py-1 flex flex-col"
+               style="background: var(--surface); border-color: var(--border);">
+          <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Yes (cents)</span>
+          <input type="number" name="yes_cents" min="1" max="99" required
+                 value="{{ s.override.yes_cents if has_override else (s.chance or 50) }}"
+                 class="bg-transparent outline-none tabular-nums text-[13px]"
+                 style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+        </label>
+        <label class="rounded border px-2 py-1 flex flex-col"
+               style="background: var(--surface); border-color: var(--border);">
+          <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Confidence</span>
+          <input type="number" name="confidence" step="0.05" min="0" max="1" required
+                 value="{{ s.override.confidence if has_override else 1.0 }}"
+                 class="bg-transparent outline-none tabular-nums text-[13px]"
+                 style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+        </label>
+        <label class="rounded border px-2 py-1 flex flex-col"
+               style="background: var(--surface); border-color: var(--border);">
+          <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Reason (≥4 chars)</span>
+          <input type="text" name="reason" required minlength="4" maxlength="512"
+                 value="{{ s.override.reason if has_override else '' }}"
+                 placeholder="why are you overriding?"
+                 class="bg-transparent outline-none text-[13px]"
+                 style="color: var(--ink-hi);">
+        </label>
+        <div class="flex items-end gap-1.5">
+          {% if has_override %}
+            <button type="button" data-call="/control/clear_theo_override"
+                    data-confirm="Clear theo override for {{ s.ticker }}?"
+                    data-payload='{"ticker":"{{ s.ticker }}"}'
+                    class="text-[11px] px-2.5 py-1.5 rounded border"
+                    style="background: var(--surface); color: var(--ink-mid); border-color: var(--border);">
+              clear
+            </button>
+          {% endif %}
+          <button type="submit" class="text-[11px] font-semibold px-3 py-1.5 rounded border"
+                  style="background: #1f1a08; color: var(--lip); border-color: #7a6230;">
+            {% if has_override %}update theo{% else %}override theo{% endif %}
+          </button>
+        </div>
+      </form>
     </div>
   </div>
 </div>

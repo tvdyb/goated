@@ -1,0 +1,83 @@
+<div>
+  <div class="text-[9px] uppercase tracking-wider mb-2" style="color: var(--ink-lo);">Global</div>
+  <div class="rounded border p-3 mb-3 flex items-center justify-between"
+       style="background: var(--surface); border-color: var(--border);">
+    <div>
+      {% if snapshot and snapshot.global_paused %}
+        <div class="text-[12px] font-semibold" style="color: var(--warn);">Paused</div>
+        <div class="text-[10px]" style="color: var(--ink-lo);">strategy is skipping every cycle</div>
+      {% else %}
+        <div class="text-[12px] font-semibold" style="color: var(--yes);">Running</div>
+        <div class="text-[10px]" style="color: var(--ink-lo);">strategy quotes every cycle</div>
+      {% endif %}
+    </div>
+    {% if snapshot and snapshot.global_paused %}
+      <button data-call="/control/resume" data-payload='{"scope":"global"}'
+              class="text-[11px] px-2.5 py-1.5 rounded border"
+              style="background: #0a1f17; color: var(--yes); border-color: #164d3a;">
+        Resume all
+      </button>
+    {% else %}
+      <button data-call="/control/pause" data-payload='{"scope":"global"}'
+              data-confirm="Pause all quoting globally?"
+              class="text-[11px] px-2.5 py-1.5 rounded border"
+              style="background: #2b2210; color: var(--warn); border-color: #5a4923;">
+        Pause all
+      </button>
+    {% endif %}
+  </div>
+
+  <div class="text-[9px] uppercase tracking-wider mb-2" style="color: var(--ink-lo);">Per ticker / side</div>
+  {% set has_paused = snapshot and (snapshot.paused_tickers or snapshot.paused_sides) %}
+  {% if not has_paused %}
+    <div class="text-[11px] mb-2" style="color: var(--ink-dim);">none paused</div>
+  {% else %}
+    <div class="space-y-1 mb-3">
+      {% for t in snapshot.paused_tickers %}
+        <div class="flex items-center justify-between rounded border px-2 py-1"
+             style="background: var(--surface); border-color: var(--border);">
+          <span class="text-[11px] tabular-nums" style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+            …{{ t[-12:] }}
+          </span>
+          <button data-call="/control/resume"
+                  data-payload='{"scope":"ticker","ticker":"{{ t }}"}'
+                  class="text-[10px] hover:underline" style="color: var(--yes);">resume</button>
+        </div>
+      {% endfor %}
+      {% for pair in snapshot.paused_sides %}
+        <div class="flex items-center justify-between rounded border px-2 py-1"
+             style="background: var(--surface); border-color: var(--border);">
+          <span class="text-[11px] tabular-nums" style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+            …{{ pair[0][-10:] }} · {{ pair[1] }}
+          </span>
+          <button data-call="/control/resume"
+                  data-payload='{"scope":"side","ticker":"{{ pair[0] }}","side":"{{ pair[1] }}"}'
+                  class="text-[10px] hover:underline" style="color: var(--yes);">resume</button>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+  <form data-form="pause" class="rounded border p-2 space-y-2"
+        style="background: var(--surface); border-color: var(--border);">
+    <label class="block">
+      <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Ticker</span>
+      <input name="ticker" placeholder="KX…"
+             class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+             style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+    </label>
+    <label class="block">
+      <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Side</span>
+      <select name="side" class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+              style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+        <option value="">(ticker only)</option>
+        <option>bid</option>
+        <option>ask</option>
+      </select>
+    </label>
+    <button type="submit"
+            class="w-full text-[11px] font-semibold px-2 py-1.5 rounded border"
+            style="background: #2b2210; color: var(--warn); border-color: #5a4923;">
+      Pause
+    </button>
+  </form>
+</div>

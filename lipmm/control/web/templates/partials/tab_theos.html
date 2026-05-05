@@ -1,0 +1,40 @@
+<div>
+  <div class="text-[10px] mb-3 px-2 py-1.5 rounded border flex items-start gap-2"
+       style="background: var(--surface); border-color: var(--border); color: var(--ink-lo);">
+    <span style="color: var(--warn);">⚠</span>
+    Overrides clear on bot restart. Set per-strike inline from the grid.
+  </div>
+  <div class="text-[9px] uppercase tracking-wider mb-2" style="color: var(--ink-lo);">
+    Active ({{ snapshot.theo_overrides | length if snapshot and snapshot.theo_overrides else 0 }})
+  </div>
+  {% if not snapshot or not snapshot.theo_overrides %}
+    <div class="text-[11px]" style="color: var(--ink-dim);">no overrides — strategy uses TheoProvider</div>
+  {% else %}
+    <div class="space-y-2">
+      {% for ov in snapshot.theo_overrides %}
+        <div class="rounded border p-2"
+             style="background: var(--surface); border-color: var(--border);">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-[11px] tabular-nums" style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+              …{{ ov.ticker[-12:] }}
+            </span>
+            <span class="text-[13px] font-semibold tabular-nums" style="color: var(--lip); font-family: 'JetBrains Mono', ui-monospace;">
+              {{ ov.yes_cents }}¢
+            </span>
+          </div>
+          <div class="text-[10px] leading-relaxed" style="color: var(--ink-lo);">
+            "{{ ov.reason }}"
+          </div>
+          <div class="mt-1.5 flex items-center justify-between text-[9px]"
+               style="color: var(--ink-dim); font-family: 'JetBrains Mono', ui-monospace;">
+            <span>by {{ ov.actor }} · conf {{ "%.2f"|format(ov.confidence or 0) }}</span>
+            <button data-call="/control/clear_theo_override"
+                    data-confirm="Clear theo override for {{ ov.ticker }}?"
+                    data-payload='{"ticker":"{{ ov.ticker }}"}'
+                    class="hover:underline" style="color: var(--no);">clear</button>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>

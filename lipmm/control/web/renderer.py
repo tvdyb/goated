@@ -217,6 +217,7 @@ def render_initial(
             strikes=strikes, event=event,
         ),
         _env.get_template("partials/decision_feed.html").render(records=records),
+        _env.get_template("partials/operator_drawer.html").render(snapshot=snapshot),
     ])
 
 
@@ -246,6 +247,11 @@ def render_state(
         _env.get_template("partials/event_header.html").render(event=event),
         _env.get_template("partials/strike_grid.html").render(
             strikes=strikes, event=event,
+        ),
+        # The drawer's tab counts + per-tab content all derive from
+        # `state_snapshot`, so re-render it on every state_change.
+        _env.get_template("partials/operator_drawer.html").render(
+            snapshot=snapshot,
         ),
     ])
 

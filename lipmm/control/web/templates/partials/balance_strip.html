@@ -1,8 +1,0 @@
-<span id="balance-strip" hx-swap-oob="true" class="flex items-center gap-1">
-  {% if runtime and runtime.balance %}
-    <span class="pill bg-slate-800 text-slate-300">cash ${{ "%.2f"|format(runtime.balance.cash_dollars) }}</span>
-    <span class="pill bg-slate-800 text-slate-300">port ${{ "%.2f"|format(runtime.balance.portfolio_value_dollars) }}</span>
-  {% else %}
-    <span class="pill bg-slate-800 text-slate-500">balance —</span>
-  {% endif %}
-</span>

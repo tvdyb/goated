@@ -1,0 +1,64 @@
+<div>
+  <div class="text-[10px] mb-3 px-2 py-1.5 rounded border"
+       style="background: var(--surface); border-color: var(--border); color: var(--ink-lo);">
+    Locks force strategy <code style="color: var(--ink-hi);">skip=True</code> on a side until cleared. Stronger than pauses.
+  </div>
+  {% if not snapshot or not snapshot.side_locks %}
+    <div class="text-[11px] mb-3" style="color: var(--ink-dim);">no locks active</div>
+  {% else %}
+    <div class="space-y-2 mb-3">
+      {% for lock in snapshot.side_locks %}
+        <div class="rounded border p-2"
+             style="background: var(--surface); border-color: var(--border);">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-[11px] tabular-nums" style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+              …{{ lock.ticker[-10:] }} · {{ lock.side }}
+            </span>
+            <button data-call="/control/unlock_side"
+                    data-payload='{"ticker":"{{ lock.ticker }}","side":"{{ lock.side }}"}'
+                    class="text-[10px] hover:underline" style="color: var(--yes);">unlock</button>
+          </div>
+          {% if lock.reason %}
+            <div class="text-[10px]" style="color: var(--ink-lo);">{{ lock.reason }}</div>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+  <form data-form="lock" class="rounded border p-2 space-y-2"
+        style="background: var(--surface); border-color: var(--border);">
+    <label class="block">
+      <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Ticker</span>
+      <input name="ticker" required placeholder="KX…"
+             class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+             style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+    </label>
+    <div class="grid grid-cols-2 gap-2">
+      <label class="block">
+        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Side</span>
+        <select name="side" required class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+                style="color: var(--ink-hi);">
+          <option>bid</option>
+          <option>ask</option>
+        </select>
+      </label>
+      <label class="block">
+        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">TTL (s, optional)</span>
+        <input name="auto_unlock_seconds" type="number" min="1" max="86400" placeholder="3600"
+               class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+               style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
+      </label>
+    </div>
+    <label class="block">
+      <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Reason</span>
+      <input name="reason" placeholder="why?"
+             class="w-full bg-transparent outline-none text-[12px] mt-0.5"
+             style="color: var(--ink-hi);">
+    </label>
+    <button type="submit"
+            class="w-full text-[11px] font-semibold px-2 py-1.5 rounded border"
+            style="background: var(--danger-dim); color: var(--danger); border-color: #7a2a32;">
+      Lock side
+    </button>
+  </form>
+</div>
