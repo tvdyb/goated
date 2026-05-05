@@ -23,6 +23,8 @@
      'Absolute gap in cents between best and theo above which the strategy treats the market as desert and pennies inside best regardless of confidence. Lower = enter desert mode sooner = more aggressive pennying when best is far from theo. Companion: desert_relative_pct (not exposed; defaults to 30%).'),
     ('max_notional_per_side_dollars', 50.0, 0.0, 1000.0, 5.0,
      'Hard ceiling on per-side notional, enforced by MaxNotionalPerSideGate (a RiskGate, not a strategy knob). Vetoes any decision that would push a side above this cap. Set in lipmm_run.py at startup; this knob overrides the configured value at runtime.'),
+    ('max_orders_per_cycle', 100.0, 1.0, 1000.0, 5.0,
+     'Cap on orders placed per runner cycle (MaxOrdersPerCycleGate). Default 100. With N strikes × 2 sides, set this ≥ 2N to avoid throttling. The runner also round-robins the strike order each cycle so vetoed strikes get a turn next cycle even if the cap binds. CRANK THIS UP if you have many events and not all strikes are quoting.'),
   ] %}
   <div class="text-[9px] uppercase tracking-wider mb-2" style="color: var(--ink-lo);">
     Active overrides ({{ snapshot.knob_overrides | length if snapshot and snapshot.knob_overrides else 0 }})

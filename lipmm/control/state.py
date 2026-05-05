@@ -36,14 +36,19 @@ class ControlConfig:
     knob_bounds: dict[str, tuple[float, float]] = field(default_factory=lambda: {
         # DefaultLIPQuoting knobs
         "min_theo_confidence": (0.0, 1.0),
+        "match_best_min_confidence": (0.0, 1.0),
+        "penny_inside_min_confidence": (0.0, 1.0),
+        "penny_inside_distance": (1.0, 10.0),
         "theo_tolerance_c": (0.0, 50.0),
         "max_distance_from_best": (0.0, 50.0),
+        "desert_threshold_c": (0.0, 50.0),
         "dollars_per_side": (0.0, 100.0),
         # StickyDefenseQuoting knobs
         "sticky_min_distance_from_theo": (0.0, 50.0),
         "sticky_desert_jump_cents": (0.0, 50.0),
         # Risk gate knobs
         "max_notional_per_side_dollars": (0.0, 1000.0),
+        "max_orders_per_cycle": (1.0, 1000.0),
     })
 
 

@@ -29,6 +29,9 @@ class RiskContext:
     # Aggregate views from OrderManager.all_resting():
     all_resting_count: int            # total resting orders across all tickers
     all_resting_notional: float       # rough sum of price × size, in dollars
+    # Knob overrides from ControlState (e.g. max_orders_per_cycle).
+    # Optional; gates check for keys they care about and ignore others.
+    control_overrides: dict | None = None
 
 
 @dataclass(frozen=True)

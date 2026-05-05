@@ -212,6 +212,14 @@ class LIPRunner:
             logger.warning("LIPRunner: ticker source failed: %s", exc)
             return
 
+        # Round-robin: rotate the iteration starting point each cycle
+        # so a per-cycle gate (MaxOrdersPerCycleGate) doesn't always
+        # veto the same trailing strikes. With N tickers and a cap of
+        # M orders, every strike gets a turn within N/M cycles.
+        if tickers:
+            offset = self._cycle_id % len(tickers)
+            tickers = tickers[offset:] + tickers[:offset]
+
         # One log line per cycle so the operator can tell from the
         # screen output whether the runner is actually iterating.
         logger.info(
@@ -458,6 +466,9 @@ class LIPRunner:
                 now_ts=now_ts,
                 all_resting_count=agg_count,
                 all_resting_notional=agg_notional,
+                control_overrides=(
+                    self._control.all_knobs() if self._control is not None else None
+                ),
             )
             decision, risk_audit = await self._risk.evaluate(risk_ctx)
 

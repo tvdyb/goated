@@ -215,7 +215,7 @@ def _build_risk_registry(cap_dollars: float) -> RiskRegistry:
     """
     return RiskRegistry([
         MaxNotionalPerSideGate(max_dollars=cap_dollars / 2),
-        MaxOrdersPerCycleGate(max_orders=20),
+        MaxOrdersPerCycleGate(max_orders=100),
         EndgameGuardrailGate(
             min_seconds_to_settle=60,
             deep_otm_threshold=5,

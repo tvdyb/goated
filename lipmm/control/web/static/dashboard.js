@@ -651,6 +651,50 @@
         }
         return;
       }
+      const unlockAllBtn = e.target.closest('[data-action="unlock-all-event"]');
+      if (unlockAllBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const ev = unlockAllBtn.dataset.eventTicker;
+        if (!ev) return;
+        // Find every (ticker, side) lock whose ticker starts with the
+        // event prefix. Read from the rendered DOM — the events strip
+        // and strike rows surface lock state. Easiest: walk strike-row
+        // expanded panels for "lift lock" buttons inside this event.
+        const prefix = ev + "-";
+        const lockBtns = [];
+        document.querySelectorAll(
+          '[data-call="/control/unlock_side"]'
+        ).forEach((btn) => {
+          let payload = {};
+          try { payload = JSON.parse(btn.dataset.payload || "{}"); }
+          catch { return; }
+          if (payload.ticker && payload.ticker.startsWith(prefix)) {
+            lockBtns.push({ ticker: payload.ticker, side: payload.side });
+          }
+        });
+        if (lockBtns.length === 0) {
+          return showToast(`No side-locks found in ${ev}.`);
+        }
+        if (!confirm(
+          `Lift ${lockBtns.length} side-lock(s) in ${ev}?\n\n` +
+          `Bot will resume quoting all unlocked sides next cycle.`,
+        )) return;
+        let ok = 0, fail = 0;
+        for (const { ticker, side } of lockBtns) {
+          try {
+            await callJson("/control/unlock_side", { ticker, side });
+            ok += 1;
+          } catch {
+            fail += 1;
+          }
+        }
+        showToast(
+          `Unlock-all: ${ok} unlocked` +
+          (fail > 0 ? `, ${fail} failed` : ""),
+        );
+        return;
+      }
       const quoteAllBtn = e.target.closest('[data-action="quote-all-event"]');
       if (quoteAllBtn) {
         e.preventDefault();

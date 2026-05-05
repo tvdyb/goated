@@ -41,6 +41,17 @@ class MaxOrdersPerCycleGate:
             self._last_cycle_id = context.cycle_id
             self._count_in_cycle = 0
 
+        # Allow runtime override via control_overrides (set via dashboard
+        # Knobs tab). Lets the operator raise the cap without restart
+        # when they're managing a lot of strikes per cycle.
+        effective_max = self._max_orders
+        try:
+            ov = (context.control_overrides or {}).get("max_orders_per_cycle")
+            if ov is not None:
+                effective_max = max(0, int(ov))
+        except (AttributeError, TypeError, ValueError):
+            pass
+
         decision = context.decision
         bid_allow = True
         ask_allow = True
@@ -50,21 +61,21 @@ class MaxOrdersPerCycleGate:
         # Process bid first, then ask. If bid would push us over the limit,
         # veto bid only — ask might still fit. Same for ask.
         if not decision.bid.skip:
-            if self._count_in_cycle + 1 > self._max_orders:
+            if self._count_in_cycle + 1 > effective_max:
                 bid_allow = False
                 bid_reason = (
                     f"cycle quota exhausted: {self._count_in_cycle} "
-                    f"orders already this cycle, max={self._max_orders}"
+                    f"orders already this cycle, max={effective_max}"
                 )
             else:
                 self._count_in_cycle += 1
 
         if not decision.ask.skip:
-            if self._count_in_cycle + 1 > self._max_orders:
+            if self._count_in_cycle + 1 > effective_max:
                 ask_allow = False
                 ask_reason = (
                     f"cycle quota exhausted: {self._count_in_cycle} "
-                    f"orders already this cycle, max={self._max_orders}"
+                    f"orders already this cycle, max={effective_max}"
                 )
             else:
                 self._count_in_cycle += 1

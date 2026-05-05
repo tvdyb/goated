@@ -23,6 +23,10 @@
               class="rounded text-[11px] leading-none px-1 hover:brightness-150"
               style="color: var(--lip);"
               title="Apply theo override to ALL strikes in this event (panic-batch quote)">⚡</button>
+      <button data-action="unlock-all-event" data-event-ticker="{{ ev }}"
+              class="rounded text-[11px] leading-none px-1 hover:brightness-150"
+              style="color: var(--info);"
+              title="Lift ALL side-locks in this event (e.g. after panic cancels). Bot will resume quoting locked sides next cycle.">🔓</button>
       <button data-action="remove-event" data-event-ticker="{{ ev }}"
               data-resting-count="{{ count }}"
               class="rounded text-[11px] leading-none px-1 hover:brightness-150"
