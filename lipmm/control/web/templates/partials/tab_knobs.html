@@ -1,18 +1,26 @@
 <div>
+  {# (name, default, lo, hi, step, description) #}
   {% set knobs = [
-    ('min_theo_confidence',           0.10, 0.0, 1.0,  0.05),
-    ('theo_tolerance_c',              2.0,  0.0, 50.0, 0.5),
-    ('max_distance_from_best',        5.0,  0.0, 50.0, 0.5),
-    ('dollars_per_side',              5.0,  0.0, 100.0, 1.0),
-    ('sticky_min_distance_from_theo', 3.0,  0.0, 50.0, 0.5),
-    ('sticky_desert_jump_cents',      5.0,  0.0, 50.0, 0.5),
-    ('max_notional_per_side_dollars', 50.0, 0.0, 1000.0, 5.0),
+    ('min_theo_confidence', 0.10, 0.0, 1.0, 0.05,
+     'Minimum theo.confidence required for the strategy to quote a strike at all. Below this, both bid and ask are skipped (no orders placed). The framework calibrates: 1.0 = trust within ±1c, 0.5 = within ±5c, 0.1 = unreliable, 0.0 = no theo. Stub theo always returns 0.0 → without dashboard theo overrides, the strategy never quotes.'),
+    ('theo_tolerance_c', 2.0, 0.0, 50.0, 0.5,
+     'Anti-spoofing guard. Strategy will never bid above (theo - 1 + tolerance) or ask below (theo + 1 - tolerance). Keeps the bot from chasing fake quotes someone posts above fair value just to bait us into pennying them. Higher tolerance = more aggressive pennying; lower = safer.'),
+    ('max_distance_from_best', 5.0, 0.0, 50.0, 0.5,
+     'Cap on how far our quote can sit from the best on its side, in cents. Our final bid = max(theo - half_spread, best_bid - max_distance). Prevents the bot from drifting arbitrarily far away from the visible market when theo is far from best.'),
+    ('dollars_per_side', 5.0, 0.0, 100.0, 1.0,
+     'Notional dollars to commit per side per cycle. Order size = round(dollars_per_side / price). At 5c that is ~100 contracts; at 50c it is 10. Effective size cap is also constrained by MaxNotionalPerSideGate.'),
+    ('sticky_min_distance_from_theo', 3.0, 0.0, 50.0, 0.5,
+     'StickyDefenseQuoting only. How far from theo (in cents) before sticky quotes break loose and re-anchor. Smaller = stickier defense; larger = follows market more aggressively.'),
+    ('sticky_desert_jump_cents', 5.0, 0.0, 50.0, 0.5,
+     'StickyDefenseQuoting only. In a desert market (no competition near theo), how many cents to jump from the unpopulated zone toward our edge. Higher captures more LIP; lower reduces adverse-selection risk if theo is wrong.'),
+    ('max_notional_per_side_dollars', 50.0, 0.0, 1000.0, 5.0,
+     'Hard ceiling on per-side notional, enforced by MaxNotionalPerSideGate (a RiskGate, not a strategy knob). Vetoes any decision that would push a side above this cap. Set in lipmm_run.py at startup; this knob overrides the configured value at runtime.'),
   ] %}
   <div class="text-[9px] uppercase tracking-wider mb-2" style="color: var(--ink-lo);">
     Active overrides ({{ snapshot.knob_overrides | length if snapshot and snapshot.knob_overrides else 0 }})
   </div>
   <div class="space-y-3">
-    {% for name, default, lo, hi, step in knobs %}
+    {% for name, default, lo, hi, step, desc in knobs %}
       {% set cur = (snapshot.knob_overrides[name] if snapshot and snapshot.knob_overrides and name in snapshot.knob_overrides else None) %}
       <div class="rounded border p-2.5"
            style="background: var(--surface); border-color: var(--border);">
@@ -21,8 +29,16 @@
             {{ name }}
           </span>
           {% if cur is not none %}
-            <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-sm border"
-                  style="background: #0e2238; color: var(--info); border-color: #28486e;">override</span>
+            <div class="flex items-center gap-1.5">
+              <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-sm border"
+                    style="background: #0e2238; color: var(--info); border-color: #28486e;">override</span>
+              <button data-call="/control/clear_knob"
+                      data-payload='{"name":"{{ name }}"}'
+                      data-confirm="Clear override for {{ name }}? Reverts to configured default ({{ "%.2f"|format(default) }})."
+                      class="text-[10px] px-1.5 py-0.5 rounded border hover:brightness-125"
+                      style="background: var(--danger-dim); color: var(--no); border-color: #7a2a32;"
+                      title="Clear this knob override and revert to default">disable</button>
+            </div>
           {% else %}
             <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-dim);">default</span>
           {% endif %}
@@ -44,13 +60,9 @@
           <span>default {{ "%.2f"|format(default) }}</span>
           <span>{{ hi }}</span>
         </div>
-        {% if cur is not none %}
-          <div class="mt-1.5 flex justify-end">
-            <button data-call="/control/clear_knob"
-                    data-payload='{"name":"{{ name }}"}'
-                    class="text-[10px] hover:underline" style="color: var(--no);">clear override</button>
-          </div>
-        {% endif %}
+        <p class="text-[10px] leading-relaxed mt-2" style="color: var(--ink-lo);">
+          {{ desc }}
+        </p>
       </div>
     {% endfor %}
   </div>

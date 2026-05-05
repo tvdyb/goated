@@ -339,9 +339,17 @@ class LIPRunner:
         )
 
         # 3a. Per-side pause AND per-side lock from control plane.
-        # Force skip on any paused or locked side. Applied AFTER strategy
-        # decision so the strategy's reasoning is captured in the
-        # decision-log record before being overridden.
+        # Distinct semantics:
+        #   pause → force skip → OrderManager cancels existing order.
+        #     "Stop quoting this side; if there's a resting order, pull it."
+        #   lock  → bypass OrderManager entirely → existing order stays.
+        #     "Hands off this side; whatever's resting stays resting,
+        #      and the strategy can't place new orders on it either."
+        # Applied AFTER the strategy decision so the strategy's reasoning
+        # is still captured in the decision-log record before override.
+        # `bypass_apply` collects sides where OM.apply must NOT be called
+        # (the locked-side case); read by step 4 below.
+        bypass_apply: set[str] = set()
         if self._control is not None:
             from lipmm.quoting.base import SideDecision as _SideDecision
             for _side_name in ("bid", "ask"):
@@ -354,9 +362,10 @@ class LIPRunner:
                 if locked:
                     lock = self._control.get_side_lock(ticker, _side_name)
                     skip_reason = (
-                        f"control plane: {_side_name} locked"
+                        f"control plane: {_side_name} locked (no OM apply)"
                         + (f" — {lock.reason}" if lock and lock.reason else "")
                     )
+                    bypass_apply.add(_side_name)
                 else:
                     skip_reason = f"control plane: {_side_name} paused"
                 if _side_name == "bid" and not decision.bid.skip:
@@ -403,13 +412,30 @@ class LIPRunner:
             )
             decision, risk_audit = await self._risk.evaluate(risk_ctx)
 
-        # 4. Apply via OrderManager
-        bid_outcome = await self._om.apply(
-            ticker, "bid", decision.bid, self._exchange,
-        )
-        ask_outcome = await self._om.apply(
-            ticker, "ask", decision.ask, self._exchange,
-        )
+        # 4. Apply via OrderManager — but bypass for sides that are
+        # locked. The lock semantics ("hands off") require leaving the
+        # existing OM state untouched: don't cancel, don't place. The
+        # OM's skip-path WOULD cancel any resting order, so we have to
+        # short-circuit here. Manual orders survive next cycle this way.
+        from lipmm.execution.order_manager import SideExecution as _SideExec
+        if "bid" in bypass_apply:
+            bid_outcome = _SideExec(
+                action="skipped",
+                reason="locked side — OrderManager bypassed",
+            )
+        else:
+            bid_outcome = await self._om.apply(
+                ticker, "bid", decision.bid, self._exchange,
+            )
+        if "ask" in bypass_apply:
+            ask_outcome = _SideExec(
+                action="skipped",
+                reason="locked side — OrderManager bypassed",
+            )
+        else:
+            ask_outcome = await self._om.apply(
+                ticker, "ask", decision.ask, self._exchange,
+            )
 
         # 5. Optional decision recording — uses canonical lipmm schema.
         if self._recorder is not None:

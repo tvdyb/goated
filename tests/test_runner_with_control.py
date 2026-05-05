@@ -330,6 +330,80 @@ async def test_side_lock_blocks_one_side() -> None:
 
 
 @pytest.mark.asyncio
+async def test_side_lock_does_NOT_cancel_existing_resting_order() -> None:
+    """Critical post-Phase-11 fix: a locked side must leave any existing
+    resting order on the book. Before this fix, the runner forced
+    skip=True on locked sides, which made OrderManager cancel the
+    resting order on the next cycle — silently undoing manual orders.
+    Now the runner bypasses OrderManager entirely for locked sides."""
+    from lipmm.execution.order_manager import RestingOrder
+
+    cs = ControlState()
+    book = OrderbookLevels(
+        ticker="KX-T50.00",
+        yes_levels=[(45, 100.0)], no_levels=[(45, 100.0)],
+    )
+    runner, ex = _make_runner(
+        tickers=["KX-T50.00"],
+        book_for={"KX-T50.00": book},
+        theo_prob=0.50,
+        control_state=cs,
+    )
+    # Pre-seed a manual resting order on KX-T50.00 bid (as if the
+    # operator just placed one) AND lock that side so the runner has
+    # to leave it alone.
+    runner._om._resting[("KX-T50.00", "bid")] = RestingOrder(  # noqa: SLF001
+        order_id="manual-order-1", price_cents=44, size=10,
+    )
+    ex.orders["manual-order-1"] = Order(
+        order_id="manual-order-1", ticker="KX-T50.00", action="buy",
+        side="yes", limit_price_cents=44, remaining_count=10, status="resting",
+    )
+    await cs.lock_side("KX-T50.00", "bid", reason="manual order placed")
+
+    await _run_for(runner, 0.20)
+
+    # The manual order survives — runner did not cancel it.
+    assert "manual-order-1" in ex.orders
+    # And the OrderManager's internal state still tracks it.
+    assert runner._om.get_resting("KX-T50.00", "bid") is not None  # noqa: SLF001
+    assert runner._om.get_resting("KX-T50.00", "bid").order_id == "manual-order-1"  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_side_pause_DOES_cancel_existing_resting_order() -> None:
+    """Sanity counter-test: a paused side (vs. locked) still goes
+    through OrderManager and DOES cancel any existing order. That's
+    the documented difference: lock = hands-off, pause = halt-and-pull."""
+    from lipmm.execution.order_manager import RestingOrder
+
+    cs = ControlState()
+    book = OrderbookLevels(
+        ticker="KX-T50.00",
+        yes_levels=[(45, 100.0)], no_levels=[(45, 100.0)],
+    )
+    runner, ex = _make_runner(
+        tickers=["KX-T50.00"],
+        book_for={"KX-T50.00": book},
+        theo_prob=0.50,
+        control_state=cs,
+    )
+    runner._om._resting[("KX-T50.00", "bid")] = RestingOrder(  # noqa: SLF001
+        order_id="strat-order-1", price_cents=44, size=10,
+    )
+    ex.orders["strat-order-1"] = Order(
+        order_id="strat-order-1", ticker="KX-T50.00", action="buy",
+        side="yes", limit_price_cents=44, remaining_count=10, status="resting",
+    )
+    await cs.pause_side("KX-T50.00", "bid")
+
+    await _run_for(runner, 0.20)
+
+    # Pause path: order was cancelled (action= cancel branch in OM)
+    assert "strat-order-1" not in ex.orders
+
+
+@pytest.mark.asyncio
 async def test_side_lock_auto_unlocks_after_ttl() -> None:
     """A lock with auto_unlock_at in the past is treated as not locked
     on the next runner check — and the lock is lazily cleared from state."""

@@ -2,7 +2,15 @@
   <div class="text-[10px] mb-3 px-2 py-1.5 rounded border flex items-start gap-2"
        style="background: var(--surface); border-color: var(--border); color: var(--ink-lo);">
     <span style="color: var(--warn);">⚠</span>
-    Manual orders are blocked when kill is engaged. Press <kbd class="px-1 rounded" style="background: var(--surface-2); color: var(--ink-mid);">⌘ + Enter</kbd> to submit.
+    <div>
+      Manual orders are blocked when kill is engaged. Press
+      <kbd class="px-1 rounded" style="background: var(--surface-2); color: var(--ink-mid);">⌘ + Enter</kbd> to submit.
+      <br><strong style="color: var(--lip);">Lock side after?</strong>
+      defaults to YES — without a lock, the runner cycle will cancel
+      your manual order within ~3s (because the strategy decides to
+      "skip" without an active theo). Set NO only if you want the
+      strategy to immediately re-quote this side.
+    </div>
   </div>
   <form data-form="manual-order" class="rounded border p-2 space-y-2"
         style="background: var(--surface); border-color: var(--border);">
@@ -39,8 +47,8 @@
         <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Lock side after?</span>
         <select name="lock_after" class="w-full bg-transparent outline-none text-[12px] mt-0.5"
                 style="color: var(--ink-hi);">
-          <option value="false">no</option>
-          <option value="true">yes</option>
+          <option value="true">yes (recommended)</option>
+          <option value="false">no — let strategy take over</option>
         </select>
       </label>
     </div>

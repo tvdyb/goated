@@ -527,7 +527,7 @@
 
   async function callJson(url, body) {
     const jwt = getJwt();
-    if (!jwt) { location.href = "/login"; return; }
+    if (!jwt) { location.href = "/login"; return null; }
     body = Object.assign({ request_id: newRequestId() }, body);
     const r = await fetch(url, {
       method: "POST",
@@ -540,12 +540,30 @@
     if (r.status === 401) {
       clearSession();
       location.href = "/login";
-      return;
+      return null;
     }
     if (!r.ok) {
       const text = await r.text();
       showToast(`${url} → ${r.status}: ${text.slice(0, 200)}`);
+      return null;
     }
+    let data = null;
+    try { data = await r.json(); } catch (_) { /* not JSON */ }
+    // Manual orders return 200 even when the bot couldn't place the
+    // order (risk vetoed / exchange rejected / post-only cross). Surface
+    // those outcomes so the operator gets feedback instead of silence.
+    if (url === "/control/manual_order" && data) {
+      if (data.succeeded) {
+        const oid = (data.order_id || "").slice(0, 8);
+        showToast(`✓ order placed: ${data.action} ${data.size}@${data.price_cents}c (${oid}…)`);
+      } else if (data.risk_vetoed) {
+        showToast(`✗ risk-vetoed: ${data.reason || "no reason"}`);
+      } else {
+        const why = data.reason || data.action || "unknown";
+        showToast(`✗ exchange rejected: ${why.slice(0, 200)}`);
+      }
+    }
+    return data;
   }
 
   function setConnectionPill(text, cls) {
