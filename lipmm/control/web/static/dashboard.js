@@ -122,6 +122,43 @@
     });
   }
 
+  // Strike expand state is persisted in localStorage so the panel
+  // stays open across the strike-grid's frequent OOB re-renders
+  // (orderbook_snapshot fires every ~3s).
+  const EXPAND_KEY = "lipmm_expanded_strikes";
+
+  function getExpandedSet() {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(EXPAND_KEY) || "[]"));
+    } catch (_) {
+      return new Set();
+    }
+  }
+  function saveExpandedSet(set) {
+    localStorage.setItem(EXPAND_KEY, JSON.stringify([...set]));
+  }
+
+  function applyPersistedExpansions() {
+    const open = getExpandedSet();
+    let changed = false;
+    for (const slug of [...open]) {
+      const expand = document.getElementById("expand-" + slug);
+      const row = document.querySelector(`.strike-row[data-slug="${slug}"]`);
+      if (expand && row) {
+        expand.classList.remove("hidden");
+        row.classList.add("expanded");
+        const caret = row.querySelector(".strike-caret");
+        if (caret) caret.style.transform = "rotate(90deg)";
+      } else {
+        // The strike disappeared from the grid (e.g. event rotated);
+        // drop it from the persisted set so it doesn't accumulate.
+        open.delete(slug);
+        changed = true;
+      }
+    }
+    if (changed) saveExpandedSet(open);
+  }
+
   function bindStrikeExpand() {
     document.body.addEventListener("click", (e) => {
       // Don't expand if the click was on an actionable child (price chip,
@@ -139,6 +176,9 @@
       row.classList.toggle("expanded", opening);
       const caret = row.querySelector(".strike-caret");
       if (caret) caret.style.transform = opening ? "rotate(90deg)" : "";
+      const set = getExpandedSet();
+      if (opening) set.add(slug); else set.delete(slug);
+      saveExpandedSet(set);
     });
   }
 
@@ -238,12 +278,15 @@
       setActiveTab(tab.dataset.tab);
     });
     // After every htmx OOB swap of the drawer, re-apply the active tab
-    // (the swap blew away the .active class).
+    // AND re-open any strike rows that were expanded — the swap blew
+    // away both pieces of client-side state.
     document.body.addEventListener("htmx:afterSwap", () => {
       applyPersistedDrawerState();
+      applyPersistedExpansions();
     });
     document.body.addEventListener("htmx:wsAfterMessage", () => {
       applyPersistedDrawerState();
+      applyPersistedExpansions();
     });
   }
 
@@ -503,6 +546,7 @@
       openWebSocket();
       startCountdownTicker();
       applyPersistedDrawerState();
+      applyPersistedExpansions();
     }
   });
 })();

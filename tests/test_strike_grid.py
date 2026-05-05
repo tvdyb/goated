@@ -78,8 +78,12 @@ def test_ticker_slug_sanitizes() -> None:
 # ── join_strike_data ────────────────────────────────────────────────
 
 
-def test_join_universe_unions_all_sources() -> None:
-    """Every strike that appears in ANY source is in the output."""
+def test_join_universe_excludes_lip_only_tickers() -> None:
+    """Strikes appear when the bot has skin (orderbook OR position
+    OR resting OR override). LIP programs ALONE do NOT add strikes —
+    otherwise we'd flood the grid with every active LIP-eligible
+    ticker on Kalshi (~1300 of them). LIP info attaches to existing
+    strikes, doesn't create new ones."""
     state = {"theo_overrides": [{"ticker": "KX-OVERRIDE-ONLY"}]}
     runtime = {
         "positions": [{"ticker": "KX-POS-ONLY", "quantity": 1, "avg_cost_cents": 50}],
@@ -92,8 +96,24 @@ def test_join_universe_unions_all_sources() -> None:
     tickers = {s["ticker"] for s in strikes}
     assert tickers == {
         "KX-OVERRIDE-ONLY", "KX-POS-ONLY", "KX-RESTING-ONLY",
-        "KX-LIP-ONLY", "KX-OB-ONLY",
+        "KX-OB-ONLY",
     }
+    assert "KX-LIP-ONLY" not in tickers
+
+
+def test_join_attaches_lip_to_strike_in_universe() -> None:
+    """LIP info attaches to a strike that's in the universe via
+    another source, even though LIP alone wouldn't add it."""
+    runtime = {"positions": [{"ticker": "KX-T1", "quantity": 5, "avg_cost_cents": 49}]}
+    incentives = {"programs": [
+        {"market_ticker": "KX-T1", "period_reward_dollars": 125.0,
+         "incentive_type": "liquidity"},
+        {"market_ticker": "KX-DIFFERENT", "period_reward_dollars": 999.0},
+    ]}
+    strikes = join_strike_data({}, runtime, incentives, {})
+    assert len(strikes) == 1
+    assert strikes[0]["ticker"] == "KX-T1"
+    assert strikes[0]["lip"]["period_reward_dollars"] == 125.0
 
 
 def test_join_yes_no_chance_convention_matches_kalshi_ui() -> None:

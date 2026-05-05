@@ -386,18 +386,22 @@ def test_html_ws_receives_incentives_snapshot() -> None:
             loop.close()
         html = ws.receive_text()
         # Phase 10: incentives are folded into the strike grid (LIP $
-        # column per row) + event header (total LIP $/period). The
-        # standalone incentives panel is gone.
+        # column per row) + event header (total LIP $/period). LIP-only
+        # tickers don't add strikes — the incentive_snapshot just
+        # re-renders the grid with refreshed LIP info on existing
+        # strikes. So the WS output is the strike-grid anchor with
+        # whatever the current strike universe is (here: empty).
         assert 'id="strike-grid"' in html or 'id="event-header"' in html
-        assert "KXISMPMI-26MAY-T50.0" in html
 
 
 # ── Dashboard render ───────────────────────────────────────────────
 
 
-def test_dashboard_renders_incentives_in_strike_grid_and_header() -> None:
-    """Phase 10: LIP info appears inline per strike in the grid (LIP $
-    column) and aggregated in the event header ($N LIP/period pill)."""
+def test_dashboard_renders_incentive_attached_to_strike_with_orderbook() -> None:
+    """Phase 10 corrected semantics: a LIP-only ticker doesn't add a
+    strike to the grid (otherwise we'd flood with all 1300+ active
+    Kalshi LIP programs). LIP info ATTACHES to a strike that already
+    exists via an orderbook (or position / resting / override)."""
     p = _StubProvider()
     p.programs = [
         IncentiveProgram.from_api(_sample_entry(
@@ -409,6 +413,15 @@ def test_dashboard_renders_incentives_in_strike_grid_and_header() -> None:
     asyncio.get_event_loop().run_until_complete(cache.refresh_once())
     state = ControlState()
     b = Broadcaster()
+    # Seed an orderbook for the SAME ticker so it appears in the grid
+    # AND has the LIP info attached.
+    asyncio.get_event_loop().run_until_complete(b.broadcast_orderbook({
+        "strikes": [{
+            "ticker": "KX-PMI-T50", "best_bid_c": 49, "best_ask_c": 51,
+            "yes_levels": [], "no_levels": [],
+        }],
+        "last_cycle_ts": 0.0,
+    }))
     app = build_app(
         state, secret=SECRET, broadcaster=b,
         incentive_cache=cache, mount_dashboard=True,
@@ -420,6 +433,8 @@ def test_dashboard_renders_incentives_in_strike_grid_and_header() -> None:
     assert 'id="strike-grid"' in body
     assert 'id="event-header"' in body
     assert "KX-PMI-T50" in body
+    # LIP $1000/period attaches to the row + total in event header
+    assert "$1000" in body
     # LIP $1000/period in the row + total in the event header
     assert "$1000" in body
 
