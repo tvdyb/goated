@@ -200,36 +200,76 @@
         {% endif %}
       </div>
 
-      {# ── Resting orders + cancel ──────────────────────── #}
+      {# ── Resting orders + per-side cancel/lift-lock ─────── #}
       <div>
         <div class="text-[9px] uppercase tracking-[0.12em] mb-2" style="color: var(--ink-lo);">
           Our resting ({{ s.resting | length }})
         </div>
-        {% if not s.resting %}
+        {% set bid_resting = (s.resting | selectattr('side', 'equalto', 'bid') | list) %}
+        {% set ask_resting = (s.resting | selectattr('side', 'equalto', 'ask') | list) %}
+        {% if not s.resting and not s.side_lock_bid and not s.side_lock_ask %}
           <div class="text-[11px]" style="color: var(--ink-dim);">no working orders</div>
         {% else %}
           <div class="space-y-1.5">
-            {% for r in s.resting %}
-              <div class="flex items-center justify-between gap-2 px-2 py-1.5 rounded border"
-                   style="background: var(--surface); border-color: var(--border);">
-                <div class="flex items-center gap-2 text-[11px] tabular-nums"
-                     style="font-family: 'JetBrains Mono', ui-monospace;">
-                  <span class="px-1.5 py-0.5 rounded-sm border text-[9px] uppercase tracking-wider"
-                        style="background: {% if r.side == 'bid' %}#0a1f17{% else %}#1f0a0e{% endif %};
-                               color: {% if r.side == 'bid' %}var(--yes){% else %}var(--no){% endif %};
-                               border-color: {% if r.side == 'bid' %}#164d3a{% else %}#4d1a23{% endif %};">
-                    {{ r.side }}
-                  </span>
-                  <span style="color: var(--ink-hi);">{{ r.price_cents }}¢ × {{ r.size }}</span>
+            {# Render BOTH sides so the operator sees the full picture.
+               Per side: an active resting order shows cancel; a lock
+               with no resting shows "lift lock"; otherwise nothing. #}
+            {% for side, rest_list, lock_entry in [
+                ('bid', bid_resting, s.side_lock_bid),
+                ('ask', ask_resting, s.side_lock_ask),
+            ] %}
+              {% if rest_list %}
+                {% for r in rest_list %}
+                  <div class="flex items-center justify-between gap-2 px-2 py-1.5 rounded border"
+                       style="background: var(--surface); border-color: var(--border);">
+                    <div class="flex items-center gap-2 text-[11px] tabular-nums"
+                         style="font-family: 'JetBrains Mono', ui-monospace;">
+                      <span class="px-1.5 py-0.5 rounded-sm border text-[9px] uppercase tracking-wider"
+                            style="background: {% if side == 'bid' %}#0a1f17{% else %}#1f0a0e{% endif %};
+                                   color: {% if side == 'bid' %}var(--yes){% else %}var(--no){% endif %};
+                                   border-color: {% if side == 'bid' %}#164d3a{% else %}#4d1a23{% endif %};">
+                        {{ side }}
+                      </span>
+                      <span style="color: var(--ink-hi);">{{ r.price_cents }}¢ × {{ r.size }}</span>
+                    </div>
+                    <button data-call="/control/cancel_order"
+                            data-confirm="Cancel {{ side }} {{ r.size }}@{{ r.price_cents }}¢ on {{ s.ticker }}? This auto-locks the {{ side }} side; you'll need to lift the lock to resume quoting."
+                            data-payload='{"order_id":"{{ r.order_id }}"}'
+                            class="text-[10px] px-2 py-1 rounded border hover:brightness-125"
+                            style="background: var(--surface-2); color: var(--no); border-color: var(--no-dim); font-family: Inter, system-ui;"
+                            title="Cancel + auto-lock {{ side }} side">
+                      cancel
+                    </button>
+                  </div>
+                {% endfor %}
+              {% elif lock_entry %}
+                <div class="flex items-center justify-between gap-2 px-2 py-1.5 rounded border"
+                     style="background: var(--surface); border-color: var(--border);">
+                  <div class="flex items-center gap-2 text-[11px] tabular-nums"
+                       style="font-family: 'JetBrains Mono', ui-monospace;">
+                    <span class="px-1.5 py-0.5 rounded-sm border text-[9px] uppercase tracking-wider"
+                          style="background: {% if side == 'bid' %}#0a1f17{% else %}#1f0a0e{% endif %};
+                                 color: {% if side == 'bid' %}var(--yes){% else %}var(--no){% endif %};
+                                 border-color: {% if side == 'bid' %}#164d3a{% else %}#4d1a23{% endif %};">
+                      {{ side }}
+                    </span>
+                    <span class="px-1.5 py-0.5 rounded-sm border text-[9px] uppercase tracking-wider"
+                          style="background: #1f1a08; color: var(--lip); border-color: #7a6230;">
+                      locked
+                    </span>
+                    <span class="text-[10px]" style="color: var(--ink-mid);"
+                          title="{{ lock_entry.reason }}">side held</span>
+                  </div>
+                  <button data-call="/control/unlock_side"
+                          data-confirm="Lift {{ side }} lock on {{ s.ticker }}? Strategy will resume quoting this side next cycle."
+                          data-payload='{"ticker":"{{ s.ticker }}","side":"{{ side }}"}'
+                          class="text-[10px] px-2 py-1 rounded border hover:brightness-125"
+                          style="background: #1f1a08; color: var(--lip); border-color: #7a6230; font-family: Inter, system-ui;"
+                          title="Resume quoting on the {{ side }} side">
+                    lift lock
+                  </button>
                 </div>
-                <button data-call="/control/cancel_order"
-                        data-confirm="Cancel order {{ r.order_id }} ({{ s.ticker }} {{ r.side }} {{ r.size }}@{{ r.price_cents }}¢)?"
-                        data-payload='{"order_id":"{{ r.order_id }}"}'
-                        class="text-[10px] px-2 py-1 rounded border hover:brightness-125"
-                        style="background: var(--surface-2); color: var(--no); border-color: var(--no-dim); font-family: Inter, system-ui;">
-                  cancel
-                </button>
-              </div>
+              {% endif %}
             {% endfor %}
           </div>
         {% endif %}

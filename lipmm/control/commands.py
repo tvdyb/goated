@@ -350,6 +350,15 @@ class CancelOrderRequest(BaseModel):
     reason: str = Field(default="", max_length=512)
     request_id: str = Field(min_length=8, max_length=128)
     if_version: int | None = Field(default=None, ge=0)
+    auto_lock: bool = Field(
+        default=True,
+        description=(
+            "When True (default), engage a side-lock on (ticker, side) "
+            "after a successful cancel so the next runner cycle won't "
+            "immediately re-place the order. Operator must call "
+            "/control/unlock_side to resume quoting on that side."
+        ),
+    )
 
 
 class CancelOrderResponse(BaseModel):

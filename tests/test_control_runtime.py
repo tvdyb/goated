@@ -205,6 +205,7 @@ def test_cancel_order_calls_exchange_and_drops_state() -> None:
     om = _populated_om()
     ex = _StubExchange()
     client, _, _ = _client(exchange=ex, order_manager=om)
+    state = client.app.state.control_state
 
     r = client.post("/control/cancel_order", json={
         "order_id": "oid-2", "request_id": "req-cancel-003",
@@ -215,13 +216,34 @@ def test_cancel_order_calls_exchange_and_drops_state() -> None:
     assert body["cancelled"] is True
     assert body["ticker"] == "KX-A"
     assert body["side"] == "ask"
-    assert body["new_version"] == 1
+    # Version bumps twice: once for the auto-lock, once for the cancel itself.
+    assert body["new_version"] == 2
     assert ex.cancel_calls == ["oid-2"]
     # OrderManager forgets the entry
     assert om.find_by_order_id("oid-2") is None
     assert ("KX-A", "ask") not in om.all_resting()
     # The other entries survive
     assert ("KX-A", "bid") in om.all_resting()
+    # Auto-lock was engaged on (KX-A, ask) so the runner won't immediately
+    # re-place the cancelled order. Operator must explicitly unlock.
+    assert state.get_side_lock("KX-A", "ask") is not None
+    assert state.get_side_lock("KX-A", "bid") is None  # untouched
+
+
+def test_cancel_order_with_auto_lock_false_does_not_lock() -> None:
+    om = _populated_om()
+    ex = _StubExchange()
+    client, _, _ = _client(exchange=ex, order_manager=om)
+    state = client.app.state.control_state
+
+    r = client.post("/control/cancel_order", json={
+        "order_id": "oid-2", "request_id": "req-cancel-003b",
+        "auto_lock": False,
+    }, headers=_h())
+    assert r.status_code == 200
+    assert r.json()["cancelled"] is True
+    # No auto-lock when auto_lock=false
+    assert state.get_side_lock("KX-A", "ask") is None
 
 
 def test_cancel_order_500_when_exchange_raises() -> None:

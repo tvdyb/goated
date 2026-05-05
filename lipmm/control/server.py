@@ -876,6 +876,27 @@ def build_app(
             # was stale anyway.
             om.forget(ticker, side)
 
+        # Auto-lock the (ticker, side) so the runner's next cycle skips
+        # this side instead of immediately re-placing the order. Operator
+        # must explicitly "lift lock" to resume. Per-side, so the other
+        # side keeps quoting.
+        if req.auto_lock:
+            try:
+                await state.lock_side(
+                    ticker, side,
+                    reason=(
+                        f"auto-locked after operator cancel of "
+                        f"{req.order_id} ({req.reason})"
+                        if req.reason else
+                        f"auto-locked after operator cancel of {req.order_id}"
+                    ),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "auto_lock after cancel_order failed: %s; "
+                    "side will be re-quoted next cycle", exc,
+                )
+
         # Bump state version so dashboards re-render and so the version
         # advances visibly in the audit log.
         async with state._lock:  # noqa: SLF001 — intra-package

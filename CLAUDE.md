@@ -153,6 +153,14 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
 - **Ctrl+C bulk-cancels.** `deploy/lipmm_run.py` shutdown path now
   awaits `runner.cancel_all_resting()` (15s timeout) before closing
   the Kalshi client, so SIGINT leaves zero naked quotes on the book.
+- **Cancel-from-dashboard auto-locks the side.** `POST
+  /control/cancel_order` engages a `side_lock` on (ticker, side)
+  after a successful cancel by default (`auto_lock=true`). The
+  runner skips locked sides next cycle, so the bot doesn't
+  immediately re-place the cancelled order. The expanded strike's
+  "Our resting" panel surfaces a "lift lock" button per side so the
+  operator can manually resume quoting. Pass `auto_lock: false` in
+  the request body to opt out.
 - **Deploy partially smoked.** Bot stands up against KXISMPMI-26MAY,
   dashboard renders, manual orders + theo overrides + LIP scoring
   all work. First full live trading session still pending.

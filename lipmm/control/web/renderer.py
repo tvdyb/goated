@@ -104,6 +104,16 @@ def join_strike_data(
     orderbooks = orderbooks or {}
 
     overrides = {ov["ticker"]: ov for ov in state_snapshot.get("theo_overrides", [])}
+    # Per-(ticker, side) lock map. Used by the resting-orders panel to
+    # render a "lift lock" affordance after the operator cancels an order
+    # (the cancel endpoint auto-locks so the runner doesn't immediately
+    # re-place).
+    locks: dict[tuple[str, str], dict] = {}
+    for entry in state_snapshot.get("side_locks", []) or []:
+        try:
+            locks[(entry["ticker"], entry["side"])] = entry
+        except (KeyError, TypeError):
+            continue
     positions = {p["ticker"]: p for p in runtime.get("positions", [])}
     resting: dict[str, list[dict]] = {}
     for r in runtime.get("resting_orders", []):
@@ -121,7 +131,10 @@ def join_strike_data(
     # tracking. Incentives are an ATTRIBUTE attached to a strike, not
     # a reason to add a strike (otherwise we'd render every LIP-active
     # ticker on Kalshi as a "strike", flooding the grid).
-    universe = set(obs) | set(positions) | set(resting) | set(overrides)
+    universe = (
+        set(obs) | set(positions) | set(resting) | set(overrides)
+        | {ticker for (ticker, _side) in locks}
+    )
     out: list[dict[str, Any]] = []
     for ticker in sorted(universe):
         ob = obs.get(ticker, {})
@@ -194,6 +207,8 @@ def join_strike_data(
             "lip": ticker_lip,
             "lip_score": lip_score,
             "lip_period_duration_s": period_duration_s,
+            "side_lock_bid": locks.get((ticker, "bid")),
+            "side_lock_ask": locks.get((ticker, "ask")),
         })
     return out
 
