@@ -511,6 +511,44 @@
     });
   }
 
+  // Find all strike tickers in the DOM whose ticker starts with
+  // `<event>-`. Used by the quick-quote flows to bulk-apply theo
+  // overrides across an event.
+  function strikesForEvent(eventTicker) {
+    const prefix = eventTicker + "-";
+    const out = [];
+    document.querySelectorAll(".strike-row[data-ticker]").forEach((row) => {
+      const t = row.dataset.ticker;
+      if (t && t.startsWith(prefix)) out.push(t);
+    });
+    return out;
+  }
+
+  // Sequentially POST /control/set_theo_override for each ticker. Toast
+  // a running progress count + a final summary.
+  async function bulkApplyTheoToStrikes(strikes, params) {
+    showToast(`Applying ${params.mode} to ${strikes.length} strikes…`);
+    let ok = 0, fail = 0;
+    for (const t of strikes) {
+      try {
+        await callJson("/control/set_theo_override", {
+          ticker: t,
+          yes_cents: params.yes_cents,
+          confidence: params.confidence,
+          reason: params.reason,
+          mode: params.mode,
+        });
+        ok += 1;
+      } catch {
+        fail += 1;
+      }
+    }
+    showToast(
+      `Quote-all done: ${ok} applied` +
+      (fail > 0 ? `, ${fail} failed (see decision feed for reasons)` : ""),
+    );
+  }
+
   function bindEventStrip() {
     document.body.addEventListener("click", async (e) => {
       const addBtn = e.target.closest('[data-action="add-event"]');
@@ -591,96 +629,73 @@
         e.stopPropagation();
         const ev = quoteAllBtn.dataset.eventTicker;
         if (!ev) return;
-        // Find every strike-row in the DOM whose ticker starts with the
-        // event prefix — those are the strikes the bot is currently
-        // tracking under this event.
-        const prefix = ev + "-";
-        const strikes = [];
-        document.querySelectorAll(".strike-row[data-ticker]").forEach((row) => {
-          const t = row.dataset.ticker;
-          if (t && t.startsWith(prefix)) strikes.push(t);
-        });
+        const strikes = strikesForEvent(ev);
         if (strikes.length === 0) {
           return showToast(
             `No strikes loaded for ${ev} yet — wait one runner cycle.`,
           );
         }
-        // Prompt: mode (default track_mid since that's the panic mode).
-        const modeRaw = prompt(
-          `Quick-quote ALL ${strikes.length} strikes in ${ev}\n\n` +
-          `Mode: type "fixed" or "mid" (default mid):`,
-          "mid",
+        // ONE-CLICK panic flow: single confirm, sensible defaults
+        // (track_mid + conf 0.95). For custom values, use the per-strike
+        // override form.
+        if (!confirm(
+          `Quick-quote ALL ${strikes.length} strikes in ${ev}?\n\n` +
+          `Mode: market mid (theo = (best_bid + best_ask) / 2 each cycle)\n` +
+          `Confidence: 0.95 (active-penny mode → quotes INSIDE best)\n` +
+          `Reason: "auto-quote-all"\n\n` +
+          `Click OK to apply. For custom values, cancel and use the ` +
+          `per-strike override form on each strike.`,
+        )) return;
+        await bulkApplyTheoToStrikes(strikes, {
+          mode: "track_mid", confidence: 0.95,
+          yes_cents: 50, reason: "auto-quote-all",
+        });
+        return;
+      }
+      const addAndQuoteBtn = e.target.closest('[data-action="add-and-quote-event"]');
+      if (addAndQuoteBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const tickerRaw = prompt(
+          "Add event ticker AND immediately quote all its strikes\n\n" +
+          "Ticker (e.g. KXISMPMI-26MAY):", "",
         );
-        if (modeRaw === null) return;
-        const mode = (modeRaw || "mid").trim().toLowerCase() === "fixed"
-          ? "fixed" : "track_mid";
-        // Prompt: confidence (default 0.95 = active-penny mode)
-        const confRaw = prompt(
-          `Confidence (0.0–1.0):\n` +
-          `  ≥ 0.95 → penny INSIDE best (most aggressive)\n` +
-          `  ≥ 0.70 → match best\n` +
-          `  ≥ 0.10 → 1¢ behind best`,
-          "0.95",
-        );
-        if (confRaw === null) return;
-        const confidence = parseFloat(confRaw);
-        if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
-          return showToast("confidence must be 0..1");
+        if (!tickerRaw || !tickerRaw.trim()) return;
+        const ev = tickerRaw.trim().toUpperCase();
+        if (!/^[A-Z0-9-]+$/.test(ev)) {
+          return showToast("ticker must contain only A-Z, 0-9, and -");
         }
-        // For fixed mode, also need a yes_cents — but in the panic case
-        // operators want track_mid. Skip the cents prompt for track_mid;
-        // ask for it only when fixed.
-        let yes_cents = 50;  // ignored at quote time when mode=track_mid
-        if (mode === "fixed") {
-          const centsRaw = prompt(
-            "Yes cents (1–99) — applied to all strikes in this event:",
-            "50",
-          );
-          if (centsRaw === null) return;
-          yes_cents = parseInt(centsRaw, 10);
-          if (!Number.isInteger(yes_cents) || yes_cents < 1 || yes_cents > 99) {
-            return showToast("yes_cents must be 1..99");
-          }
+        if (!confirm(
+          `Add event "${ev}" AND apply track_mid + conf 0.95 to ALL strikes?\n\n` +
+          `Server validates the ticker against Kalshi first; if it doesn't ` +
+          `exist or has 0 markets the whole operation aborts.`,
+        )) return;
+        try {
+          const resp = await callJson("/control/add_event", {
+            event_ticker: ev,
+          });
+          showToast(`Added ${ev} (${resp.market_count} markets) — waiting for strikes to load…`);
+        } catch {
+          return;  // callJson already toasted
         }
-        const reason = prompt(
-          "Reason (≥4 chars, audit string):",
-          "panic-batch quote",
-        );
-        if (reason === null) return;
-        if (!reason || reason.trim().length < 4) {
-          return showToast("reason must be ≥4 chars");
+        // Wait up to ~5s for the runner cycle to push strikes into the DOM.
+        // The orderbook_snapshot WS message refreshes the grid each cycle.
+        let strikes = [];
+        for (let i = 0; i < 20; i += 1) {
+          strikes = strikesForEvent(ev);
+          if (strikes.length > 0) break;
+          await new Promise((r) => setTimeout(r, 300));
         }
-        // Final confirm — operator-typed event ticker safety check.
-        const typed = prompt(
-          `FINAL CONFIRM: type "${ev}" to apply ${mode} mode + ` +
-          `confidence ${confidence} to all ${strikes.length} strikes:`,
-        );
-        if (typed === null) return;
-        if (typed.trim() !== ev) {
+        if (strikes.length === 0) {
           return showToast(
-            `aborted — typed "${typed}" did not match "${ev}"`,
+            `Added ${ev} but no strikes appeared after 6s — runner may be slow. ` +
+            `Click ⚡ on the chip in a few seconds.`,
           );
         }
-        // Bulk-apply. Run sequentially to be polite to the audit log
-        // and to surface per-strike errors clearly. Concurrent would
-        // be faster but spam audit; sequential ~50ms each is fine.
-        showToast(`Applying ${mode} to ${strikes.length} strikes…`);
-        let ok = 0, fail = 0;
-        for (const t of strikes) {
-          try {
-            await callJson("/control/set_theo_override", {
-              ticker: t, yes_cents, confidence, reason: reason.trim(),
-              mode,
-            });
-            ok += 1;
-          } catch {
-            fail += 1;
-          }
-        }
-        showToast(
-          `Quote-all done: ${ok} applied` +
-          (fail > 0 ? `, ${fail} failed` : ""),
-        );
+        await bulkApplyTheoToStrikes(strikes, {
+          mode: "track_mid", confidence: 0.95,
+          yes_cents: 50, reason: "auto-quote-all-on-add",
+        });
         return;
       }
     });

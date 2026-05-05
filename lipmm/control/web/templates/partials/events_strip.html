@@ -37,6 +37,13 @@
           title="Add a Kalshi event ticker (e.g. KXISMPMI-26MAY)">
     + add event
   </button>
+  <button data-action="add-and-quote-event"
+          class="rounded border px-2 py-0.5 text-[11px] hover:brightness-125"
+          style="background: #1f1a08; color: var(--lip); border-color: #7a6230;
+                 font-family: 'JetBrains Mono', ui-monospace;"
+          title="Add a Kalshi event AND immediately quote all its strikes with track_mid + conf 0.95">
+    ⚡ add & quote
+  </button>
   {% if not summary.events %}
     <span class="text-[10px]" style="color: var(--ink-dim);">
       none — click "+ add event" to start
