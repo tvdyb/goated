@@ -1,5 +1,11 @@
 # CLAUDE.md — goated
 
+> **External API reference**: [`docs/API.md`](docs/API.md) is the
+> hand-curated wiki for HTTP / WebSocket endpoints, plugin Protocols,
+> and TheoProvider integration recipes. The auto-generated Swagger UI
+> at `/docs` (and `/openapi.json`) on the running bot has the full
+> field-level schemas.
+
 ## Identity
 
 Reusable market-making framework (`lipmm/`) for Kalshi-style binary
@@ -161,6 +167,27 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
   "Our resting" panel surfaces a "lift lock" button per side so the
   operator can manually resume quoting. Pass `auto_lock: false` in
   the request body to opt out.
+- **Accessible TheoProvider integrations.** Three first-class paths
+  for plugging external theos in without editing source:
+  - `FilePollTheoProvider` (`lipmm/theo/providers/file.py`) — polls a
+    CSV or JSON file every N seconds. Any tool that can write a file
+    can feed theos. Wire via `--theo-csv PATH[:PREFIX[:REFRESH_S]]`
+    or `--theo-json …`. Repeatable.
+  - `HttpPollTheoProvider` (`http.py`) — polls a JSON URL. Optional
+    `Authorization: Bearer` header. Wire via `--theo-http
+    URL[:PREFIX[:REFRESH_S]]`. Repeatable.
+  - `function_provider` decorator (`_function.py`) — wraps an async
+    function into a Protocol-compliant provider. Sugar over the
+    boilerplate class for in-process Python.
+  Both pollers default to a 3× refresh-interval **staleness threshold**:
+  if the source goes silent, returned confidence drops to 0 → strategy
+  skips. Pass `staleness_threshold_s=None` to opt out.
+  `TheoRegistry` accepts `series_prefix="*"` as a wildcard fallback —
+  one provider can serve all events. Specific-prefix providers always
+  win over wildcard. Payload schema (CSV columns or JSON keys):
+  `ticker, yes_cents (1-99), confidence (0-1), reason`. Out-of-range
+  rows are dropped with a warning, last good snapshot stays valid on
+  parse / network error.
 - **Multi-event dashboard.** `--event-ticker` is now optional and
   accepts comma-separated values (`A,B,C`). The bot's active-events
   set lives in `ControlState._active_events`; operator manages it

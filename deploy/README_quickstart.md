@@ -4,6 +4,10 @@ The `deploy/lipmm_run.py` entry point wires the lipmm framework against
 one Kalshi event and brings up the operator dashboard. From a fresh
 shell to a working dashboard takes about 90 seconds.
 
+> **Going beyond the dashboard?** See [`docs/API.md`](../docs/API.md)
+> for the full HTTP + WebSocket reference, plugin Protocols, and
+> recipes for plugging in your own theos (CSV / HTTP / Python).
+
 ## Prerequisites
 
 - The repo cloned and the venv set up (`pip install -e .`).

@@ -55,8 +55,21 @@ class TheoRegistry:
         return self._providers.values()
 
     def get(self, ticker: str) -> TheoProvider | None:
-        """Look up the provider for a given ticker. Returns None if unmatched."""
-        return self._providers.get(_series_prefix_of(ticker))
+        """Look up the provider for a given ticker.
+
+        Routing precedence:
+          1. Exact-prefix match (e.g. provider with prefix "KXISMPMI" wins
+             for any KXISMPMI-* ticker)
+          2. Wildcard match: a provider registered with prefix "*" serves
+             every ticker that no specific-prefix provider claims. Useful
+             when a single file/HTTP source feeds theos for many events.
+
+        Returns None if neither matches.
+        """
+        exact = self._providers.get(_series_prefix_of(ticker))
+        if exact is not None:
+            return exact
+        return self._providers.get("*")
 
     async def theo(self, ticker: str) -> TheoResult:
         """Compute theo for a ticker. Returns a zero-confidence result if no

@@ -310,16 +310,26 @@ async def _amain(args: argparse.Namespace) -> int:
     # 3. Build the rest
     order_manager = OrderManager()
     theo_registry = TheoRegistry()
-    # Register stub theo providers for each seed event's series prefix so
-    # the registry has explicit entries (cosmetic — the registry's
-    # no-provider fallback also returns confidence=0). For events added
-    # later via the dashboard, the fallback handles them transparently.
+    # External theo providers from CLI flags (--theo-csv, --theo-json,
+    # --theo-http). These override the per-prefix stub fallback below.
+    cli_providers = _build_theo_providers_from_args(args)
+    cli_prefixes: set[str] = set()
+    for prov in cli_providers:
+        theo_registry.register(prov)
+        cli_prefixes.add(prov.series_prefix)
+    # Register stub theo providers for each seed event's series prefix
+    # ONLY if no CLI provider already covers that prefix (specifically or
+    # via "*" wildcard). For events added later via the dashboard, the
+    # registry's no-provider fallback (or the wildcard) handles them.
+    has_wildcard = "*" in cli_prefixes
     seen_prefixes: set[str] = set()
     for ev in seed_event_tickers:
         prefix = _series_prefix(ev)
         if prefix in seen_prefixes:
             continue
         seen_prefixes.add(prefix)
+        if prefix in cli_prefixes or has_wildcard:
+            continue  # CLI provider already covers this prefix
         theo_registry.register(StubTheoProvider(prefix))
     strategy = _build_strategy(args.strategy)
     risk = _build_risk_registry(args.cap_dollars)
@@ -484,7 +494,137 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--log-level", default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
     )
+    # ── External theo-provider integration ─────────────────────────
+    # Each flag is repeatable: pass --theo-csv multiple times to
+    # register multiple file watchers, etc. Spec format:
+    #   --theo-csv  PATH[:SERIES_PREFIX[:REFRESH_S]]
+    #   --theo-json PATH[:SERIES_PREFIX[:REFRESH_S]]
+    #   --theo-http URL[:SERIES_PREFIX[:REFRESH_S]]
+    # When SERIES_PREFIX is omitted, '*' (wildcard — serves all events)
+    # is used. When REFRESH_S is omitted, the provider's default is.
+    p.add_argument(
+        "--theo-csv", action="append", default=[], metavar="SPEC",
+        help=(
+            "Register a FilePollTheoProvider on a CSV file. "
+            "Spec: 'PATH[:SERIES_PREFIX[:REFRESH_S]]'. SERIES_PREFIX "
+            "defaults to '*' (wildcard). Repeatable."
+        ),
+    )
+    p.add_argument(
+        "--theo-json", action="append", default=[], metavar="SPEC",
+        help=(
+            "Register a FilePollTheoProvider on a JSON file. "
+            "Spec: 'PATH[:SERIES_PREFIX[:REFRESH_S]]'. Repeatable."
+        ),
+    )
+    p.add_argument(
+        "--theo-http", action="append", default=[], metavar="SPEC",
+        help=(
+            "Register an HttpPollTheoProvider on a JSON URL. "
+            "Spec: 'URL[:SERIES_PREFIX[:REFRESH_S]]'. URL must include "
+            "scheme. Repeatable."
+        ),
+    )
     return p.parse_args(argv)
+
+
+def _parse_provider_spec(
+    spec: str, *, kind: str,
+) -> tuple[str, str, float | None]:
+    """Parse 'PATH[:PREFIX[:REFRESH_S]]' or 'URL[:PREFIX[:REFRESH_S]]'.
+
+    URLs have to be handled carefully because of the ':' in the scheme.
+    For http/https URLs, we recognize the scheme and split AFTER the
+    optional port/path tail using rsplit on ':' twice.
+    """
+    parts = spec.split(":") if kind != "http" else None
+    # HTTP: special-case parsing because URL contains ":".
+    if kind == "http":
+        # 'http://host:port/path:PREFIX:REFRESH'
+        # Approach: try to identify the URL prefix by matching a
+        # scheme. The URL ends just before the first ':' that follows
+        # the path. Easiest heuristic: split from the right; if the
+        # rightmost colon's left side parses as URL+something we
+        # recognize as a series prefix or refresh, peel it off.
+        url, prefix, refresh = spec, "*", None
+        # Try peeling from the right twice.
+        for _ in range(2):
+            head, _, tail = url.rpartition(":")
+            if not head or "://" not in head:
+                break
+            # `tail` is either a refresh number or a prefix; both must
+            # NOT contain '/' (URLs do).
+            if "/" in tail:
+                break
+            try:
+                refresh_candidate = float(tail)
+                if refresh is None:
+                    refresh = refresh_candidate
+                    url = head
+                    continue
+            except ValueError:
+                pass
+            # Otherwise treat as a prefix.
+            if prefix == "*":
+                prefix = tail
+                url = head
+                continue
+            break
+        return url, prefix, refresh
+    # File specs: split on ':' (paths shouldn't contain ':' on POSIX).
+    if not parts:
+        raise ValueError(f"empty {kind} spec")
+    path = parts[0]
+    prefix = parts[1] if len(parts) >= 2 and parts[1] else "*"
+    refresh: float | None = None
+    if len(parts) >= 3 and parts[2]:
+        refresh = float(parts[2])
+    return path, prefix, refresh
+
+
+def _build_theo_providers_from_args(
+    args: argparse.Namespace,
+) -> list[Any]:
+    """Construct provider instances from CLI flags. Caller registers
+    them on the TheoRegistry."""
+    from lipmm.theo.providers import (
+        FilePollTheoProvider,
+        HttpPollTheoProvider,
+    )
+    out: list[Any] = []
+    for spec in args.theo_csv:
+        path, prefix, refresh = _parse_provider_spec(spec, kind="csv")
+        kwargs: dict[str, Any] = {
+            "series_prefix": prefix, "format": "csv",
+        }
+        if refresh is not None:
+            kwargs["refresh_s"] = refresh
+        out.append(FilePollTheoProvider(path, **kwargs))
+        logger.info(
+            "registered theo provider: csv path=%s prefix=%r refresh_s=%s",
+            path, prefix, refresh,
+        )
+    for spec in args.theo_json:
+        path, prefix, refresh = _parse_provider_spec(spec, kind="json")
+        kwargs = {"series_prefix": prefix, "format": "json"}
+        if refresh is not None:
+            kwargs["refresh_s"] = refresh
+        out.append(FilePollTheoProvider(path, **kwargs))
+        logger.info(
+            "registered theo provider: json path=%s prefix=%r refresh_s=%s",
+            path, prefix, refresh,
+        )
+    for spec in args.theo_http:
+        url, prefix, refresh = _parse_provider_spec(spec, kind="http")
+        kwargs = {"series_prefix": prefix}
+        if refresh is not None:
+            kwargs["refresh_s"] = refresh
+        out.append(HttpPollTheoProvider(url, **kwargs))
+        logger.info(
+            "registered theo provider: http url=%s prefix=%r refresh_s=%s",
+            url, prefix, refresh,
+        )
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:

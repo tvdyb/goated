@@ -1,10 +1,29 @@
 """Concrete TheoProvider implementations.
 
-Each file in this directory is one plugin. To add a new market type:
-  1. Create a new file (e.g. `sports_lines.py`)
-  2. Define a class implementing the TheoProvider protocol
-  3. Register it in the bot's startup config
+Three accessible paths for plugging in your own theos:
 
-The bot's core (lipmm/theo/base.py, registry.py, integration glue in
-deploy/lip_mode.py) does NOT need to change.
+  - `function_provider` — decorator that wraps a single async function
+    into a Protocol-compliant provider. Smallest in-process Python
+    integration.
+
+  - `FilePollTheoProvider` — polls a CSV/JSON file every N seconds.
+    Most accessible: any external tool (Python, R, shell, jq) that can
+    write a file works.
+
+  - `HttpPollTheoProvider` — polls a JSON HTTP endpoint every N
+    seconds. For when the model lives behind a service.
+
+For stateful providers with non-trivial warmup / shutdown, write a
+class implementing the TheoProvider protocol directly. See
+`gbm_commodity.py` for the soy reference implementation.
 """
+
+from lipmm.theo.providers._function import function_provider
+from lipmm.theo.providers.file import FilePollTheoProvider
+from lipmm.theo.providers.http import HttpPollTheoProvider
+
+__all__ = [
+    "FilePollTheoProvider",
+    "HttpPollTheoProvider",
+    "function_provider",
+]
