@@ -213,27 +213,15 @@ def join_strike_data(
     return out
 
 
-def event_meta_from_strikes(
-    strikes: list[dict[str, Any]],
-    fallback_event: str | None = None,
-) -> dict[str, Any]:
-    """Derive event-header metadata from the joined strikes list.
+def _event_ticker_of(strike_ticker: str) -> str:
+    """KXISMPMI-26MAY-51 → KXISMPMI-26MAY. Falls back to the input
+    when there's no '-'."""
+    return strike_ticker.rsplit("-", 1)[0] if "-" in strike_ticker else strike_ticker
 
-    Picks the event ticker by stripping the trailing strike segment off
-    the first ticker (e.g. KXISMPMI-26MAY-51 → KXISMPMI-26MAY). Counts
-    `quoting` as strikes with an active theo override (the only thing
-    that lifts confidence above the strategy's default skip threshold
-    when StubTheoProvider is in use). Sums LIP rewards across strikes.
-    """
-    if not strikes:
-        return {
-            "event_ticker": fallback_event or "—",
-            "strike_count": 0,
-            "quoting_count": 0,
-            "lip_total_dollars": 0.0,
-        }
-    first = strikes[0]["ticker"]
-    event_ticker = first.rsplit("-", 1)[0] if "-" in first else first
+
+def _stats_for_strikes(
+    strikes: list[dict[str, Any]], event_ticker: str,
+) -> dict[str, Any]:
     quoting = sum(1 for s in strikes if s["override"] is not None)
     lip_total = sum(
         (s["lip"] or {}).get("period_reward_dollars", 0.0) for s in strikes
@@ -243,6 +231,70 @@ def event_meta_from_strikes(
         "strike_count": len(strikes),
         "quoting_count": quoting,
         "lip_total_dollars": lip_total,
+    }
+
+
+def event_meta_from_strikes(
+    strikes: list[dict[str, Any]],
+    fallback_event: str | None = None,
+) -> dict[str, Any]:
+    """Derive a SINGLE-event-header summary (legacy single-event view).
+
+    Picks the event ticker from the first strike's prefix. Sums across
+    all strikes. For multi-event grids, prefer
+    `group_strikes_by_event` + `multi_event_summary` instead.
+    """
+    if not strikes:
+        return {
+            "event_ticker": fallback_event or "—",
+            "strike_count": 0,
+            "quoting_count": 0,
+            "lip_total_dollars": 0.0,
+        }
+    event_ticker = _event_ticker_of(strikes[0]["ticker"])
+    return _stats_for_strikes(strikes, event_ticker)
+
+
+def group_strikes_by_event(
+    strikes: list[dict[str, Any]],
+    *,
+    active_events: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Group joined strike dicts by their event prefix.
+
+    Returns: ordered list of `{event_ticker, strikes, strike_count,
+    quoting_count, lip_total_dollars}`, sorted by event_ticker.
+
+    `active_events`: when provided, also emits empty groups for events
+    that have no strikes yet (e.g. just-added events whose markets
+    haven't been broadcast). Operator sees the chip in the strip
+    immediately rather than nothing until the next runner cycle.
+    """
+    by_event: dict[str, list[dict[str, Any]]] = {}
+    for s in strikes:
+        ev = _event_ticker_of(s["ticker"])
+        by_event.setdefault(ev, []).append(s)
+    # Add empty entries for active events with no strikes yet
+    for ev in (active_events or []):
+        by_event.setdefault(ev, [])
+    out: list[dict[str, Any]] = []
+    for ev in sorted(by_event):
+        group = by_event[ev]
+        stats = _stats_for_strikes(group, ev)
+        out.append({**stats, "strikes": group})
+    return out
+
+
+def multi_event_summary(
+    groups: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Top-level header summary across all event groups."""
+    return {
+        "event_count": len(groups),
+        "strike_count": sum(g["strike_count"] for g in groups),
+        "quoting_count": sum(g["quoting_count"] for g in groups),
+        "lip_total_dollars": sum(g["lip_total_dollars"] for g in groups),
+        "events": [g["event_ticker"] for g in groups],
     }
 
 
@@ -261,6 +313,28 @@ def _summarize_record(rec: dict[str, Any]) -> str:
     return json.dumps({k: v for k, v in rec.items() if k != "schema_version"})[:160]
 
 
+def _build_grid_context(
+    snapshot: dict[str, Any] | None,
+    runtime: dict[str, Any] | None,
+    incentives: dict[str, Any] | None,
+    orderbooks: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Common precompute for every render path: joined strikes, grouped
+    by event, plus the top-level summary."""
+    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
+    active_events = (snapshot or {}).get("active_events") or []
+    groups = group_strikes_by_event(strikes, active_events=active_events)
+    summary = multi_event_summary(groups)
+    return {
+        "strikes": strikes,
+        "groups": groups,
+        "summary": summary,
+        # legacy single-event metadata (first group / fallback) for any
+        # template that hasn't been migrated yet
+        "event": event_meta_from_strikes(strikes),
+    }
+
+
 def render_initial(
     snapshot: dict[str, Any],
     *,
@@ -275,8 +349,7 @@ def render_initial(
     strike grid, decision feed. Joined data per strike; one blob.
     Used both by GET /dashboard and the WS `initial` frame."""
     records = records or []
-    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
-    event = event_meta_from_strikes(strikes)
+    ctx = _build_grid_context(snapshot, runtime, incentives, orderbooks)
     pnl_total = (runtime or {}).get("total_realized_pnl_dollars", 0.0)
     balance = (runtime or {}).get("balance") or {}
     return "\n".join([
@@ -284,9 +357,12 @@ def render_initial(
             snapshot=snapshot, presence=presence, total_tabs=total_tabs,
             pnl_total=pnl_total, balance=balance,
         ),
-        _env.get_template("partials/event_header.html").render(event=event),
+        _env.get_template("partials/event_header.html").render(
+            event=ctx["event"], summary=ctx["summary"], groups=ctx["groups"],
+        ),
         _env.get_template("partials/strike_grid.html").render(
-            strikes=strikes, event=event,
+            strikes=ctx["strikes"], event=ctx["event"],
+            groups=ctx["groups"], summary=ctx["summary"],
         ),
         _env.get_template("partials/decision_feed.html").render(records=records),
         _env.get_template("partials/operator_drawer.html").render(snapshot=snapshot),
@@ -305,8 +381,7 @@ def render_state(
 ) -> str:
     """Re-render after a `state_change` event. Status bar (kill_state
     lives there) + strike grid (theo overrides change row borders)."""
-    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
-    event = event_meta_from_strikes(strikes)
+    ctx = _build_grid_context(snapshot, runtime, incentives, orderbooks)
     balance = (runtime or {}).get("balance") or {}
     return "\n".join([
         _env.get_template("partials/status_bar.html").render(
@@ -316,9 +391,12 @@ def render_state(
             pnl_total=pnl_total,
             balance=balance,
         ),
-        _env.get_template("partials/event_header.html").render(event=event),
+        _env.get_template("partials/event_header.html").render(
+            event=ctx["event"], summary=ctx["summary"], groups=ctx["groups"],
+        ),
         _env.get_template("partials/strike_grid.html").render(
-            strikes=strikes, event=event,
+            strikes=ctx["strikes"], event=ctx["event"],
+            groups=ctx["groups"], summary=ctx["summary"],
         ),
         # The drawer's tab counts + per-tab content all derive from
         # `state_snapshot`, so re-render it on every state_change.
@@ -339,8 +417,7 @@ def render_runtime(
 ) -> str:
     """Re-render after a `runtime_snapshot` event. Status bar (PnL/
     cash/port) + strike grid (positions + resting per row)."""
-    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
-    event = event_meta_from_strikes(strikes)
+    ctx = _build_grid_context(snapshot, runtime, incentives, orderbooks)
     pnl_total = (runtime or {}).get("total_realized_pnl_dollars", 0.0)
     balance = (runtime or {}).get("balance") or {}
     return "\n".join([
@@ -351,9 +428,12 @@ def render_runtime(
             pnl_total=pnl_total,
             balance=balance,
         ),
-        _env.get_template("partials/event_header.html").render(event=event),
+        _env.get_template("partials/event_header.html").render(
+            event=ctx["event"], summary=ctx["summary"], groups=ctx["groups"],
+        ),
         _env.get_template("partials/strike_grid.html").render(
-            strikes=strikes, event=event,
+            strikes=ctx["strikes"], event=ctx["event"],
+            groups=ctx["groups"], summary=ctx["summary"],
         ),
     ])
 
@@ -367,12 +447,14 @@ def render_orderbooks(
 ) -> str:
     """Re-render after an `orderbook_snapshot` event. Just the strike
     grid; status bar isn't affected by orderbook updates."""
-    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
-    event = event_meta_from_strikes(strikes)
+    ctx = _build_grid_context(snapshot, runtime, incentives, orderbooks)
     return "\n".join([
-        _env.get_template("partials/event_header.html").render(event=event),
+        _env.get_template("partials/event_header.html").render(
+            event=ctx["event"], summary=ctx["summary"], groups=ctx["groups"],
+        ),
         _env.get_template("partials/strike_grid.html").render(
-            strikes=strikes, event=event,
+            strikes=ctx["strikes"], event=ctx["event"],
+            groups=ctx["groups"], summary=ctx["summary"],
         ),
     ])
 
@@ -386,12 +468,14 @@ def render_incentives(
 ) -> str:
     """Re-render after an `incentives_snapshot` event. The grid pulls
     LIP $/period per strike, so we re-render the whole grid."""
-    strikes = join_strike_data(snapshot, runtime, incentives, orderbooks)
-    event = event_meta_from_strikes(strikes)
+    ctx = _build_grid_context(snapshot, runtime, incentives, orderbooks)
     return "\n".join([
-        _env.get_template("partials/event_header.html").render(event=event),
+        _env.get_template("partials/event_header.html").render(
+            event=ctx["event"], summary=ctx["summary"], groups=ctx["groups"],
+        ),
         _env.get_template("partials/strike_grid.html").render(
-            strikes=strikes, event=event,
+            strikes=ctx["strikes"], event=ctx["event"],
+            groups=ctx["groups"], summary=ctx["summary"],
         ),
     ])
 

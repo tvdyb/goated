@@ -1,0 +1,41 @@
+<div class="flex items-center flex-wrap gap-2 mt-2">
+  <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">
+    Active events
+  </span>
+  {% for ev in summary.events %}
+    {# Look up the per-event stats from groups so the chip can show
+       strike count + LIP. The tiny inner loop is fine — N is small. #}
+    {% set count = 0 %}
+    {% set lip = 0.0 %}
+    {% for g in groups %}
+      {% if g.event_ticker == ev %}
+        {% set count = g.strike_count %}
+        {% set lip = g.lip_total_dollars %}
+      {% endif %}
+    {% endfor %}
+    <span class="inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-[11px]"
+          style="background: var(--surface); border-color: var(--border); color: var(--ink-hi);"
+          data-event-chip data-event-ticker="{{ ev }}"
+          title="{{ ev }} — {{ count }} strikes; ${{ '%.0f'|format(lip) }} LIP/period">
+      <span style="font-family: 'JetBrains Mono', ui-monospace;">{{ ev }}</span>
+      <span class="text-[10px]" style="color: var(--ink-lo);">{{ count }}</span>
+      <button data-action="remove-event" data-event-ticker="{{ ev }}"
+              data-resting-count="{{ count }}"
+              class="rounded text-[11px] leading-none px-1 hover:brightness-150"
+              style="color: var(--no);"
+              title="Remove this event from the bot">×</button>
+    </span>
+  {% endfor %}
+  <button data-action="add-event"
+          class="rounded border px-2 py-0.5 text-[11px] hover:brightness-125"
+          style="background: #0a1f17; color: var(--yes); border-color: #164d3a;
+                 font-family: 'JetBrains Mono', ui-monospace;"
+          title="Add a Kalshi event ticker (e.g. KXISMPMI-26MAY)">
+    + add event
+  </button>
+  {% if not summary.events %}
+    <span class="text-[10px]" style="color: var(--ink-dim);">
+      none — click "+ add event" to start
+    </span>
+  {% endif %}
+</div>

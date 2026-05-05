@@ -202,17 +202,41 @@
     });
   }
 
-  // Mode select toggles yes_cents enabled/disabled. In track_mid mode
-  // the cents input is just a placeholder (server ignores it), so we
-  // grey it out to make the UI honest.
+  // Mode select toggles yes_cents visual state. In track_mid mode the
+  // cents input is just a placeholder (server ignores it), so we make
+  // it OBVIOUSLY non-functional: dim the whole cell, strike-through
+  // the value, retitle the label, and surface a yellow note row.
   function applyModeToggle(form) {
     const sel = form.querySelector("[data-mode-select]");
     const cents = form.querySelector("[data-yes-cents]");
-    if (!sel || !cents) return;
+    const cell = form.querySelector("[data-yes-cents-cell]");
+    const lbl = form.querySelector("[data-yes-cents-label]");
+    const note = form.parentElement
+      && form.parentElement.querySelector("[data-track-mid-note]");
+    if (!sel || !cents || !cell || !lbl) return;
     const isMid = sel.value === "track_mid";
     cents.disabled = isMid;
-    cents.style.opacity = isMid ? "0.4" : "";
-    cents.title = isMid ? "ignored in market-following mode (theo = mid)" : "";
+    if (isMid) {
+      cell.style.opacity = "0.35";
+      cell.style.background = "#1a1a1a";
+      cell.style.borderStyle = "dashed";
+      cents.style.textDecoration = "line-through";
+      cents.style.cursor = "not-allowed";
+      cents.title = "ignored — theo follows orderbook mid each cycle";
+      lbl.textContent = "Yes (cents) — IGNORED";
+      lbl.style.color = "var(--no)";
+      if (note) note.classList.remove("hidden");
+    } else {
+      cell.style.opacity = "";
+      cell.style.background = "var(--surface)";
+      cell.style.borderStyle = "";
+      cents.style.textDecoration = "";
+      cents.style.cursor = "";
+      cents.title = "";
+      lbl.textContent = "Yes (cents)";
+      lbl.style.color = "var(--ink-lo)";
+      if (note) note.classList.add("hidden");
+    }
   }
 
   function applyAllModeToggles() {
@@ -477,6 +501,83 @@
       if (url === "/control/clear_theo_override") {
         const wrap = btn.closest("[data-slug]");
         if (wrap && wrap.dataset.slug) clearTheoDraft(wrap.dataset.slug);
+      }
+    });
+  }
+
+  function bindEventStrip() {
+    document.body.addEventListener("click", async (e) => {
+      const addBtn = e.target.closest('[data-action="add-event"]');
+      if (addBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const ticker = prompt(
+          "Add event ticker (e.g. KXISMPMI-26MAY):", "",
+        );
+        if (!ticker || !ticker.trim()) return;
+        const normalized = ticker.trim().toUpperCase();
+        if (!/^[A-Z0-9-]+$/.test(normalized)) {
+          return showToast("ticker must contain only A-Z, 0-9, and -");
+        }
+        // Single confirm — server validates against Kalshi and rejects
+        // bogus tickers with a 400. No need for an extra ticker-typing
+        // step since the operator literally just typed it.
+        if (!confirm(
+          `Add event "${normalized}"?\n\n` +
+          `The server will validate against Kalshi and reject if the ` +
+          `event doesn't exist or has 0 tradable markets.`
+        )) return;
+        try {
+          const resp = await callJson("/control/add_event", {
+            event_ticker: normalized,
+          });
+          if (resp && typeof resp.market_count === "number") {
+            showToast(
+              `Added ${normalized} (${resp.market_count} markets)`,
+            );
+          }
+        } catch (err) {
+          // callJson already toasts the server error
+        }
+        return;
+      }
+      const rmBtn = e.target.closest('[data-action="remove-event"]');
+      if (rmBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const ticker = rmBtn.dataset.eventTicker;
+        const restingHint = rmBtn.dataset.restingCount || "0";
+        if (!ticker) return;
+        if (!confirm(
+          `Remove event "${ticker}" from active set?\n\n` +
+          `The runner will stop tracking its strikes next cycle. Existing ` +
+          `resting orders will not be touched (next prompt asks if you want ` +
+          `to cancel them too).`
+        )) return;
+        // Second prompt: cancel resting? Only meaningful if there's
+        // any chance of resting orders. We don't know the precise count
+        // here without a runtime fetch, so we always ask.
+        const cancelResting = confirm(
+          `Also cancel any resting orders on ${ticker}'s strikes?\n\n` +
+          `OK = cancel them now (atomic with removal).\n` +
+          `Cancel = leave them resting; you can cancel manually later.`
+        );
+        try {
+          const resp = await callJson("/control/remove_event", {
+            event_ticker: ticker, cancel_resting: cancelResting,
+          });
+          if (resp && typeof resp.cancelled_orders === "number") {
+            showToast(
+              `Removed ${ticker}` +
+              (resp.cancelled_orders > 0
+                ? ` (cancelled ${resp.cancelled_orders} orders)`
+                : ""),
+            );
+          }
+        } catch (err) {
+          // callJson already toasts
+        }
+        return;
       }
     });
   }
@@ -798,6 +899,7 @@
     bindFeedToggle();
     bindPriceChipSeed();
     bindGenericCalls();
+    bindEventStrip();
     bindForms();
     bindDrawer();
     bindKnobInline();

@@ -161,6 +161,20 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
   "Our resting" panel surfaces a "lift lock" button per side so the
   operator can manually resume quoting. Pass `auto_lock: false` in
   the request body to opt out.
+- **Multi-event dashboard.** `--event-ticker` is now optional and
+  accepts comma-separated values (`A,B,C`). The bot's active-events
+  set lives in `ControlState._active_events`; operator manages it
+  via the dashboard's events strip (top of grid) — chips per active
+  event with × to remove, plus an inline "+ add event" button.
+  `_MultiEventTickerSource` reads from state each cycle and unions
+  markets across events. `POST /control/add_event` validates against
+  Kalshi (rejects events with 0 tradable markets) before adding;
+  `POST /control/remove_event` accepts `cancel_resting=true` to
+  bulk-cancel any resting orders on that event's strikes atomically.
+  Strike grid groups strikes by event with per-group section headers
+  (event ticker · count · LIP). Empty-event groups appear immediately
+  on add even before the next runner cycle so the operator gets
+  visual feedback.
 - **Market-following theo mode.** `TheoOverride` carries a `mode:
   "fixed" | "track_mid"` field. `mode="track_mid"` makes the runner
   recompute theo each cycle as the orderbook mid `(best_bid +

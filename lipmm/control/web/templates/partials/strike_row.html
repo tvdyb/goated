@@ -433,9 +433,11 @@
             <option value="track_mid" {% if has_override and s.override.mode == 'track_mid' %}selected{% endif %}>market mid</option>
           </select>
         </label>
-        <label class="rounded border px-2 py-1 flex flex-col"
+        <label data-yes-cents-cell
+               class="rounded border px-2 py-1 flex flex-col transition-opacity"
                style="background: var(--surface); border-color: var(--border);">
-          <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Yes (cents)</span>
+          <span data-yes-cents-label
+                class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Yes (cents)</span>
           <input type="number" name="yes_cents" min="1" max="99" required data-yes-cents
                  value="{{ s.override.yes_cents if has_override else (s.chance or 50) }}"
                  class="bg-transparent outline-none tabular-nums text-[13px]"
@@ -474,6 +476,16 @@
           </button>
         </div>
       </form>
+      {# Mode-aware note. Shown in track-mid mode to make the
+         "yes_cents is ignored" reality unmistakable. #}
+      <div data-track-mid-note
+           class="mt-2 text-[10px] leading-snug rounded border px-2 py-1.5 hidden"
+           style="background: #1f1a08; border-color: #7a6230; color: var(--lip);
+                  font-family: 'JetBrains Mono', ui-monospace;">
+        <strong>market-following mode:</strong> theo = (best_bid + best_ask) / 2 each cycle.
+        <span style="color: var(--ink-mid);">Yes (cents) is ignored at quote time.
+        Confidence still picks the strategy mode (penny/match/follow).</span>
+      </div>
       <div class="mt-2 text-[10px] leading-snug rounded border px-2 py-1.5"
            style="background: var(--surface); border-color: var(--border); color: var(--ink-mid);">
         <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Confidence scale</span>

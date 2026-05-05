@@ -254,6 +254,7 @@ def test_only_phase10_partials_remain() -> None:
     expected = {
         "decision_feed.html",
         "event_header.html",
+        "events_strip.html",  # multi-event: chips + add button
         "operator_drawer.html",
         "status_bar.html",
         "strike_grid.html",

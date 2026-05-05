@@ -92,9 +92,14 @@ def mount_dashboard(
         # (no flash of empty grid before WS opens).
         from lipmm.control.web.renderer import (
             event_meta_from_strikes,
+            group_strikes_by_event,
             join_strike_data,
+            multi_event_summary,
         )
         strikes = join_strike_data(snap, runtime, incentives, orderbooks)
+        active_events = (snap or {}).get("active_events") or []
+        groups = group_strikes_by_event(strikes, active_events=active_events)
+        summary = multi_event_summary(groups)
         event = event_meta_from_strikes(strikes)
         pnl_total = (runtime or {}).get("total_realized_pnl_dollars", 0.0)
         balance = (runtime or {}).get("balance") or {}
@@ -107,6 +112,8 @@ def mount_dashboard(
             "incentives": incentives,
             "orderbooks": orderbooks,
             "strikes": strikes,
+            "groups": groups,
+            "summary": summary,
             "event": event,
             "pnl_total": pnl_total,
             "balance": balance,

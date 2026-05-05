@@ -158,6 +158,10 @@ class ControlState:
         # theo_overrides[ticker] = TheoOverride; runner consults this
         # BEFORE calling the registered TheoProvider.
         self._theo_overrides: dict[str, TheoOverride] = {}
+        # Active event tickers. The MultiEventTickerSource reads this
+        # set each cycle and yields all open markets across them. The
+        # operator adds/removes via the dashboard. Runtime-only.
+        self._active_events: set[str] = set()
 
     @property
     def version(self) -> int:
@@ -241,6 +245,15 @@ class ControlState:
         cleared locks for transparency."""
         return dict(self._side_locks)
 
+    def all_events(self) -> set[str]:
+        """Set of currently-active event tickers. Empty set = bot quotes
+        nothing (no markets to iterate). The MultiEventTickerSource
+        reads this each cycle."""
+        return set(self._active_events)
+
+    def has_event(self, ticker: str) -> bool:
+        return ticker in self._active_events
+
     def get_knob(self, name: str) -> float | None:
         """Returns the current override for a knob, or None if no override."""
         return self._knob_overrides.get(name)
@@ -291,6 +304,7 @@ class ControlState:
                 }
                 for ticker, ov in sorted(self._theo_overrides.items())
             ],
+            "active_events": sorted(self._active_events),
         }
 
     # ── Mutations (locked + version-bumped) ─────────────────────────
@@ -485,6 +499,35 @@ class ControlState:
             raise ValueError(f"side must be 'bid' or 'ask', got {side!r}")
         async with self._lock:
             self._side_locks.pop((ticker, side), None)
+            return self._bump_version()
+
+    async def add_event(self, event_ticker: str) -> int:
+        """Add an event to the active-events set. The
+        MultiEventTickerSource yields markets under all active events
+        each cycle, so this immediately makes the bot start tracking
+        the new event's markets.
+
+        Idempotent: re-adding an existing event is a no-op (still bumps
+        version so dashboards re-render).
+        """
+        if not event_ticker or not event_ticker.strip():
+            raise ValueError("event_ticker required")
+        normalized = event_ticker.strip().upper()
+        async with self._lock:
+            self._active_events.add(normalized)
+            return self._bump_version()
+
+    async def remove_event(self, event_ticker: str) -> int:
+        """Remove an event. No-op if not present; bumps version so
+        dashboards re-render either way. Resting orders on the event's
+        tickers are NOT cancelled here — that's the caller's
+        responsibility (see the cancel_resting flag in the HTTP
+        endpoint)."""
+        if not event_ticker:
+            raise ValueError("event_ticker required")
+        normalized = event_ticker.strip().upper()
+        async with self._lock:
+            self._active_events.discard(normalized)
             return self._bump_version()
 
     # ── Internal ─────────────────────────────────────────────────────

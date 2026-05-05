@@ -52,6 +52,8 @@ from lipmm.control.auth import (
 )
 from lipmm.control.broadcaster import Broadcaster
 from lipmm.control.commands import (
+    AddEventRequest,
+    AddEventResponse,
     ArmRequest,
     AuthRequest,
     AuthResponse,
@@ -72,6 +74,8 @@ from lipmm.control.commands import (
     ManualOrderResponse,
     OrderbookSnapshotResponse,
     PauseRequest,
+    RemoveEventRequest,
+    RemoveEventResponse,
     ResumeRequest,
     RuntimeSnapshotResponse,
     SetTheoOverrideRequest,
@@ -106,6 +110,7 @@ def build_app(
     broadcaster: Broadcaster | None = None,
     mount_dashboard: bool = False,
     incentive_cache: IncentiveCache | None = None,
+    event_validator: Any = None,
 ) -> FastAPI:
     """Construct the FastAPI app. Caller wires in the ControlState and
     optional collaborators:
@@ -136,6 +141,11 @@ def build_app(
     app.state.risk_registry = risk_registry
     app.state.broadcaster = broadcaster
     app.state.incentive_cache = incentive_cache
+    # Optional async callable: `event_validator(event_ticker)` →
+    # awaits, returns a dict {"market_count": int, "status": str}.
+    # Used by /control/add_event to confirm the ticker exists on the
+    # exchange before adding to active_events. Raises on failure.
+    app.state.event_validator = event_validator
     if broadcaster is not None:
         broadcaster.attach_state(state)
 
@@ -605,6 +615,153 @@ def build_app(
         await _broadcast_change("unlock_side", request_id=req.request_id, actor=actor)
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
+        )
+
+    # ── Multi-event: add / remove events at runtime ────────────────
+
+    @app.post("/control/add_event", response_model=AddEventResponse)
+    async def post_add_event(
+        req: AddEventRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> AddEventResponse:
+        _check_if_version(req.if_version)
+        validator = request.app.state.event_validator
+        market_count = 0
+        # Validate via the operator-supplied async callable. If no
+        # validator is wired (tests), skip validation and trust the
+        # operator. Production deploys always pass one.
+        if validator is not None:
+            try:
+                info = await validator(req.event_ticker)
+            except Exception as exc:
+                emit_audit(
+                    request.app.state.decision_logger,
+                    request_id=req.request_id, actor=actor,
+                    command_type="add_event",
+                    command_payload=req.model_dump(),
+                    state_version_before=state.version,
+                    state_version_after=state.version,
+                    succeeded=False,
+                    error=f"event_validator raised: {exc!r}",
+                )
+                raise HTTPException(
+                    400, f"event {req.event_ticker!r} not found or unreachable: {exc}",
+                ) from exc
+            market_count = int(info.get("market_count", 0))
+            if market_count == 0:
+                emit_audit(
+                    request.app.state.decision_logger,
+                    request_id=req.request_id, actor=actor,
+                    command_type="add_event",
+                    command_payload=req.model_dump(),
+                    state_version_before=state.version,
+                    state_version_after=state.version,
+                    succeeded=False,
+                    error="event has 0 tradable markets",
+                )
+                raise HTTPException(
+                    400,
+                    f"event {req.event_ticker!r} exists but has 0 tradable markets",
+                )
+
+        version_before = state.version
+        try:
+            new_version = await state.add_event(req.event_ticker)
+        except ValueError as exc:
+            emit_audit(
+                request.app.state.decision_logger,
+                request_id=req.request_id, actor=actor,
+                command_type="add_event",
+                command_payload=req.model_dump(),
+                state_version_before=version_before,
+                state_version_after=state.version,
+                succeeded=False, error=str(exc),
+            )
+            raise HTTPException(400, str(exc)) from exc
+
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="add_event",
+            command_payload=req.model_dump(),
+            state_version_before=version_before, state_version_after=new_version,
+            succeeded=True,
+            side_effect_summary={"market_count": market_count},
+        )
+        await _broadcast_change("add_event", request_id=req.request_id, actor=actor)
+        return AddEventResponse(
+            new_version=new_version, request_id=req.request_id, actor=actor,
+            event_ticker=req.event_ticker.strip().upper(),
+            market_count=market_count,
+        )
+
+    @app.post("/control/remove_event", response_model=RemoveEventResponse)
+    async def post_remove_event(
+        req: RemoveEventRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> RemoveEventResponse:
+        _check_if_version(req.if_version)
+        version_before = state.version
+        normalized = req.event_ticker.strip().upper()
+
+        # Optionally cancel any resting orders on this event's tickers
+        # BEFORE removing the event, so the runner doesn't attempt one
+        # last cycle on tickers that are about to be dropped.
+        cancelled = 0
+        if req.cancel_resting:
+            om = request.app.state.order_manager
+            ex = request.app.state.exchange
+            if om is not None and ex is not None:
+                target_ids: list[str] = []
+                # ticker convention: "{event_ticker}-{strike}". Match by
+                # exact prefix + dash to avoid false positives (e.g.
+                # KXISMPMI matching KXISMPMIBOGUS).
+                prefix = normalized + "-"
+                for (ticker, _side), order in om.all_resting().items():
+                    if ticker.upper().startswith(prefix):
+                        target_ids.append(order.order_id)
+                if target_ids:
+                    try:
+                        results = await ex.cancel_orders(target_ids)
+                        cancelled = sum(1 for ok in results.values() if ok)
+                        await om.reconcile(ex)
+                    except Exception as exc:
+                        logger.warning(
+                            "remove_event: bulk cancel failed (%s); "
+                            "removing event anyway, orders may remain", exc,
+                        )
+
+        try:
+            new_version = await state.remove_event(req.event_ticker)
+        except ValueError as exc:
+            emit_audit(
+                request.app.state.decision_logger,
+                request_id=req.request_id, actor=actor,
+                command_type="remove_event",
+                command_payload=req.model_dump(),
+                state_version_before=version_before,
+                state_version_after=state.version,
+                succeeded=False, error=str(exc),
+            )
+            raise HTTPException(400, str(exc)) from exc
+
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="remove_event",
+            command_payload=req.model_dump(),
+            state_version_before=version_before, state_version_after=new_version,
+            succeeded=True,
+            side_effect_summary={"cancelled_orders": cancelled},
+        )
+        await _broadcast_change(
+            "remove_event", request_id=req.request_id, actor=actor,
+        )
+        return RemoveEventResponse(
+            new_version=new_version, request_id=req.request_id, actor=actor,
+            event_ticker=normalized, cancelled_orders=cancelled,
         )
 
     # ── Phase 7: manual theo overrides ─────────────────────────────
@@ -1095,6 +1252,7 @@ class ControlServer:
         runtime_refresh_s: float | None = 5.0,
         incentive_provider: "Any | None" = None,
         incentives_refresh_s: float | None = 3600.0,
+        event_validator: Any = None,
     ) -> None:
         self._state = state
         # Auto-create a broadcaster if none provided — the server's WS
@@ -1119,6 +1277,7 @@ class ControlServer:
             broadcaster=self._broadcaster,
             mount_dashboard=mount_dashboard,
             incentive_cache=self._incentive_cache,
+            event_validator=event_validator,
         )
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None

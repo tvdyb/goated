@@ -250,6 +250,49 @@ class ClearTheoOverrideRequest(BaseModel):
     if_version: int | None = Field(default=None, ge=0)
 
 
+class AddEventRequest(BaseModel):
+    """POST /control/add_event — add an event to the bot's active-events
+    set. Server validates the ticker against Kalshi (event must exist
+    and have at least one tradable market) before accepting."""
+    event_ticker: str = Field(
+        min_length=1, max_length=128,
+        description="Kalshi event ticker, e.g. KXISMPMI-26MAY",
+    )
+    request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
+
+
+class RemoveEventRequest(BaseModel):
+    """POST /control/remove_event. `cancel_resting=true` also bulk-
+    cancels any resting orders on the event's strike tickers atomically
+    with the removal."""
+    event_ticker: str = Field(min_length=1, max_length=128)
+    cancel_resting: bool = Field(
+        default=False,
+        description="When True, bulk-cancel all resting orders on the event's strike tickers before removal.",
+    )
+    request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
+
+
+class AddEventResponse(BaseModel):
+    new_version: int
+    request_id: str
+    actor: str
+    event_ticker: str
+    market_count: int
+    """Number of tradable markets discovered under this event at add-time."""
+
+
+class RemoveEventResponse(BaseModel):
+    new_version: int
+    request_id: str
+    actor: str
+    event_ticker: str
+    cancelled_orders: int = 0
+    """Count of resting orders cancelled when cancel_resting=True. Zero otherwise."""
+
+
 class TheoOverrideEntry(BaseModel):
     """One row in the GET /control/state theo_overrides list."""
     ticker: str

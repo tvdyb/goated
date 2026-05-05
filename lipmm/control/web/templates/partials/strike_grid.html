@@ -15,17 +15,42 @@
       <div class="text-right">Theo</div>
       <div></div>
     </div>
-    {% if strikes %}
-      {% for s in strikes %}
-        {% include "partials/strike_row.html" %}
+    {% if groups %}
+      {% for group in groups %}
+        {# Per-event group header. Visually separates one event's
+           strikes from the next; clicking the × on the event chip in
+           the events strip is the primary remove path, but we surface
+           a label here too so the grid stays readable when the strip
+           is offscreen. #}
+        <div class="px-3 py-1.5 border-b flex items-center gap-2 text-[10px]"
+             style="background: #1a1a1a; border-color: var(--border); color: var(--ink-lo);
+                    font-family: 'JetBrains Mono', ui-monospace;"
+             data-event-group-header data-event-ticker="{{ group.event_ticker }}">
+          <span class="font-semibold" style="color: var(--ink-hi);">{{ group.event_ticker }}</span>
+          <span style="color: var(--ink-dim);">·</span>
+          <span>{{ group.strike_count }} strike{{ '' if group.strike_count == 1 else 's' }}</span>
+          {% if group.quoting_count > 0 %}
+            <span style="color: var(--info);">· {{ group.quoting_count }} quoting</span>
+          {% endif %}
+          {% if group.lip_total_dollars > 0 %}
+            <span style="color: var(--lip);">· ${{ "%.0f"|format(group.lip_total_dollars) }} LIP</span>
+          {% endif %}
+          {% if group.strike_count == 0 %}
+            <span style="color: var(--ink-dim);">· awaiting markets…</span>
+          {% endif %}
+        </div>
+        {% for s in group.strikes %}
+          {% include "partials/strike_row.html" %}
+        {% endfor %}
       {% endfor %}
     {% else %}
       <div class="px-3 py-6 text-center text-[12px]" style="color: var(--ink-lo);">
-        no strikes yet — waiting for runner cycle…
+        no events active — click "+ add event" above to start
       </div>
     {% endif %}
   </div>
   <div class="mt-2 text-[10px] text-right" style="color: var(--ink-dim);">
-    showing {{ strikes | length }} strike{{ '' if (strikes | length) == 1 else 's' }} for {{ event.event_ticker }}
+    showing {{ summary.strike_count }} strike{{ '' if summary.strike_count == 1 else 's' }}
+    across {{ summary.event_count }} event{{ '' if summary.event_count == 1 else 's' }}
   </div>
 </section>

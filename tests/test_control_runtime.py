@@ -363,7 +363,11 @@ def test_dashboard_first_paint_renders_empty_when_unwired() -> None:
     assert r.status_code == 200
     body = r.text
     assert 'id="strike-grid"' in body
-    assert "no strikes yet" in body or "waiting for runner cycle" in body
+    assert (
+        "no strikes yet" in body
+        or "waiting for runner cycle" in body
+        or "no events active" in body
+    )
 
 
 # ── Periodic loop on ControlServer ─────────────────────────────────

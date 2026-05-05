@@ -116,10 +116,12 @@ def test_series_prefix_extracts_first_segment() -> None:
 # ── argparse surface ───────────────────────────────────────────────
 
 
-def test_argparse_requires_event_ticker() -> None:
+def test_argparse_event_ticker_optional() -> None:
+    """Multi-event change: `--event-ticker` is now optional. With no flag,
+    bot starts with no seed events; operator adds via dashboard."""
     from deploy.lipmm_run import _parse_args
-    with pytest.raises(SystemExit):
-        _parse_args([])
+    ns = _parse_args([])
+    assert ns.event_ticker == ""
 
 
 def test_argparse_accepts_event_ticker_only() -> None:
@@ -130,6 +132,13 @@ def test_argparse_accepts_event_ticker_only() -> None:
     assert ns.strategy == "default"
     assert ns.cycle_seconds == 3.0
     assert ns.port == 5050
+
+
+def test_argparse_accepts_comma_separated_events() -> None:
+    """Multi-event change: --event-ticker accepts comma-separated list."""
+    from deploy.lipmm_run import _parse_args
+    ns = _parse_args(["--event-ticker", "KXISMPMI-26MAY,KXOTHER-26JUN"])
+    assert ns.event_ticker == "KXISMPMI-26MAY,KXOTHER-26JUN"
 
 
 def test_argparse_strategy_choices() -> None:
@@ -183,17 +192,26 @@ def test_module_imports_cleanly() -> None:
     import deploy.lipmm_run as m
     assert callable(m.main)
     assert callable(m._amain)
-    assert hasattr(m, "_EventTickerSource")
+    assert hasattr(m, "_MultiEventTickerSource")
+    assert hasattr(m, "_validate_event")
 
 
-# ── _EventTickerSource against both response shapes ────────────────
+# ── _MultiEventTickerSource against both response shapes ──────────
+
+
+class _StubState:
+    """Minimal ControlState stand-in: holds an event-tickers set."""
+    def __init__(self, events: list[str] | None = None) -> None:
+        self._events = set(events or [])
+    def all_events(self) -> set[str]:
+        return set(self._events)
 
 
 @pytest.mark.asyncio
-async def test_event_ticker_source_handles_nested_markets() -> None:
-    """Phase 11: when Kalshi returns markets nested inside event
-    (with_nested_markets=true), the source must extract them."""
-    from deploy.lipmm_run import _EventTickerSource
+async def test_multi_event_source_handles_nested_markets() -> None:
+    """Phase 11: when Kalshi returns markets nested inside event, the
+    source must extract them."""
+    from deploy.lipmm_run import _MultiEventTickerSource
 
     class _Stub:
         async def get_event(self, event_ticker, *, with_nested_markets=False):
@@ -208,17 +226,14 @@ async def test_event_ticker_source_handles_nested_markets() -> None:
                 },
             }
 
-    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    src = _MultiEventTickerSource(_Stub(), _StubState(["KX-EVENT"]))
     tickers = await src.list_active_tickers(None)
     assert sorted(tickers) == ["KX-T49", "KX-T50"]
 
 
 @pytest.mark.asyncio
-async def test_event_ticker_source_handles_sibling_markets() -> None:
-    """Phase 11 root cause: Kalshi's default response has markets as
-    a sibling top-level field next to event. The source must read
-    that path too."""
-    from deploy.lipmm_run import _EventTickerSource
+async def test_multi_event_source_handles_sibling_markets() -> None:
+    from deploy.lipmm_run import _MultiEventTickerSource
 
     class _Stub:
         async def get_event(self, event_ticker, *, with_nested_markets=False):
@@ -230,16 +245,14 @@ async def test_event_ticker_source_handles_sibling_markets() -> None:
                 ],
             }
 
-    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    src = _MultiEventTickerSource(_Stub(), _StubState(["KX-EVENT"]))
     tickers = await src.list_active_tickers(None)
     assert sorted(tickers) == ["KX-T49", "KX-T50"]
 
 
 @pytest.mark.asyncio
-async def test_event_ticker_source_dedupes_when_both_paths_populated() -> None:
-    """If a Kalshi response somehow has markets in BOTH paths (defensive),
-    don't double-count."""
-    from deploy.lipmm_run import _EventTickerSource
+async def test_multi_event_source_dedupes_when_both_paths_populated() -> None:
+    from deploy.lipmm_run import _MultiEventTickerSource
 
     class _Stub:
         async def get_event(self, event_ticker, *, with_nested_markets=False):
@@ -251,17 +264,14 @@ async def test_event_ticker_source_dedupes_when_both_paths_populated() -> None:
                 "markets": [{"ticker": "KX-T1", "status": "open"}],
             }
 
-    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    src = _MultiEventTickerSource(_Stub(), _StubState(["KX-EVENT"]))
     tickers = await src.list_active_tickers(None)
     assert tickers == ["KX-T1"]
 
 
 @pytest.mark.asyncio
-async def test_event_ticker_source_treats_active_as_tradable() -> None:
-    """Kalshi's actual market status for a tradable market is "active",
-    not "open". The TickerSource has to accept it (and other unrecognized
-    values), only rejecting the deny-listed end-of-life statuses."""
-    from deploy.lipmm_run import _EventTickerSource
+async def test_multi_event_source_treats_active_as_tradable() -> None:
+    from deploy.lipmm_run import _MultiEventTickerSource
 
     class _Stub:
         async def get_event(self, event_ticker, *, with_nested_markets=False):
@@ -269,9 +279,9 @@ async def test_event_ticker_source_treats_active_as_tradable() -> None:
                 "event": {"event_ticker": event_ticker},
                 "markets": [
                     {"ticker": "KX-ACTIVE", "status": "active"},
-                    {"ticker": "KX-OPEN", "status": "open"},        # legacy/alt
+                    {"ticker": "KX-OPEN", "status": "open"},
                     {"ticker": "KX-NEW", "status": "some-future-status"},
-                    {"ticker": "KX-MISSING-STATUS"},                 # default
+                    {"ticker": "KX-MISSING-STATUS"},
                     {"ticker": "KX-SETTLED", "status": "settled"},
                     {"ticker": "KX-CLOSED", "status": "closed"},
                     {"ticker": "KX-FINALIZED", "status": "finalized"},
@@ -280,33 +290,73 @@ async def test_event_ticker_source_treats_active_as_tradable() -> None:
                 ],
             }
 
-    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    src = _MultiEventTickerSource(_Stub(), _StubState(["KX-EVENT"]))
     tickers = await src.list_active_tickers(None)
-    # The 4 tradable / unknown / missing-status markets are kept;
-    # the 5 deny-listed end-of-life markets are dropped.
     assert sorted(tickers) == [
         "KX-ACTIVE", "KX-MISSING-STATUS", "KX-NEW", "KX-OPEN",
     ]
 
 
 @pytest.mark.asyncio
-async def test_event_ticker_source_returns_empty_on_api_error() -> None:
-    from deploy.lipmm_run import _EventTickerSource
+async def test_multi_event_source_tolerates_per_event_failures() -> None:
+    """One event raising shouldn't blank out the whole bot — other
+    events still yield their markets."""
+    from deploy.lipmm_run import _MultiEventTickerSource
+
+    class _Stub:
+        async def get_event(self, event_ticker, *, with_nested_markets=False):
+            if event_ticker == "KX-BAD":
+                raise RuntimeError("kalshi 503")
+            return {
+                "event": {"event_ticker": event_ticker},
+                "markets": [{"ticker": "KX-OK-T1", "status": "active"}],
+            }
+
+    src = _MultiEventTickerSource(_Stub(), _StubState(["KX-BAD", "KX-GOOD"]))
+    tickers = await src.list_active_tickers(None)
+    assert tickers == ["KX-OK-T1"]
+
+
+@pytest.mark.asyncio
+async def test_multi_event_source_empty_set_returns_empty() -> None:
+    """No active events → empty list. Bot sits idle."""
+    from deploy.lipmm_run import _MultiEventTickerSource
 
     class _Stub:
         async def get_event(self, *a, **k):
-            raise RuntimeError("kalshi 503")
+            raise AssertionError("must not be called when no events")
 
-    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    src = _MultiEventTickerSource(_Stub(), _StubState([]))
     tickers = await src.list_active_tickers(None)
     assert tickers == []
 
 
 @pytest.mark.asyncio
-async def test_event_ticker_source_passes_with_nested_markets_kwarg() -> None:
-    """Verify the source passes with_nested_markets=True so that even
-    if Kalshi nests in the response, we get the data."""
-    from deploy.lipmm_run import _EventTickerSource
+async def test_multi_event_source_unions_across_events() -> None:
+    """Markets across multiple events appear in the result, deduped."""
+    from deploy.lipmm_run import _MultiEventTickerSource
+
+    class _Stub:
+        async def get_event(self, event_ticker, *, with_nested_markets=False):
+            if event_ticker == "KX-A":
+                return {"event": {}, "markets": [
+                    {"ticker": "KX-A-T1", "status": "active"},
+                    {"ticker": "KX-A-T2", "status": "active"},
+                ]}
+            if event_ticker == "KX-B":
+                return {"event": {}, "markets": [
+                    {"ticker": "KX-B-T1", "status": "active"},
+                ]}
+            return {"event": {}, "markets": []}
+
+    src = _MultiEventTickerSource(_Stub(), _StubState(["KX-A", "KX-B"]))
+    tickers = await src.list_active_tickers(None)
+    assert sorted(tickers) == ["KX-A-T1", "KX-A-T2", "KX-B-T1"]
+
+
+@pytest.mark.asyncio
+async def test_multi_event_source_passes_with_nested_markets_kwarg() -> None:
+    from deploy.lipmm_run import _MultiEventTickerSource
 
     seen_kwargs: dict = {}
 
@@ -315,6 +365,6 @@ async def test_event_ticker_source_passes_with_nested_markets_kwarg() -> None:
             seen_kwargs["with_nested_markets"] = with_nested_markets
             return {"event": {}, "markets": []}
 
-    src = _EventTickerSource(_Stub(), "KX-EVENT")
+    src = _MultiEventTickerSource(_Stub(), _StubState(["KX-EVENT"]))
     await src.list_active_tickers(None)
     assert seen_kwargs["with_nested_markets"] is True

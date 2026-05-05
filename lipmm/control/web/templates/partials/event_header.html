@@ -1,24 +1,33 @@
 <section id="event-header" hx-swap-oob="true" class="px-4 pt-3 pb-2">
-  <div class="flex items-center justify-between mb-2">
-    <div class="flex items-baseline gap-2">
+  {# Top-of-page summary across ALL active events. Below it the
+     events strip lets the operator add/remove events. #}
+  <div class="flex items-center justify-between">
+    <div class="flex items-baseline gap-2 flex-wrap">
       <h2 class="text-[15px] font-semibold tracking-tight" style="color: var(--ink-hi);">
-        {{ event.event_ticker }}
+        {% if summary.event_count == 0 %}
+          no events
+        {% elif summary.event_count == 1 %}
+          {{ summary.events[0] }}
+        {% else %}
+          {{ summary.event_count }} events
+        {% endif %}
       </h2>
       <span class="text-[11px]" style="color: var(--ink-lo);">
-        {{ event.strike_count }} strike{{ '' if event.strike_count == 1 else 's' }}
+        {{ summary.strike_count }} strike{{ '' if summary.strike_count == 1 else 's' }}
       </span>
-      {% if event.quoting_count > 0 %}
+      {% if summary.quoting_count > 0 %}
         <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-sm border"
               style="background: #0e2238; color: var(--info); border-color: #28486e;">
-          {{ event.quoting_count }} quoting
+          {{ summary.quoting_count }} quoting
         </span>
       {% endif %}
-      {% if event.lip_total_dollars > 0 %}
+      {% if summary.lip_total_dollars > 0 %}
         <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-sm border"
               style="background: #2b2410; color: var(--lip); border-color: #5a4923;">
-          ${{ "%.0f"|format(event.lip_total_dollars) }} LIP/period
+          ${{ "%.0f"|format(summary.lip_total_dollars) }} LIP/period
         </span>
       {% endif %}
     </div>
   </div>
+  {% include "partials/events_strip.html" %}
 </section>

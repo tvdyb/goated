@@ -550,4 +550,8 @@ def test_dashboard_empty_theo_overrides_renders_strike_grid_anyway() -> None:
     r = client.get("/dashboard")
     body = r.text
     assert 'id="strike-grid"' in body
-    assert "no strikes yet" in body or "waiting for runner cycle" in body
+    assert (
+        "no strikes yet" in body
+        or "waiting for runner cycle" in body
+        or "no events active" in body
+    )

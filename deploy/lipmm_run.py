@@ -93,67 +93,100 @@ def _validate_env() -> None:
 # ── Ticker source ──────────────────────────────────────────────────
 
 
-class _EventTickerSource:
-    """TickerSource that yields all open markets under one Kalshi event.
+_SKIPPED_MARKET_STATUSES = {
+    "settled", "finalized", "closed", "unopened", "deactivated",
+}
 
-    Pulls the event's market list each cycle via `KalshiClient.get_event`
-    so newly-added strikes appear without restarting. Filters to markets
-    with `status="open"` so post-settlement strikes drop out
-    automatically.
+
+def _markets_from_event_response(resp: dict[str, Any]) -> list[dict[str, Any]]:
+    """Kalshi returns markets as a sibling top-level field by default,
+    OR nested inside `event` when with_nested_markets=true. Read both
+    paths and dedupe so either response shape works.
+    """
+    event = resp.get("event") or {}
+    nested = event.get("markets") or []
+    sibling = resp.get("markets") or []
+    return list(nested) + list(sibling)
+
+
+def _filter_tradable_tickers(markets: list[dict[str, Any]]) -> list[str]:
+    """Status filter is a deny-list, not allow-list. Kalshi uses
+    'active' for tradable markets. Anything not in the deny-list is
+    treated as tradable — better to over-quote and have strategy/risk
+    gates filter than to silently drop strikes."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in markets:
+        status = m.get("status", "active")
+        if status in _SKIPPED_MARKET_STATUSES:
+            continue
+        t = m.get("ticker") or m.get("market_ticker")
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+class _MultiEventTickerSource:
+    """TickerSource that yields markets across ALL events currently
+    in `ControlState.active_events`. The operator adds/removes events
+    via the dashboard at runtime; the cycle picks up the change next
+    iteration.
+
+    Per-event failures are tolerated (logged) — one event with a stale
+    ticker shouldn't blank out the whole bot.
     """
 
-    def __init__(self, client: KalshiClient, event_ticker: str) -> None:
+    def __init__(self, client: KalshiClient, control_state: Any) -> None:
         self._client = client
-        self._event_ticker = event_ticker
+        self._state = control_state
 
     async def list_active_tickers(self, _exchange: Any) -> list[str]:
-        try:
-            resp = await self._client.get_event(
-                self._event_ticker, with_nested_markets=True,
-            )
-        except Exception as exc:
-            logger.warning(
-                "TickerSource: get_event(%s) failed: %s",
-                self._event_ticker, exc,
-            )
+        events = sorted(self._state.all_events())
+        if not events:
             return []
-        # Kalshi returns markets as a sibling top-level field by default,
-        # OR nested inside `event` when with_nested_markets=true. Read
-        # both paths and dedupe so either response shape works.
-        event = resp.get("event") or {}
-        nested = event.get("markets") or []
-        sibling = resp.get("markets") or []
-        # Status filter: deny-list, not allow-list. Kalshi uses "active"
-        # for tradable markets (NOT "open" which my earlier code assumed).
-        # Skip markets that are explicitly past their tradable window.
-        # Any other / new / unexpected status is treated as tradable —
-        # better to over-quote and have the strategy / risk gates filter
-        # than to silently drop strikes the operator expected to see.
-        skipped_statuses = {
-            "settled", "finalized", "closed", "unopened", "deactivated",
-        }
-        seen: set[str] = set()
-        seen_statuses: set[str] = set()
-        out: list[str] = []
-        for m in (nested + sibling):
-            status = m.get("status", "active")
-            seen_statuses.add(status)
-            if status in skipped_statuses:
+        # Fetch each event's market list. Sequential is fine — typically
+        # 1-5 events; gather would only matter at much larger fan-out.
+        all_markets: list[dict[str, Any]] = []
+        per_event_seen_status: dict[str, set[str]] = {}
+        for ev in events:
+            try:
+                resp = await self._client.get_event(
+                    ev, with_nested_markets=True,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "TickerSource: get_event(%s) failed: %s", ev, exc,
+                )
                 continue
-            t = m.get("ticker") or m.get("market_ticker")
-            if not t or t in seen:
-                continue
-            seen.add(t)
-            out.append(t)
-        if not out:
+            ms = _markets_from_event_response(resp)
+            all_markets.extend(ms)
+            per_event_seen_status[ev] = {
+                m.get("status", "active") for m in ms
+            }
+        out = _filter_tradable_tickers(all_markets)
+        if not out and events:
             logger.warning(
-                "TickerSource: 0 tradable markets for %s. Response keys: %s; "
-                "market statuses seen: %s",
-                self._event_ticker,
-                sorted(resp.keys()),
-                sorted(seen_statuses),
+                "TickerSource: 0 tradable markets across %d events: %s; "
+                "statuses seen per event: %s",
+                len(events), events, per_event_seen_status,
             )
         return out
+
+
+async def _validate_event(client: KalshiClient, event_ticker: str) -> dict[str, Any]:
+    """Used by ControlServer's add_event endpoint: confirm the event
+    exists and has tradable markets. Raises on Kalshi error.
+    """
+    resp = await client.get_event(event_ticker, with_nested_markets=True)
+    markets = _markets_from_event_response(resp)
+    tradable = _filter_tradable_tickers(markets)
+    return {
+        "market_count": len(tradable),
+        "raw_market_count": len(markets),
+        "status": (resp.get("event") or {}).get("status", "?"),
+    }
 
 
 # ── Wire-up ────────────────────────────────────────────────────────
@@ -208,7 +241,7 @@ def _print_banner(
         f"  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"   lipmm bot starting\n"
         f"  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"   event:     {event_ticker}\n"
+        f"   events:    {event_ticker or '(none — add via dashboard)'}\n"
         f"   strategy:  {strategy}\n"
         f"   cap:       ${cap_dollars:.0f}\n"
         f"   logs:      {log_dir}\n"
@@ -239,54 +272,71 @@ async def _amain(args: argparse.Namespace) -> int:
     await client.open()
     exchange = KalshiExchangeAdapter.from_client(client)
 
-    # 2. Confirm the event exists before building the rest of the stack.
-    try:
-        event_resp = await client.get_event(
-            args.event_ticker, with_nested_markets=True,
+    # 2. Parse and pre-validate seed event tickers (if any).
+    # `--event-ticker` is now optional and accepts comma-separated values.
+    # When omitted, the bot starts with no events; the operator adds them
+    # via the dashboard.
+    seed_event_tickers: list[str] = []
+    if args.event_ticker:
+        seed_event_tickers = [
+            t.strip().upper() for t in args.event_ticker.split(",") if t.strip()
+        ]
+
+    state = ControlState()
+    for ev in seed_event_tickers:
+        try:
+            event_resp = await client.get_event(ev, with_nested_markets=True)
+        except Exception as exc:
+            logger.error(
+                "Could not fetch event %s: %s. Check spelling and API access; "
+                "skipping this seed event.", ev, exc,
+            )
+            continue
+        event = event_resp.get("event") or {}
+        markets = _markets_from_event_response(event_resp)
+        n_markets = len(markets)
+        logger.info(
+            "Seed event %s: %d markets, status=%s",
+            ev, n_markets, event.get("status", "?"),
         )
-    except Exception as exc:
-        logger.error(
-            "Could not fetch event %s: %s. Check --event-ticker spelling and API access.",
-            args.event_ticker, exc,
-        )
-        await client.close()
-        return 3
-    event = event_resp.get("event") or {}
-    # Markets may be nested inside event OR a sibling top-level field
-    # depending on Kalshi's `with_nested_markets` flag.
-    nested_markets = event.get("markets") or []
-    sibling_markets = event_resp.get("markets") or []
-    all_markets = nested_markets or sibling_markets
-    n_markets = len(all_markets)
-    logger.info(
-        "Event %s found: %d markets, status=%s",
-        args.event_ticker, n_markets, event.get("status", "?"),
-    )
-    if n_markets == 0:
-        logger.warning(
-            "Event has 0 markets visible — bot will sit idle. "
-            "Response top-level keys: %s",
-            sorted(event_resp.keys()),
+        await state.add_event(ev)
+
+    if not seed_event_tickers:
+        logger.info(
+            "No seed events. Bot will sit idle until the operator adds "
+            "events via the dashboard's events strip."
         )
 
     # 3. Build the rest
     order_manager = OrderManager()
     theo_registry = TheoRegistry()
-    theo_registry.register(StubTheoProvider(_series_prefix(args.event_ticker)))
+    # Register stub theo providers for each seed event's series prefix so
+    # the registry has explicit entries (cosmetic — the registry's
+    # no-provider fallback also returns confidence=0). For events added
+    # later via the dashboard, the fallback handles them transparently.
+    seen_prefixes: set[str] = set()
+    for ev in seed_event_tickers:
+        prefix = _series_prefix(ev)
+        if prefix in seen_prefixes:
+            continue
+        seen_prefixes.add(prefix)
+        theo_registry.register(StubTheoProvider(prefix))
     strategy = _build_strategy(args.strategy)
     risk = _build_risk_registry(args.cap_dollars)
     decision_logger = DecisionLogger(log_dir=log_dir)
-    state = ControlState()
     broadcaster = Broadcaster()
 
     # Decision recorder: writes to JSONL AND broadcasts to dashboard tabs.
     recorder = broadcaster.as_decision_recorder(decision_logger)
 
-    ticker_source = _EventTickerSource(client, args.event_ticker)
+    ticker_source = _MultiEventTickerSource(client, state)
     runner = LIPRunner(
         config=RunnerConfig(
             cycle_seconds=args.cycle_seconds,
-            market_meta={"event_ticker": args.event_ticker},
+            # market_meta is static metadata — drop event_ticker since
+            # the active set is now mutable. Decision-log records still
+            # carry per-decision `ticker`, which is what matters.
+            market_meta={"seed_events": seed_event_tickers},
         ),
         theo_registry=theo_registry,
         strategy=strategy,
@@ -300,6 +350,9 @@ async def _amain(args: argparse.Namespace) -> int:
     )
 
     # 4. ControlServer: dashboard + incentive cache + retention.
+    async def _validator(event_ticker: str) -> dict[str, Any]:
+        return await _validate_event(client, event_ticker)
+
     server = ControlServer(
         state,
         decision_logger=decision_logger,
@@ -309,6 +362,7 @@ async def _amain(args: argparse.Namespace) -> int:
         risk_registry=risk,
         broadcaster=broadcaster,
         mount_dashboard=True,
+        event_validator=_validator,
         runtime_refresh_s=5.0,
         incentive_provider=KalshiIncentiveProvider(),
         incentives_refresh_s=3600.0,
@@ -388,8 +442,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Run lipmm bot + dashboard against one Kalshi event.",
     )
     p.add_argument(
-        "--event-ticker", required=True,
-        help="Kalshi event ticker, e.g. KXISMPMI-26MAY",
+        "--event-ticker", required=False, default="",
+        help=(
+            "Optional comma-separated list of Kalshi event tickers to seed at "
+            "startup, e.g. 'KXISMPMI-26MAY' or 'KXISMPMI-26MAY,KXOTHER-26JUN'. "
+            "Operator can add/remove events at runtime from the dashboard's "
+            "events strip. Omit entirely to start with no active events."
+        ),
     )
     p.add_argument(
         "--cap-dollars", type=float, default=100.0,
