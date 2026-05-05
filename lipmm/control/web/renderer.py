@@ -134,6 +134,17 @@ def join_strike_data(
         # would be 0 and the share calculation degenerate.
         lip_score = None
         ob_present = bool(ob)
+        # Use the LIP program's discount factor (per Kalshi's formula)
+        # if there's an active program on this ticker. Falls back to
+        # the soy-bot default decay_ticks=5 for tickers without a
+        # program (where the score is informational anyway).
+        ticker_lip = (incs.get(ticker) or [None])[0]
+        df: float | None = None
+        if ticker_lip and ticker_lip.get("discount_factor_bps") is not None:
+            try:
+                df = float(ticker_lip["discount_factor_bps"]) / 10000.0
+            except (TypeError, ValueError):
+                df = None
         if ob_present:
             try:
                 lip_score = compute_strike_score(
@@ -142,6 +153,7 @@ def join_strike_data(
                     no_levels=ob.get("no_levels", []),
                     best_bid_c=best_bid,
                     best_ask_c=best_ask,
+                    discount_factor=df,
                 )
             except Exception:
                 lip_score = None
@@ -162,7 +174,7 @@ def join_strike_data(
             "override": overrides.get(ticker),
             "position": positions.get(ticker),
             "resting": ticker_resting,
-            "lip": (incs.get(ticker) or [None])[0],
+            "lip": ticker_lip,
             "lip_score": lip_score,
         })
     return out

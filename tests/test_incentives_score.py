@@ -65,11 +65,80 @@ def test_multiplier_custom_decay_ticks() -> None:
 
 def test_multiplier_rejects_invalid_decay() -> None:
     with pytest.raises(ValueError, match="decay_ticks"):
-        linear_multiplier(50, 50, decay_ticks=0)
+        linear_multiplier(49, 50, decay_ticks=0)
 
 
 def test_default_decay_ticks_is_5() -> None:
     assert DEFAULT_DECAY_TICKS == 5
+
+
+# ── discount_factor (Kalshi's actual formula) ──────────────────────
+
+
+def test_multiplier_discount_factor_25pct_at_distance_one() -> None:
+    """Per Kalshi's published formula: mult = max(0, 1 - distance × df).
+    With df=0.25 (the program-level "discount factor 25%"), one tick
+    off best is 1 - 1×0.25 = 0.75. NOT 0.80 from the legacy
+    decay_ticks=5 default."""
+    assert linear_multiplier(49, 50, discount_factor=0.25) == pytest.approx(0.75)
+    assert linear_multiplier(48, 50, discount_factor=0.25) == pytest.approx(0.50)
+    assert linear_multiplier(47, 50, discount_factor=0.25) == pytest.approx(0.25)
+    assert linear_multiplier(46, 50, discount_factor=0.25) == pytest.approx(0.0)
+
+
+def test_multiplier_discount_factor_50pct() -> None:
+    """At 50% discount, mult drops 0.5 per tick, hitting 0 at 2 ticks."""
+    assert linear_multiplier(50, 50, discount_factor=0.50) == pytest.approx(1.0)
+    assert linear_multiplier(49, 50, discount_factor=0.50) == pytest.approx(0.5)
+    assert linear_multiplier(48, 50, discount_factor=0.50) == pytest.approx(0.0)
+
+
+def test_multiplier_discount_factor_100pct_only_best_earns() -> None:
+    """At 100% discount, only orders sitting EXACTLY at best earn any
+    credit — every other tick is 0."""
+    assert linear_multiplier(50, 50, discount_factor=1.0) == pytest.approx(1.0)
+    assert linear_multiplier(49, 50, discount_factor=1.0) == pytest.approx(0.0)
+
+
+def test_multiplier_discount_factor_takes_priority_over_decay_ticks() -> None:
+    """If both are passed, discount_factor wins (matches Kalshi's actual
+    LIP formula; decay_ticks is the soy-bot legacy fallback)."""
+    # 0.25 → 0.75 at distance 1. decay_ticks=5 → 0.80. We expect 0.75.
+    m = linear_multiplier(49, 50, discount_factor=0.25, decay_ticks=5)
+    assert m == pytest.approx(0.75)
+
+
+def test_multiplier_no_args_falls_back_to_default_decay() -> None:
+    """Backward compat: no discount_factor, no decay_ticks → 5-tick default."""
+    assert linear_multiplier(49, 50) == pytest.approx(0.8)
+
+
+def test_multiplier_rejects_negative_discount_factor() -> None:
+    with pytest.raises(ValueError, match="discount_factor"):
+        linear_multiplier(49, 50, discount_factor=-0.1)
+
+
+# ── compute_strike_score with discount_factor ───────────────────────
+
+
+def test_compute_score_uses_discount_factor_25pct() -> None:
+    """Real-world Kalshi case: program discount=25%, our orders 1 tick
+    off best on each side. Expect mult=0.75 each (NOT 0.80)."""
+    s = compute_strike_score(
+        our_orders=[
+            {"order_id": "a", "side": "bid", "price_cents": 79, "size": 5},
+            {"order_id": "b", "side": "ask", "price_cents": 85, "size": 6},
+        ],
+        yes_levels=[{"price_cents": 80, "size": 307.0}],
+        no_levels=[{"price_cents": 16, "size": 2.0}],  # = ask 84
+        best_bid_c=80, best_ask_c=84,
+        discount_factor=0.25,
+    )
+    by_id = {m.order_id: m for m in s.multipliers}
+    assert by_id["a"].multiplier == pytest.approx(0.75)
+    assert by_id["b"].multiplier == pytest.approx(0.75)
+    assert by_id["a"].score_contribution == pytest.approx(3.75)  # 5 × 0.75
+    assert by_id["b"].score_contribution == pytest.approx(4.5)   # 6 × 0.75
 
 
 # ── compute_strike_score: our_score, total_score, share ─────────────
