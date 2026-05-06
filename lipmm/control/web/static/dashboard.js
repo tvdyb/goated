@@ -513,11 +513,37 @@
     // After every htmx OOB swap of the drawer, re-apply the active tab
     // AND re-open any strike rows that were expanded — the swap blew
     // away both pieces of client-side state.
-    // Capture scroll position BEFORE the swap so we can restore it
-    // afterward — without this the browser jumps (often to the bottom)
-    // every ~3s when the strike grid OOB-swaps.
-    document.body.addEventListener("htmx:beforeSwap", captureScroll);
-    document.body.addEventListener("htmx:wsBeforeMessage", captureScroll);
+    // Defer OOB swaps that would destroy a form the user is actively
+    // typing in or has a dropdown open inside. hx-preserve keeps the
+    // form's value across swaps, but browsers close any open <select>
+    // when its element is detached/reattached — so even with values
+    // preserved, the dropdown UX is unusable while the bot is pushing
+    // 3s OOB updates. We cancel the per-element swap (not the whole
+    // WS message), so other parts of the dashboard still update.
+    function focusedFormAncestor() {
+      const a = document.activeElement;
+      if (!a || a === document.body) return null;
+      if (!["SELECT", "INPUT", "TEXTAREA"].includes(a.tagName)) return null;
+      return a.closest(
+        'form[data-form="strike-knob-set"], ' +
+        'form[data-form="theo-override-inline"], ' +
+        'form[data-form="manual-order"]'
+      );
+    }
+    document.body.addEventListener("htmx:beforeSwap", (e) => {
+      const focusedForm = focusedFormAncestor();
+      if (focusedForm) {
+        const target = e.detail && e.detail.target;
+        // Cancel this swap only if its target contains the focused
+        // form (i.e., the swap would destroy/move the form). Other
+        // swaps (status bar, decision feed, etc.) proceed normally.
+        if (target && (target === focusedForm || target.contains(focusedForm))) {
+          e.preventDefault();
+          return;
+        }
+      }
+      captureScroll();
+    });
     const reapplyAll = () => {
       applyPersistedDrawerState();
       applyPersistedExpansions();
