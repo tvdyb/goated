@@ -304,7 +304,7 @@
       cents.style.cursor = "";
       cents.title = (
         "fallback theo: used when the orderbook is one-sided "
-        "(no bids OR no asks). When both sides exist, the live mid wins."
+        + "(no bids OR no asks). When both sides exist, the live mid wins."
       );
       lbl.textContent = "Yes (¢) — fallback";
       lbl.style.color = "var(--lip)";
