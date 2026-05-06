@@ -202,6 +202,83 @@
     });
   }
 
+  // Per-strike knob-form drafts. Same pattern as theo drafts: every
+  // OOB swap of the strike grid (~3s) destroys the form inputs, so we
+  // mirror them in localStorage and reapply post-swap.
+  const KNOB_DRAFT_KEY = "lipmm_knob_drafts";
+
+  function getKnobDrafts() {
+    try {
+      return JSON.parse(localStorage.getItem(KNOB_DRAFT_KEY) || "{}");
+    } catch (_) {
+      return {};
+    }
+  }
+  function saveKnobDrafts(d) {
+    localStorage.setItem(KNOB_DRAFT_KEY, JSON.stringify(d));
+  }
+  function setKnobDraft(slug, name, value) {
+    const d = getKnobDrafts();
+    if (!d[slug]) d[slug] = {};
+    d[slug][name] = value;
+    saveKnobDrafts(d);
+  }
+  function clearKnobDraft(slug) {
+    const d = getKnobDrafts();
+    delete d[slug];
+    saveKnobDrafts(d);
+  }
+  function applyKnobDrafts() {
+    const d = getKnobDrafts();
+    let changed = false;
+    for (const slug of Object.keys(d)) {
+      const form = document.querySelector(
+        `[data-slug="${slug}"] form[data-form="strike-knob-set"]`
+      );
+      if (!form) {
+        delete d[slug];
+        changed = true;
+        continue;
+      }
+      for (const [name, value] of Object.entries(d[slug])) {
+        const input = form.querySelector(`[name="${name}"]`);
+        if (input && input.value !== value) input.value = value;
+      }
+    }
+    if (changed) saveKnobDrafts(d);
+  }
+  function bindKnobDraftSave() {
+    const handler = (e) => {
+      const form = e.target.closest('form[data-form="strike-knob-set"]');
+      if (!form) return;
+      const wrap = form.closest("[data-slug]");
+      const slug = wrap ? wrap.dataset.slug : null;
+      const name = e.target.name;
+      if (!slug || !name) return;
+      setKnobDraft(slug, name, e.target.value);
+    };
+    document.body.addEventListener("input", handler);
+    document.body.addEventListener("change", handler);
+  }
+
+  // Preserve scroll position across OOB swaps. The strike grid swaps
+  // every ~3s and a few sections grow/shrink, which makes the browser
+  // jump (sometimes to the bottom) — losing the operator's place.
+  // Capture window.scrollY before the swap, restore after.
+  let _scrollY = null;
+  function captureScroll() {
+    _scrollY = window.scrollY;
+  }
+  function restoreScroll() {
+    if (_scrollY !== null) {
+      // requestAnimationFrame so the swap's layout has settled before
+      // we scroll — otherwise the restore can read a transient height.
+      const y = _scrollY;
+      requestAnimationFrame(() => window.scrollTo(0, y));
+      _scrollY = null;
+    }
+  }
+
   // Mode select toggles yes_cents visual state. In track_mid mode the
   // cents input is just a placeholder (server ignores it), so we make
   // it OBVIOUSLY non-functional: dim the whole cell, strike-through
@@ -436,19 +513,28 @@
     // After every htmx OOB swap of the drawer, re-apply the active tab
     // AND re-open any strike rows that were expanded — the swap blew
     // away both pieces of client-side state.
+    // Capture scroll position BEFORE the swap so we can restore it
+    // afterward — without this the browser jumps (often to the bottom)
+    // every ~3s when the strike grid OOB-swaps.
+    document.body.addEventListener("htmx:beforeSwap", captureScroll);
+    document.body.addEventListener("htmx:wsBeforeMessage", captureScroll);
     document.body.addEventListener("htmx:afterSwap", () => {
       applyPersistedDrawerState();
       applyPersistedExpansions();
       applyTheoDrafts();
+      applyKnobDrafts();
       applyAllModeToggles();
       tickCountdowns();
+      restoreScroll();
     });
     document.body.addEventListener("htmx:wsAfterMessage", () => {
       applyPersistedDrawerState();
       applyPersistedExpansions();
       applyTheoDrafts();
+      applyKnobDrafts();
       applyAllModeToggles();
       tickCountdowns();
+      restoreScroll();
     });
   }
 
@@ -843,6 +929,10 @@
         await callJson("/control/set_strike_knob", {
           ticker, name, value,
         });
+        // Clear the draft so the next OOB swap doesn't re-fill the form
+        // with the value we just submitted.
+        const wrap = form.closest("[data-slug]");
+        if (wrap && wrap.dataset.slug) clearKnobDraft(wrap.dataset.slug);
         return;
       } else if (kind === "theo-override" || kind === "theo-override-inline") {
         const ticker = (fd.get("ticker") || form.dataset.ticker || "").trim();
@@ -1156,6 +1246,7 @@
     bindKnobInline();
     bindCmdEnterManualOrder();
     bindTheoDraftSave();
+    bindKnobDraftSave();
     bindModeToggle();
     bindNotionalPreview();
     if (location.pathname === "/dashboard") {
@@ -1165,6 +1256,7 @@
       applyPersistedDrawerState();
       applyPersistedExpansions();
       applyTheoDrafts();
+      applyKnobDrafts();
       applyAllModeToggles();
     }
   });

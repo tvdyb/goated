@@ -134,8 +134,9 @@ class KalshiExchangeAdapter:
                 if 400 <= (exc.status_code or 0) < 500:
                     logger.warning(
                         "Kalshi rejected sub-cent yes_price_dollars=%s on %s "
-                        "(status=%s): %s — falling back to integer cents",
-                        yes_price_dollars, request.ticker, exc.status_code, exc,
+                        "(status=%s): body=%s msg=%s — falling back to integer cents",
+                        yes_price_dollars, request.ticker,
+                        exc.status_code, getattr(exc, "body", None), exc,
                     )
                     # Fall through to integer-cent retry below.
                 else:
@@ -149,9 +150,16 @@ class KalshiExchangeAdapter:
             )
         except KalshiResponseError as exc:
             if 400 <= (exc.status_code or 0) < 500:
-                logger.info(
-                    "Kalshi place_order rejected (status=%s): %s",
-                    exc.status_code, exc,
+                # Log the full Kalshi response body so the operator can
+                # tell "insufficient collateral" apart from "post-only
+                # cross", "tick size violation", "market closed", etc.
+                # Without the body we can't diagnose collateral issues.
+                logger.warning(
+                    "Kalshi place_order rejected: ticker=%s action=%s side=%s "
+                    "price=%dc count=%d status=%s body=%s msg=%s",
+                    request.ticker, request.action, request.side,
+                    request.limit_price_cents, request.count,
+                    exc.status_code, getattr(exc, "body", None), exc,
                 )
                 return None
             raise
