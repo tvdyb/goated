@@ -35,7 +35,7 @@ from lipmm.control import (
 )
 from lipmm.execution import OrderManager
 from lipmm.execution.adapters import KalshiExchangeAdapter
-from lipmm.incentives import KalshiIncentiveProvider
+from lipmm.incentives import EarningsAccrual, KalshiIncentiveProvider
 from lipmm.observability import DecisionLogger, RetentionManager
 from lipmm.quoting.strategies import (
     DefaultLIPQuoting,
@@ -47,6 +47,8 @@ from lipmm.risk import (
     EndgameGuardrailGate,
     MaxNotionalPerSideGate,
     MaxOrdersPerCycleGate,
+    MaxPositionPerSideGate,
+    MidDeltaGate,
     RiskRegistry,
 )
 from lipmm.runner import LIPRunner, RunnerConfig
@@ -216,6 +218,11 @@ def _build_risk_registry(cap_dollars: float) -> RiskRegistry:
     return RiskRegistry([
         MaxNotionalPerSideGate(max_dollars=cap_dollars / 2),
         MaxOrdersPerCycleGate(max_orders=100),
+        # Adverse-selection safeguards. Both knobs (max_position_per_side,
+        # mid_delta_threshold_c) are tunable per-strike / per-event /
+        # globally via the dashboard's Knobs tab.
+        MaxPositionPerSideGate(max_position=200),
+        MidDeltaGate(mid_delta_threshold_c=8.0),
         EndgameGuardrailGate(
             min_seconds_to_settle=60,
             deep_otm_threshold=5,
@@ -340,6 +347,16 @@ async def _amain(args: argparse.Namespace) -> int:
     recorder = broadcaster.as_decision_recorder(decision_logger)
 
     ticker_source = _MultiEventTickerSource(client, state)
+
+    # Earnings accrual + IncentiveCache built externally so the runner
+    # and the ControlServer share the same cache (single Kalshi
+    # /incentive_programs poll, single accrual tally).
+    from lipmm.incentives import IncentiveCache
+    incentive_cache = IncentiveCache(
+        KalshiIncentiveProvider(), refresh_s=3600.0,
+    )
+    earnings_accrual = EarningsAccrual()
+
     runner = LIPRunner(
         config=RunnerConfig(
             cycle_seconds=args.cycle_seconds,
@@ -357,6 +374,8 @@ async def _amain(args: argparse.Namespace) -> int:
         risk_registry=risk,
         control_state=state,
         broadcaster=broadcaster,
+        incentive_cache=incentive_cache,
+        earnings_accrual=earnings_accrual,
     )
 
     # 4. ControlServer: dashboard + incentive cache + retention.
@@ -375,8 +394,7 @@ async def _amain(args: argparse.Namespace) -> int:
         event_validator=_validator,
         rate_limit_stats=lambda: client.rate_limiter.stats(),
         runtime_refresh_s=5.0,
-        incentive_provider=KalshiIncentiveProvider(),
-        incentives_refresh_s=3600.0,
+        incentive_cache=incentive_cache,
     )
 
     retention = RetentionManager(

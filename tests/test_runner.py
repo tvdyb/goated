@@ -286,10 +286,11 @@ async def test_runner_stop_halts_loop() -> None:
 @pytest.mark.asyncio
 async def test_runner_amends_when_book_shifts() -> None:
     """If best moves between cycles, runner should amend the resting order."""
+    # Levels are now in t1c (10 t1c = 1¢): 450 = 45¢, 460 = 46¢, etc.
     book = OrderbookLevels(
         ticker="KX-T50",
-        yes_levels=[(45, 100.0)],
-        no_levels=[(45, 100.0)],
+        yes_levels=[(450, 100.0)],
+        no_levels=[(450, 100.0)],
     )
     runner, ex = _make_runner(
         tickers=["KX-T50"],
@@ -302,8 +303,8 @@ async def test_runner_amends_when_book_shifts() -> None:
     # Shift the best — book becomes more aggressive
     ex.books["KX-T50"] = OrderbookLevels(
         ticker="KX-T50",
-        yes_levels=[(46, 100.0)],
-        no_levels=[(44, 100.0)],
+        yes_levels=[(460, 100.0)],
+        no_levels=[(440, 100.0)],
     )
     await asyncio.sleep(0.15)
     runner.stop()

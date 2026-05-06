@@ -168,20 +168,41 @@ def test_pause_validation_rejects_missing_side() -> None:
 
 
 def test_kill_invokes_handler_and_audits() -> None:
+    """Kill is fire-and-forget: state mutates immediately and the audit
+    record is emitted with `cancellation: in_progress`. The actual
+    cancel sweep + follow-up audit fire as a background task."""
+    import asyncio as _asyncio
     client, fx = _client()
     r = client.post("/control/kill", json={
         "request_id": "req-kill-1",
         "reason": "test scenario",
     }, headers=_auth_headers())
     assert r.status_code == 200
-    assert fx["kill"].invocations == 1
     assert fx["state"].is_killed() is True
-    # Audit record emitted
+    # The initial audit shows the kill was accepted, with cancellation
+    # marker as in_progress.
     audit = [r for r in fx["logger"].records if r.get("command_type") == "kill"]
     assert len(audit) == 1
     assert audit[0]["succeeded"] is True
-    assert audit[0]["side_effect_summary"]["orders_cancelled"] == 14
+    assert audit[0]["side_effect_summary"]["cancellation"] == "in_progress"
     assert audit[0]["actor"] == "operator"
+
+    # Wait for the background cancel sweep to finish, then verify the
+    # follow-up audit + handler invocation.
+    async def _wait() -> None:
+        for _ in range(50):
+            sweep = [r for r in fx["logger"].records
+                     if r.get("command_type") == "kill_cancel_sweep"]
+            if sweep:
+                return
+            await _asyncio.sleep(0.02)
+    _asyncio.get_event_loop().run_until_complete(_wait())
+    assert fx["kill"].invocations == 1
+    sweep = [r for r in fx["logger"].records
+             if r.get("command_type") == "kill_cancel_sweep"]
+    assert len(sweep) == 1
+    assert sweep[0]["succeeded"] is True
+    assert sweep[0]["side_effect_summary"]["orders_cancelled"] == 14
 
 
 def test_resume_global_after_kill_requires_arm_first() -> None:

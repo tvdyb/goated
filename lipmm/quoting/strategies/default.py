@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from lipmm.execution.base import tick_at as _tick_at
 from lipmm.quoting.base import (
     OrderbookSnapshot,
     OurState,
@@ -137,24 +138,32 @@ class DefaultLIPQuoting:
             bid_decision = self._compute_bid(fair, orderbook, theo.confidence)
             ask_decision = self._compute_ask(fair, orderbook, theo.confidence)
 
-            # No-cross guard: if our proposed quotes would cross the opposite
-            # best, post_only would reject. Pull back by 1c.
-            if (bid_decision.price > 0 and orderbook.best_ask < 100
-                    and bid_decision.price >= orderbook.best_ask):
+            # No-cross guard in t1c so sub-cent quotes pull back by one
+            # tick (not a full cent). post_only would reject crossing.
+            best_ask_t1c = orderbook.best_ask_t1c
+            best_bid_t1c = orderbook.best_bid_t1c
+            if (bid_decision.effective_t1c() > 0 and best_ask_t1c < 1000
+                    and bid_decision.effective_t1c() >= best_ask_t1c):
+                tick = _tick_at(orderbook.tick_schedule, best_ask_t1c)
+                pulled_t1c = max(1, best_ask_t1c - tick)
                 bid_decision = SideDecision(
-                    price=orderbook.best_ask - 1,
-                    size=self._size_for_quote(orderbook.best_ask - 1, "bid"),
+                    price=max(1, (pulled_t1c + 5) // 10),
+                    price_t1c=pulled_t1c,
+                    size=self._size_for_quote_t1c(pulled_t1c, "bid"),
                     skip=False,
-                    reason=f"no-cross: bid pulled to {orderbook.best_ask - 1} (best_ask {orderbook.best_ask})",
+                    reason=f"no-cross: bid pulled to {pulled_t1c}t1c ({pulled_t1c/10:.1f}¢)",
                     extras=bid_decision.extras,
                 )
-            if (ask_decision.price > 0 and orderbook.best_bid > 0
-                    and ask_decision.price <= orderbook.best_bid):
+            if (ask_decision.effective_t1c() > 0 and best_bid_t1c > 0
+                    and ask_decision.effective_t1c() <= best_bid_t1c):
+                tick = _tick_at(orderbook.tick_schedule, best_bid_t1c)
+                pulled_t1c = min(989, best_bid_t1c + tick)
                 ask_decision = SideDecision(
-                    price=orderbook.best_bid + 1,
-                    size=self._size_for_quote(orderbook.best_bid + 1, "ask"),
+                    price=min(99, (pulled_t1c + 5) // 10),
+                    price_t1c=pulled_t1c,
+                    size=self._size_for_quote_t1c(pulled_t1c, "ask"),
                     skip=False,
-                    reason=f"no-cross: ask pulled to {orderbook.best_bid + 1} (best_bid {orderbook.best_bid})",
+                    reason=f"no-cross: ask pulled to {pulled_t1c}t1c ({pulled_t1c/10:.1f}¢)",
                     extras=ask_decision.extras,
                 )
 
@@ -207,94 +216,133 @@ class DefaultLIPQuoting:
     def _compute_bid(
         self, fair: int, ob: OrderbookSnapshot, confidence: float = 0.0,
     ) -> SideDecision:
-        cfg = self._cfg
-        best_bid = ob.best_bid
+        """Compute bid price in t1c (tenths-of-a-cent) for sub-cent
+        precision. Tick size is looked up per-band so on a mixed-tick
+        market each price lands on a quotable tick.
 
-        if best_bid <= 0:
-            # Empty bid side — quote at theo - max_half_spread
-            target = fair - cfg.max_half_spread_c
+        All arithmetic in t1c. Anti-spoofing cap and clamps converted
+        to t1c. Final SideDecision carries both cents (rounded) and
+        price_t1c (precise) — adapter routes through Kalshi's
+        fractional path when price_t1c isn't a whole-cent multiple.
+        """
+        cfg = self._cfg
+        best_bid_t1c = ob.best_bid_t1c
+        best_bid_c = best_bid_t1c // 10  # for desert/deep-itm checks (cents semantics)
+        # Tick size that applies near the best bid. For active modes
+        # this is the increment we add/subtract to step inside or
+        # behind the best.
+        tick = _tick_at(ob.tick_schedule, max(10, best_bid_t1c))
+
+        if best_bid_t1c <= 0:
+            # Empty bid side — quote at theo - max_half_spread (cents)
+            target_t1c = (fair - cfg.max_half_spread_c) * 10
             mode = "no-best-bid"
-        elif self._is_desert(fair, best_bid):
-            # Desert: penny inside best
-            target = best_bid + 1
+        elif self._is_desert(fair, best_bid_c):
+            # Desert: penny inside best (one tick)
+            target_t1c = best_bid_t1c + tick
             mode = "desert-penny"
         elif fair >= 97:
-            # Deep ITM: match best (no pennying — too risky on near-certain Yes)
-            target = best_bid
+            # Deep ITM: match best
+            target_t1c = best_bid_t1c
             mode = "deep-itm-match"
         elif confidence >= cfg.penny_inside_min_confidence:
-            # Highest-confidence: N cents INSIDE the best — take the
-            # spot inside the LIP reference price. Most aggressive.
-            target = best_bid + max(1, cfg.penny_inside_distance)
+            # Highest-confidence: N ticks INSIDE the best
+            n_ticks = max(1, cfg.penny_inside_distance)
+            target_t1c = best_bid_t1c + n_ticks * tick
             mode = "active-penny"
         elif confidence >= cfg.match_best_min_confidence:
-            # Mid-confidence: MATCH the best — sit AT the reference price.
-            # No adverse-selection from being inside; full LIP credit at
-            # the reference (mult 1.0).
-            target = best_bid
+            # Mid-confidence: MATCH the best
+            target_t1c = best_bid_t1c
             mode = "active-match"
         else:
-            # Low-confidence: stay max_distance_from_best behind best
-            target = best_bid - cfg.max_distance_from_best
+            # Low-confidence: stay max_distance_from_best ticks behind best
+            target_t1c = best_bid_t1c - cfg.max_distance_from_best * tick
             mode = "active-follow"
 
-        # Anti-spoofing cap: never bid above theo + tolerance
-        cap = fair - 1 + cfg.theo_tolerance_c
-        bound_target = min(target, cap)
+        # Anti-spoofing cap: never bid above (theo - 1¢ + tolerance¢) — in t1c
+        cap_t1c = (fair - 1 + cfg.theo_tolerance_c) * 10
+        bound_target_t1c = min(target_t1c, cap_t1c)
 
-        # Clamp to valid Kalshi price range
-        final = max(1, min(99, bound_target))
-        size = self._size_for_quote(final, "bid")
+        # Clamp to valid range [1, 989] t1c (= 0.1¢ to 98.9¢)
+        final_t1c = max(1, min(989, bound_target_t1c))
+        # Snap to a quotable tick at the final price.
+        final_tick = _tick_at(ob.tick_schedule, final_t1c)
+        if final_tick > 1:
+            final_t1c = (final_t1c // final_tick) * final_tick
+        final_cents = max(1, min(99, (final_t1c + 5) // 10))  # display-rounded
+        size = self._size_for_quote_t1c(final_t1c, "bid")
 
         return SideDecision(
-            price=final,
+            price=final_cents,
+            price_t1c=final_t1c,
             size=size,
             skip=False,
-            reason=f"bid {mode}: best={best_bid}, target={target}, capped@{cap} → {final}c × {size}",
-            extras={"mode": mode, "best_bid": best_bid, "fair": fair, "cap": cap},
+            reason=(
+                f"bid {mode}: best_t1c={best_bid_t1c}, target_t1c={target_t1c}, "
+                f"capped@{cap_t1c} → {final_t1c}t1c ({final_t1c/10:.1f}¢) × {size}"
+            ),
+            extras={
+                "mode": mode, "best_bid_t1c": best_bid_t1c,
+                "fair": fair, "cap_t1c": cap_t1c, "tick": tick,
+            },
         )
 
     def _compute_ask(
         self, fair: int, ob: OrderbookSnapshot, confidence: float = 0.0,
     ) -> SideDecision:
         cfg = self._cfg
-        best_ask = ob.best_ask
+        best_ask_t1c = ob.best_ask_t1c
+        best_ask_c = best_ask_t1c // 10
+        tick = _tick_at(ob.tick_schedule, min(989, best_ask_t1c))
 
-        if best_ask >= 100:
-            target = fair + cfg.max_half_spread_c
+        if best_ask_t1c >= 1000:
+            target_t1c = (fair + cfg.max_half_spread_c) * 10
             mode = "no-best-ask"
-        elif self._is_desert(100 - fair, 100 - best_ask):
-            # Symmetric desert check (No-side perspective)
-            target = best_ask - 1
+        elif self._is_desert(100 - fair, 100 - best_ask_c):
+            target_t1c = best_ask_t1c - tick
             mode = "desert-penny"
         elif fair <= 3:
-            target = best_ask
+            target_t1c = best_ask_t1c
             mode = "deep-otm-match"
         elif fair >= 97:
-            target = best_ask
+            target_t1c = best_ask_t1c
             mode = "deep-itm-match"
         elif confidence >= cfg.penny_inside_min_confidence:
-            target = best_ask - max(1, cfg.penny_inside_distance)
+            n_ticks = max(1, cfg.penny_inside_distance)
+            target_t1c = best_ask_t1c - n_ticks * tick
             mode = "active-penny"
         elif confidence >= cfg.match_best_min_confidence:
-            target = best_ask
+            target_t1c = best_ask_t1c
             mode = "active-match"
         else:
-            target = best_ask + cfg.max_distance_from_best
+            target_t1c = best_ask_t1c + cfg.max_distance_from_best * tick
             mode = "active-follow"
 
-        # Anti-spoofing floor: never ask below theo - tolerance
-        floor = fair + 1 - cfg.theo_tolerance_c
-        bound_target = max(target, floor)
-        final = max(1, min(99, bound_target))
-        size = self._size_for_quote(final, "ask")
+        floor_t1c = (fair + 1 - cfg.theo_tolerance_c) * 10
+        bound_target_t1c = max(target_t1c, floor_t1c)
+        final_t1c = max(1, min(989, bound_target_t1c))
+        final_tick = _tick_at(ob.tick_schedule, final_t1c)
+        if final_tick > 1:
+            # Round UP to next tick on ask (don't sell cheaper than tick allows)
+            rem = final_t1c % final_tick
+            if rem != 0:
+                final_t1c = final_t1c + (final_tick - rem)
+        final_cents = max(1, min(99, (final_t1c + 5) // 10))
+        size = self._size_for_quote_t1c(final_t1c, "ask")
 
         return SideDecision(
-            price=final,
+            price=final_cents,
+            price_t1c=final_t1c,
             size=size,
             skip=False,
-            reason=f"ask {mode}: best={best_ask}, target={target}, floored@{floor} → {final}c × {size}",
-            extras={"mode": mode, "best_ask": best_ask, "fair": fair, "floor": floor},
+            reason=(
+                f"ask {mode}: best_t1c={best_ask_t1c}, target_t1c={target_t1c}, "
+                f"floored@{floor_t1c} → {final_t1c}t1c ({final_t1c/10:.1f}¢) × {size}"
+            ),
+            extras={
+                "mode": mode, "best_ask_t1c": best_ask_t1c,
+                "fair": fair, "floor_t1c": floor_t1c, "tick": tick,
+            },
         )
 
     def _is_desert(self, fair: int, best: int) -> bool:
@@ -311,16 +359,29 @@ class DefaultLIPQuoting:
     # ── sizing ───────────────────────────────────────────────────────
 
     def _size_for_quote(self, quote_cents: int, side: str) -> int:
+        # Cents shim so callers using the legacy entry point keep working.
+        return self._size_for_quote_t1c(quote_cents * 10, side)
+
+    def _size_for_quote_t1c(self, quote_t1c: int, side: str) -> int:
+        """Compute order size from `dollars_per_side` and the quote
+        price. All math in t1c so sub-cent prices size correctly.
+
+        cost_t1c is "tenths-of-cent we lose if filled at this quote":
+          - bid: equal to quote_t1c (we pay quote_t1c per contract)
+          - ask: equal to (1000 - quote_t1c) (max loss = full Yes payout)
+        Contracts = dollars_per_side × 1000 / cost_t1c (since 1000 t1c
+        = $1).
+        """
         cfg = self._cfg
         if cfg.dollars_per_side <= 0:
             return cfg.contracts_per_side
-        if quote_cents < 1 or quote_cents > 99:
+        if quote_t1c < 1 or quote_t1c > 989:
             return cfg.min_contracts
         if side == "bid":
-            cost = quote_cents
+            cost_t1c = quote_t1c
         elif side == "ask":
-            cost = max(1, 100 - quote_cents)
+            cost_t1c = max(1, 1000 - quote_t1c)
         else:
             return cfg.min_contracts
-        raw = int(cfg.dollars_per_side * 100 / cost)
+        raw = int(cfg.dollars_per_side * 1000 / cost_t1c)
         return max(cfg.min_contracts, min(cfg.max_contracts, raw))

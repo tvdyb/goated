@@ -301,6 +301,11 @@ class OrderManager:
                 count=decision.size,
                 limit_price_cents=decision.price,
                 post_only=True,
+                # Pass through the strategy's precise t1c price so the
+                # adapter can route through Kalshi's fractional path on
+                # sub-cent markets. Defaults to None on legacy callers
+                # (which means "derive from cents × 10").
+                limit_price_t1c=decision.price_t1c,
             ))
         except Exception as exc:
             logger.warning(

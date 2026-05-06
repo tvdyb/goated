@@ -210,6 +210,16 @@ def join_strike_data(
             "side_lock_bid": locks.get((ticker, "bid")),
             "side_lock_ask": locks.get((ticker, "ask")),
             "has_subcent_ticks": bool(ob.get("has_subcent_ticks", False)),
+            # Per-event + per-strike knob overrides (operator-set,
+            # layered between global and individual strikes). The
+            # template surfaces them in the expanded strike row so the
+            # operator can see what's active per-scope.
+            "event_knob_overrides": (
+                state_snapshot.get("event_knob_overrides") or {}
+            ).get(_event_ticker_of(ticker), {}),
+            "strike_knob_overrides": (
+                state_snapshot.get("strike_knob_overrides") or {}
+            ).get(ticker, {}),
         })
     return out
 
@@ -227,11 +237,48 @@ def _stats_for_strikes(
     lip_total = sum(
         (s["lip"] or {}).get("period_reward_dollars", 0.0) for s in strikes
     )
+    # Latest LIP end_date across the event's strikes — used as the
+    # "time left until this event/program ends" countdown on the event
+    # header. Falls back to 0 (= unknown) when no strike has a program.
+    end_ts_max = 0.0
+    for s in strikes:
+        lip = s.get("lip") or {}
+        ed = lip.get("end_date_ts") or 0.0
+        if ed and ed > end_ts_max:
+            end_ts_max = float(ed)
+    # Hourly / daily / per-minute LIP rate aggregated across this
+    # event's strikes — sum of share × reward × {3600, 86400, 60} /
+    # period_duration_s. Strikes with no LIP score / no period
+    # contribute 0.
+    hourly = 0.0
+    daily = 0.0
+    per_minute = 0.0
+    projected_period = 0.0
+    for s in strikes:
+        ls = s.get("lip_score")
+        lip = s.get("lip") or {}
+        period_s = float(s.get("lip_period_duration_s") or 0)
+        if ls is None or not period_s:
+            continue
+        reward = float(lip.get("period_reward_dollars") or 0)
+        if reward <= 0:
+            continue
+        share = float(getattr(ls, "pool_share", 0) or 0)
+        full = share * reward
+        projected_period += full
+        per_minute += full * 60.0 / period_s
+        hourly += full * 3600.0 / period_s
+        daily += full * 86400.0 / period_s
     return {
         "event_ticker": event_ticker,
         "strike_count": len(strikes),
         "quoting_count": quoting,
         "lip_total_dollars": lip_total,
+        "end_ts_max": end_ts_max,
+        "lip_rate_per_minute": per_minute,
+        "lip_rate_hourly": hourly,
+        "lip_rate_daily": daily,
+        "lip_projected_period": projected_period,
     }
 
 
@@ -296,6 +343,22 @@ def multi_event_summary(
         "quoting_count": sum(g["quoting_count"] for g in groups),
         "lip_total_dollars": sum(g["lip_total_dollars"] for g in groups),
         "events": [g["event_ticker"] for g in groups],
+        # Aggregated LIP earning rate across every active strike. Lets
+        # the operator see at a glance "I'm earning $X/min, $Y/hour"
+        # in real time. Computed from per-snapshot pool share × period
+        # reward, normalized to time units.
+        "lip_rate_per_minute": sum(
+            g.get("lip_rate_per_minute", 0.0) for g in groups
+        ),
+        "lip_rate_hourly": sum(
+            g.get("lip_rate_hourly", 0.0) for g in groups
+        ),
+        "lip_rate_daily": sum(
+            g.get("lip_rate_daily", 0.0) for g in groups
+        ),
+        "lip_projected_period": sum(
+            g.get("lip_projected_period", 0.0) for g in groups
+        ),
     }
 
 

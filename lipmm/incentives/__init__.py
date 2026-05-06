@@ -18,6 +18,7 @@ Architecture:
     by keeping the last good snapshot, and exposes a per-ticker lookup.
 """
 
+from lipmm.incentives.accrual import EarningsAccrual
 from lipmm.incentives.base import IncentiveProgram, IncentiveProvider
 from lipmm.incentives.cache import IncentiveCache
 from lipmm.incentives.kalshi import KalshiIncentiveProvider
@@ -28,6 +29,7 @@ from lipmm.incentives.score import (
 )
 
 __all__ = [
+    "EarningsAccrual",
     "IncentiveCache",
     "IncentiveProgram",
     "IncentiveProvider",

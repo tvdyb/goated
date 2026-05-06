@@ -39,22 +39,25 @@ class MaxNotionalPerSideGate:
         ask_reason = ""
 
         if not decision.bid.skip:
-            bid_notional = decision.bid.price * decision.bid.size / 100.0
+            # t1c × contracts / 1000 = dollars (10 t1c = 1¢, 100¢ = $1)
+            bid_t1c = decision.bid.effective_t1c()
+            bid_notional = bid_t1c * decision.bid.size / 1000.0
             if bid_notional > self._max_dollars:
                 bid_allow = False
                 bid_reason = (
                     f"bid notional ${bid_notional:.2f} > max ${self._max_dollars:.2f} "
-                    f"(price={decision.bid.price}c × size={decision.bid.size})"
+                    f"(price={bid_t1c/10:.1f}¢ × size={decision.bid.size})"
                 )
 
         if not decision.ask.skip:
-            # max loss on ask = (100 - price) × size cents
-            ask_notional = (100 - decision.ask.price) * decision.ask.size / 100.0
+            # max loss on ask = (1000 - price_t1c) × size / 1000 dollars
+            ask_t1c = decision.ask.effective_t1c()
+            ask_notional = (1000 - ask_t1c) * decision.ask.size / 1000.0
             if ask_notional > self._max_dollars:
                 ask_allow = False
                 ask_reason = (
                     f"ask notional ${ask_notional:.2f} > max ${self._max_dollars:.2f} "
-                    f"(price={decision.ask.price}c × size={decision.ask.size})"
+                    f"(price={ask_t1c/10:.1f}¢ × size={decision.ask.size})"
                 )
 
         return RiskVerdict(

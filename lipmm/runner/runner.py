@@ -116,6 +116,8 @@ class LIPRunner:
         risk_registry: RiskRegistry | None = None,
         control_state: "ControlState | None" = None,
         broadcaster: "Broadcaster | None" = None,
+        incentive_cache: "Any | None" = None,
+        earnings_accrual: "Any | None" = None,
     ) -> None:
         self._cfg = config
         self._theo = theo_registry
@@ -127,6 +129,8 @@ class LIPRunner:
         self._risk = risk_registry
         self._control = control_state
         self._broadcaster = broadcaster
+        self._incentive_cache = incentive_cache
+        self._earnings_accrual = earnings_accrual
 
         self._running = False
         self._cycle_id = 0
@@ -135,6 +139,11 @@ class LIPRunner:
         # broadcast at the end so the dashboard's strike grid sees Yes/No
         # best prices + L2 depth in lockstep with the runner.
         self._cycle_orderbooks: list[dict[str, Any]] = []
+        # Position cache: ticker → Yes contract qty (positive = long).
+        # Refreshed once per cycle from exchange.list_positions(). Used
+        # by MaxPositionPerSideGate to veto sides that would deepen an
+        # already-lopsided position.
+        self._position_cache: dict[str, int] = {}
 
     async def run(self) -> None:
         """Main loop. Returns on stop()."""
@@ -212,6 +221,15 @@ class LIPRunner:
             logger.warning("LIPRunner: ticker source failed: %s", exc)
             return
 
+        # Refresh position cache once per cycle. One API call regardless
+        # of strike count. Failures here don't block the cycle — gates
+        # that read positions just see {} and won't veto.
+        try:
+            positions = await self._exchange.list_positions()
+            self._position_cache = {p.ticker: int(p.quantity) for p in positions}
+        except Exception as exc:
+            logger.info("position cache refresh failed: %s", exc)
+
         # Round-robin: rotate the iteration starting point each cycle
         # so a per-cycle gate (MaxOrdersPerCycleGate) doesn't always
         # veto the same trailing strikes. With N tickers and a cap of
@@ -227,6 +245,20 @@ class LIPRunner:
         )
 
         for ticker in tickers:
+            # Re-check kill / global-pause on EVERY ticker iteration.
+            # If kill fires mid-cycle (e.g., 100-strike cycle, kill at
+            # strike #50), the remaining 50 strikes must NOT be
+            # processed — otherwise we'd place orders that the
+            # background cancel sweep then has to clean up. This
+            # check is just a state read (microseconds) so the cost
+            # of running it 100x per cycle is negligible.
+            if self._control is not None and self._control.should_skip_cycle():
+                logger.info(
+                    "cycle %d: kill/pause fired mid-cycle, halting remaining %d ticker(s)",
+                    self._cycle_id,
+                    len(tickers) - tickers.index(ticker),
+                )
+                break
             # Per-ticker pause check (cheap, before any I/O).
             if self._control is not None and self._control.should_skip_ticker(ticker):
                 continue
@@ -239,17 +271,89 @@ class LIPRunner:
                     "LIPRunner: error processing %s: %s", ticker, exc,
                 )
 
-        # End-of-cycle: broadcast the aggregated per-strike orderbooks
-        # so the dashboard's strike grid stays in lockstep with the
-        # runner. Best-effort; never crashes the cycle.
+        # End-of-cycle: accrue LIP earnings (running tally), then
+        # broadcast per-strike orderbooks. Best-effort; never crashes
+        # the cycle.
+        if self._earnings_accrual is not None and self._incentive_cache is not None:
+            try:
+                self._accrue_earnings()
+            except Exception as exc:
+                logger.info("earnings accrual failed: %s", exc)
+
         if self._broadcaster is not None and self._cycle_orderbooks:
             try:
-                await self._broadcaster.broadcast_orderbook({
+                payload = {
                     "strikes": self._cycle_orderbooks,
                     "last_cycle_ts": time.time(),
-                })
+                }
+                if self._earnings_accrual is not None:
+                    payload["accrual"] = self._earnings_accrual.snapshot()
+                await self._broadcaster.broadcast_orderbook(payload)
             except Exception as exc:
                 logger.info("orderbook broadcast failed: %s", exc)
+
+    def _accrue_earnings(self) -> None:
+        """End-of-cycle helper: for each strike with a live LIP program
+        and an orderbook, compute pool_share and accrue. Idempotent
+        (track() ignores zero/negative inputs)."""
+        from lipmm.incentives import compute_strike_score
+        cycle_dt = float(self._cfg.cycle_seconds)
+        # Snapshot incentive programs by ticker for fast lookup.
+        try:
+            programs = self._incentive_cache.snapshot()
+        except Exception:
+            return
+        progs_by_ticker: dict[str, Any] = {}
+        for p in programs:
+            progs_by_ticker.setdefault(p.market_ticker, p)
+        for entry in self._cycle_orderbooks:
+            ticker = entry.get("ticker")
+            if not ticker:
+                continue
+            prog = progs_by_ticker.get(ticker)
+            if prog is None:
+                continue
+            df_bps = getattr(prog, "discount_factor_bps", None)
+            target = getattr(prog, "target_size_contracts", None)
+            if df_bps is None or target is None:
+                continue
+            df = df_bps / 10000.0
+            period_duration_s = max(
+                0.0,
+                float(getattr(prog, "end_date_ts", 0) or 0)
+                - float(getattr(prog, "start_date_ts", 0) or 0),
+            )
+            if period_duration_s <= 0:
+                continue
+            # Resting orders for this strike: read from OrderManager.
+            our_orders = []
+            for side in ("bid", "ask"):
+                ro = self._om.get_resting(ticker, side)
+                if ro is not None:
+                    our_orders.append({
+                        "order_id": ro.order_id,
+                        "side": side,
+                        "price_cents": ro.price_cents,
+                        "size": ro.size,
+                    })
+            try:
+                score = compute_strike_score(
+                    our_orders=our_orders,
+                    yes_levels=entry.get("yes_levels", []),
+                    no_levels=entry.get("no_levels", []),
+                    best_bid_c=int(entry.get("best_bid_c", 0)),
+                    best_ask_c=int(entry.get("best_ask_c", 100)),
+                    discount_factor=df,
+                    target_size_contracts=float(target),
+                )
+            except Exception:
+                continue
+            self._earnings_accrual.track(
+                ticker, score.pool_share,
+                float(prog.period_reward_dollars),
+                period_duration_s,
+                cycle_dt,
+            )
 
     async def _process_ticker(self, ticker: str) -> None:
         now_ts = time.time()
@@ -279,25 +383,36 @@ class LIPRunner:
         # Compute best_bid / best_ask excluding our own resting orders
         cur_bid = self._om.get_resting(ticker, "bid")
         cur_ask = self._om.get_resting(ticker, "ask")
-        cur_bid_px = cur_bid.price_cents if cur_bid else 0
+        # OrderManager.RestingOrder stores cents only (Phase-2 adds t1c
+        # to RestingOrder if we need exact subcent self-exclusion). For
+        # now, t1c ≈ price_cents × 10 — coarse but lets the rest of the
+        # pipeline use t1c uniformly.
+        cur_bid_px_t1c = (cur_bid.price_cents * 10) if cur_bid else 0
         cur_bid_size = cur_bid.size if cur_bid else 0
-        cur_ask_px = cur_ask.price_cents if cur_ask else 0
+        cur_ask_px_t1c = (cur_ask.price_cents * 10) if cur_ask else 0
         cur_ask_size = cur_ask.size if cur_ask else 0
-        best_bid = _best_excluding_self(
-            ob_levels.yes_levels, cur_bid_px, cur_bid_size,
+        # _best_excluding_self works in t1c units now (orderbook levels are t1c).
+        best_bid_t1c = _best_excluding_self(
+            ob_levels.yes_levels, cur_bid_px_t1c, cur_bid_size,
         )
-        # ask = 100 - best No-bid (inverted), excluding our No-side reflection
-        our_no_for_ask = (100 - cur_ask_px) if cur_ask_px > 0 else 0
-        best_no_bid = _best_excluding_self(
-            ob_levels.no_levels, our_no_for_ask, cur_ask_size,
+        # ask = 1000 - best No-bid (inverted), excluding our No-side reflection
+        our_no_for_ask_t1c = (1000 - cur_ask_px_t1c) if cur_ask_px_t1c > 0 else 0
+        best_no_bid_t1c = _best_excluding_self(
+            ob_levels.no_levels, our_no_for_ask_t1c, cur_ask_size,
         )
-        best_ask = (100 - best_no_bid) if best_no_bid > 0 else 100
+        best_ask_t1c = (1000 - best_no_bid_t1c) if best_no_bid_t1c > 0 else 1000
+        # Cents-rounded for legacy callers / display
+        best_bid = (best_bid_t1c + 5) // 10  # nearest cent
+        best_ask = (best_ask_t1c + 5) // 10
 
         ob_snapshot = OrderbookSnapshot(
             yes_depth=ob_levels.yes_levels,
             no_depth=ob_levels.no_levels,
             best_bid=best_bid,
             best_ask=best_ask,
+            best_bid_t1c=best_bid_t1c,
+            best_ask_t1c=best_ask_t1c,
+            tick_schedule=list(ob_levels.tick_schedule),
         )
 
         # 2. Theo. If the operator has plugged in a manual override via
@@ -314,17 +429,21 @@ class LIPRunner:
             # Market-following: theo = orderbook mid each cycle.
             # Degenerate book (one-sided or crossed) → confidence=0
             # so the strategy skips both sides safely.
-            if best_bid > 0 and best_ask < 100 and best_bid < best_ask:
-                mid_cents = (best_bid + best_ask) / 2.0
+            if best_bid_t1c > 0 and best_ask_t1c < 1000 and best_bid_t1c < best_ask_t1c:
+                # Mid in t1c precision so sub-cent mids carry through.
+                mid_t1c = (best_bid_t1c + best_ask_t1c) / 2.0
+                mid_cents = mid_t1c / 10.0
                 theo = TheoResult(
-                    yes_probability=mid_cents / 100.0,
+                    yes_probability=mid_t1c / 1000.0,
                     confidence=override.confidence,
                     computed_at=now_ts,
                     source=f"manual-override-mid:{override.actor}",
                     extras={
                         "override_reason": override.reason,
                         "mid_cents": mid_cents,
+                        "mid_t1c": mid_t1c,
                         "best_bid_c": best_bid, "best_ask_c": best_ask,
+                        "best_bid_t1c": best_bid_t1c, "best_ask_t1c": best_ask_t1c,
                     },
                 )
             else:
@@ -372,6 +491,8 @@ class LIPRunner:
         })
 
         # 3. Strategy decision
+        cur_bid_px = (cur_bid_px_t1c + 5) // 10 if cur_bid_px_t1c else 0
+        cur_ask_px = (cur_ask_px_t1c + 5) // 10 if cur_ask_px_t1c else 0
         our_state = OurState(
             cur_bid_px=cur_bid_px,
             cur_bid_size=cur_bid_size,
@@ -379,10 +500,16 @@ class LIPRunner:
             cur_ask_px=cur_ask_px,
             cur_ask_size=cur_ask_size,
             cur_ask_id=cur_ask.order_id if cur_ask else None,
+            cur_bid_px_t1c=cur_bid_px_t1c,
+            cur_ask_px_t1c=cur_ask_px_t1c,
         )
-        # Apply control-plane runtime knob overrides if a ControlState is wired.
+        # Apply control-plane runtime knob overrides if a ControlState
+        # is wired. Per-strike > per-event > global precedence: strikes
+        # under an event get the merged dict from
+        # `effective_knobs_for(ticker)` so operator-pinned values for
+        # one strike don't leak to its siblings.
         control_overrides = (
-            self._control.control_overrides_for_strategy()
+            self._control.control_overrides_for_strategy(ticker=ticker)
             if self._control is not None else None
         )
         decision: QuotingDecision = await self._strategy.quote(
@@ -467,8 +594,10 @@ class LIPRunner:
                 all_resting_count=agg_count,
                 all_resting_notional=agg_notional,
                 control_overrides=(
-                    self._control.all_knobs() if self._control is not None else None
+                    self._control.effective_knobs_for(ticker)
+                    if self._control is not None else None
                 ),
+                position_quantity=self._position_cache.get(ticker, 0),
             )
             decision, risk_audit = await self._risk.evaluate(risk_ctx)
 

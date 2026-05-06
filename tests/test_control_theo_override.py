@@ -288,6 +288,7 @@ async def test_runner_uses_theo_override_when_set(monkeypatch) -> None:
             )
 
     captured_theo: list[TheoResult] = []
+    captured_by_ticker: dict[str, TheoResult] = {}
 
     class _CapturingStrategy:
         name = "capturing"
@@ -296,6 +297,7 @@ async def test_runner_uses_theo_override_when_set(monkeypatch) -> None:
         async def quote(self, *, ticker, theo, orderbook, our_state,
                         now_ts, time_to_settle_s, control_overrides=None):
             captured_theo.append(theo)
+            captured_by_ticker[ticker] = theo
             from lipmm.quoting import QuotingDecision, SideDecision
             return QuotingDecision(
                 bid=SideDecision(price=0, size=0, skip=True, reason="test"),
@@ -343,10 +345,11 @@ async def test_runner_uses_theo_override_when_set(monkeypatch) -> None:
 
     # Provider was called for KX-T2 only
     assert provider_calls == ["KX-T2"]
-    # Strategy received the override theo for KX-T1 and the provider's for KX-T2
+    # Strategy received the override theo for KX-T1 and the provider's
+    # for KX-T2 (lookup by ticker since round-robin can rotate order)
     assert len(captured_theo) == 2
-    t1 = captured_theo[0]
-    t2 = captured_theo[1]
+    t1 = captured_by_ticker["KX-T1"]
+    t2 = captured_by_ticker["KX-T2"]
     assert t1.yes_probability == 0.77
     assert t1.confidence == 0.9
     assert t1.source.startswith("manual-override:")
@@ -403,9 +406,9 @@ async def test_runner_track_mid_builds_theo_from_orderbook_mid() -> None:
         async def list_active_tickers(self, exchange): return ["KX-T1"]
 
     # Best yes bid 80, best yes ask 84 → mid = 82
-    yes_levels = [(80, 100.0)]
-    # No bid at 16 = yes ask 84
-    no_levels = [(16, 100.0)]
+    # Levels in t1c: 800 t1c = 80¢, 160 t1c = 16¢ (= yes ask 84¢)
+    yes_levels = [(800, 100.0)]
+    no_levels = [(160, 100.0)]
 
     state = ControlState()
     await state.set_theo_override(

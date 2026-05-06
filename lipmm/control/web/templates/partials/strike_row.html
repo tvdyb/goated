@@ -426,7 +426,7 @@
         {% endif %}
       </div>
       <form class="grid gap-3" data-form="theo-override-inline" data-ticker="{{ s.ticker }}"
-            style="grid-template-columns: 130px 110px 110px 1fr auto;">
+            style="grid-template-columns: 110px 90px 90px 1fr 110px auto;">
         <input type="hidden" name="ticker" value="{{ s.ticker }}">
         <label class="rounded border px-2 py-1 flex flex-col"
                style="background: var(--surface); border-color: var(--border);">
@@ -464,6 +464,15 @@
                  placeholder="why are you overriding?"
                  class="bg-transparent outline-none text-[13px]"
                  style="color: var(--ink-hi);">
+        </label>
+        <label class="rounded border px-2 py-1 flex flex-col"
+               style="background: var(--surface); border-color: var(--border);"
+               title="Optional auto-expiry. Leave blank for permanent override.">
+          <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Auto-clear (min)</span>
+          <input type="number" name="auto_clear_minutes" step="1" min="1" max="10080"
+                 placeholder="∞ (blank = permanent)"
+                 class="bg-transparent outline-none tabular-nums text-[13px]"
+                 style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">
         </label>
         <div class="flex items-end gap-1.5">
           {% if has_override %}
@@ -505,6 +514,80 @@
           Anti-spoofing cap (<code>theo_tolerance_c</code>) still binds at every level: bid won't exceed
           theo−1+tol, ask won't drop below theo+1−tol.
         </div>
+      </div>
+
+      {# ── Per-strike knob overrides (highest precedence) ───── #}
+      <div class="mt-3 rounded border px-2 py-1.5"
+           style="background: var(--surface); border-color: var(--border);">
+        <div class="text-[9px] uppercase tracking-[0.12em] mb-1.5" style="color: var(--ink-lo);">
+          Per-strike knob overrides
+          <span class="text-[9px]" style="color: var(--ink-dim);">
+            · highest precedence: strike &gt; event &gt; global &gt; default
+          </span>
+        </div>
+        {# Show currently-active per-strike overrides (with clear buttons). #}
+        {% if s.strike_knob_overrides %}
+          <div class="flex flex-wrap gap-1.5 mb-1.5">
+            {% for kn, val in s.strike_knob_overrides.items() %}
+              <span class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]"
+                    style="background: #0e2238; color: var(--info); border-color: #28486e;
+                           font-family: 'JetBrains Mono', ui-monospace;">
+                {{ kn }}={{ '%.2f'|format(val) }}
+                <button data-call="/control/clear_strike_knob"
+                        data-payload='{"ticker":"{{ s.ticker }}","name":"{{ kn }}"}'
+                        data-confirm="Clear strike-level {{ kn }} on {{ s.ticker }}? Reverts to event/global/default."
+                        class="text-[10px] hover:brightness-150"
+                        style="color: var(--no);">×</button>
+              </span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {# Show event-level overrides (read-only here; clear via drawer). #}
+        {% if s.event_knob_overrides %}
+          <div class="flex flex-wrap gap-1.5 mb-1.5">
+            {% for kn, val in s.event_knob_overrides.items() %}
+              <span class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]"
+                    style="background: #2b2410; color: var(--lip); border-color: #5a4923;
+                           font-family: 'JetBrains Mono', ui-monospace;"
+                    title="Event-level (applies to all strikes in this event)">
+                event:{{ kn }}={{ '%.2f'|format(val) }}
+              </span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        <form class="flex items-center gap-2" data-form="strike-knob-set" data-ticker="{{ s.ticker }}">
+          <input type="hidden" name="ticker" value="{{ s.ticker }}">
+          <select name="name"
+                  class="bg-transparent outline-none text-[11px] rounded border px-1.5 py-0.5"
+                  style="background: var(--surface); color: var(--ink-hi); border-color: var(--border);">
+            <option value="dollars_per_side">dollars_per_side</option>
+            <option value="penny_inside_distance">penny_inside_distance</option>
+            <option value="penny_inside_min_confidence">penny_inside_min_confidence</option>
+            <option value="match_best_min_confidence">match_best_min_confidence</option>
+            <option value="theo_tolerance_c">theo_tolerance_c</option>
+            <option value="max_distance_from_best">max_distance_from_best</option>
+            <option value="desert_threshold_c">desert_threshold_c</option>
+            <option value="min_theo_confidence">min_theo_confidence</option>
+            <option value="sticky_min_distance_from_theo">sticky_min_distance_from_theo</option>
+            <option value="sticky_desert_jump_cents">sticky_desert_jump_cents</option>
+          </select>
+          <input type="number" name="value" step="0.05" required placeholder="value"
+                 class="bg-transparent outline-none text-[11px] rounded border px-1.5 py-0.5 w-24"
+                 style="background: var(--surface); color: var(--ink-hi); border-color: var(--border);
+                        font-family: 'JetBrains Mono', ui-monospace;">
+          <button type="submit"
+                  class="text-[11px] px-2 py-0.5 rounded border"
+                  style="background: #0e2238; color: var(--info); border-color: #28486e;">
+            set strike
+          </button>
+          <button type="button"
+                  data-action="set-event-knob" data-ticker="{{ s.ticker }}"
+                  class="text-[11px] px-2 py-0.5 rounded border"
+                  style="background: #2b2410; color: var(--lip); border-color: #5a4923;"
+                  title="Apply to whole event (all strikes under this event ticker)">
+            set event
+          </button>
+        </form>
       </div>
     </div>
   </div>

@@ -36,28 +36,53 @@ from lipmm.theo import TheoResult
 class OrderbookSnapshot:
     """One cycle's view of an orderbook for one strike.
 
-    `yes_depth` and `no_depth` are sorted highest-price-first
-    (best-first by Kalshi convention). Each entry is (price_cents, size).
-    `best_bid` is highest Yes bid excluding our own resting orders;
-    `best_ask` is computed via 100 - best_no_bid (also excluding ours).
+    Two coexisting unit views:
+      - **t1c (tenths-of-a-cent)**: `yes_depth`, `no_depth`,
+        `best_bid_t1c`, `best_ask_t1c`. 10 t1c = 1¢. Sub-cent
+        markets carry levels like 977 (= 97.7¢). The strategy uses
+        these when it cares about sub-cent precision.
+      - **cents (rounded)**: `best_bid`, `best_ask`. Legacy facade —
+        rounded to nearest whole cent for simple display. Strategies
+        that don't care about sub-cent can keep using these.
+
+    `tick_schedule` describes the per-range tick granularity (see
+    `lipmm.execution.base.TickSchedule`). Strategy looks up the
+    applicable tick at any given price via `tick_at(schedule, p)`.
     """
 
-    yes_depth: list[tuple[int, float]]
+    yes_depth: list[tuple[int, float]]   # [(price_t1c, size), ...]
     no_depth: list[tuple[int, float]]
-    best_bid: int            # highest Yes bid (excluding ours), 0 if empty
-    best_ask: int            # lowest Yes ask (excluding ours), 100 if empty
+    best_bid: int            # highest Yes bid (excluding ours), 0 if empty (cents, rounded)
+    best_ask: int            # lowest Yes ask (excluding ours), 100 if empty (cents, rounded)
+    best_bid_t1c: int = -1   # sentinel: -1 = "derive from cents × 10"
+    best_ask_t1c: int = -1   # sentinel: -1 = "derive from cents × 10"
+    tick_schedule: list = field(default_factory=lambda: [(10, 990, 10)])
+
+    def __post_init__(self) -> None:
+        # Auto-derive t1c from cents when caller (e.g. legacy test)
+        # only provided cents. Lossy on sub-cent but lets old code paths
+        # keep working unchanged.
+        if self.best_bid_t1c == -1:
+            object.__setattr__(self, "best_bid_t1c", self.best_bid * 10)
+        if self.best_ask_t1c == -1:
+            object.__setattr__(
+                self, "best_ask_t1c",
+                self.best_ask * 10 if self.best_ask < 100 else 1000,
+            )
 
 
 @dataclass(frozen=True)
 class OurState:
     """What we currently have resting on Kalshi for this strike."""
 
-    cur_bid_px: int          # 0 if no order
+    cur_bid_px: int          # 0 if no order (cents, rounded)
     cur_bid_size: int        # 0 if no order
     cur_bid_id: str | None
-    cur_ask_px: int          # 0 if no order
+    cur_ask_px: int          # 0 if no order (cents, rounded)
     cur_ask_size: int        # 0 if no order
     cur_ask_id: str | None
+    cur_bid_px_t1c: int = 0  # tenths-of-a-cent; 0 if no order
+    cur_ask_px_t1c: int = 0  # tenths-of-a-cent; 0 if no order
 
 
 # ── Outputs the strategy returns ──────────────────────────────────────
@@ -67,16 +92,16 @@ class OurState:
 class SideDecision:
     """Strategy's decision for one side (bid or ask) of one strike.
 
-      price:  cents, in [1, 99]. Ignored if skip=True.
-      size:   contracts. Ignored if skip=True.
-      skip:   True → bot cancels any existing order on this side and does NOT
-              place a new one. Use for COOLDOWN, theo-confidence-too-low,
-              sticky-bypass-dead-strike, etc.
-      reason: human-readable, surfaced in decision logs and dashboards.
-              Should be specific enough that an analyst (or LLM) reading
-              "amend bid 22→23 (penny inside 24c best)" gets the why.
-      extras: strategy-specific debugging detail (sticky state, anti-spoof
-              calculations, etc.). Goes into decision-log record.
+      price:    cents, in [1, 99]. Ignored if skip=True. Always set;
+                rounded from price_t1c when sub-cent.
+      price_t1c:tenths-of-a-cent; precise quote price. Adapter routes
+                through Kalshi's fractional path when this isn't a
+                whole-cent multiple. Defaults to price × 10.
+      size:     contracts. Ignored if skip=True.
+      skip:     True → bot cancels any existing order on this side and
+                does NOT place a new one.
+      reason:   human-readable, surfaced in decision logs and dashboards.
+      extras:   strategy-specific debugging detail.
     """
 
     price: int
@@ -84,6 +109,12 @@ class SideDecision:
     skip: bool = False
     reason: str = ""
     extras: dict[str, Any] = field(default_factory=dict)
+    price_t1c: int | None = None
+
+    def effective_t1c(self) -> int:
+        """Return the precise quote price in t1c. Falls back to
+        `price * 10` when the strategy didn't set price_t1c."""
+        return self.price_t1c if self.price_t1c is not None else self.price * 10
 
 
 @dataclass(frozen=True)

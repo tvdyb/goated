@@ -651,6 +651,31 @@
         }
         return;
       }
+      const setEventKnobBtn = e.target.closest('[data-action="set-event-knob"]');
+      if (setEventKnobBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const ticker = setEventKnobBtn.dataset.ticker;
+        if (!ticker) return;
+        const eventTicker = ticker.lastIndexOf("-") > 0
+          ? ticker.substring(0, ticker.lastIndexOf("-")) : ticker;
+        // Read sibling form's name + value inputs.
+        const form = setEventKnobBtn.closest('form[data-form="strike-knob-set"]');
+        if (!form) return showToast("form not found");
+        const fd = new FormData(form);
+        const name = (fd.get("name") || "").trim();
+        const value = parseFloat(fd.get("value"));
+        if (!name) return showToast("knob name required");
+        if (!Number.isFinite(value)) return showToast("value must be a number");
+        if (!confirm(
+          `Apply ${name}=${value} to ALL strikes in event ${eventTicker}?\n\n` +
+          `(Per-strike overrides on the same knob still win for those strikes.)`,
+        )) return;
+        await callJson("/control/set_event_knob", {
+          event_ticker: eventTicker, name, value,
+        });
+        return;
+      }
       const unlockAllBtn = e.target.closest('[data-action="unlock-all-event"]');
       if (unlockAllBtn) {
         e.preventDefault();
@@ -808,11 +833,32 @@
         if (ttl) body.auto_unlock_seconds = parseFloat(ttl);
         await callJson("/control/lock_side", body);
         form.reset();
+      } else if (kind === "strike-knob-set") {
+        const ticker = (fd.get("ticker") || form.dataset.ticker || "").trim();
+        const name = (fd.get("name") || "").trim();
+        const value = parseFloat(fd.get("value"));
+        if (!ticker) return showToast("ticker required");
+        if (!name) return showToast("knob name required");
+        if (!Number.isFinite(value)) return showToast("value must be a number");
+        await callJson("/control/set_strike_knob", {
+          ticker, name, value,
+        });
+        return;
       } else if (kind === "theo-override" || kind === "theo-override-inline") {
         const ticker = (fd.get("ticker") || form.dataset.ticker || "").trim();
         const mode = (fd.get("mode") || "fixed").trim();
         const confidence = parseFloat(fd.get("confidence"));
         const reason = (fd.get("reason") || "").trim();
+        // Optional auto-clear: minutes input → seconds for the API
+        const acRaw = fd.get("auto_clear_minutes");
+        let auto_clear_seconds = null;
+        if (acRaw && String(acRaw).trim() !== "") {
+          const acMin = parseFloat(acRaw);
+          if (!Number.isFinite(acMin) || acMin <= 0 || acMin > 10080) {
+            return showToast("auto-clear must be 1..10080 minutes (= 1 week)");
+          }
+          auto_clear_seconds = acMin * 60;
+        }
         // yes_cents handling: in track_mid mode it's a server-side
         // placeholder (the runner ignores it). Don't gate the submit on
         // it being readable from the form — readonly/disabled state
@@ -872,9 +918,9 @@
         if (typed.trim() !== ticker) {
           return showToast(`override aborted — typed "${typed}" did not match "${ticker}"`);
         }
-        await callJson("/control/set_theo_override", {
-          ticker, yes_cents, confidence, reason, mode,
-        });
+        const body = { ticker, yes_cents, confidence, reason, mode };
+        if (auto_clear_seconds !== null) body.auto_clear_seconds = auto_clear_seconds;
+        await callJson("/control/set_theo_override", body);
         // Clear the draft for this strike — submission succeeded, the
         // server-side state is now the source of truth and the next
         // render will reflect it.

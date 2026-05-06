@@ -92,23 +92,63 @@ class KalshiExchangeAdapter:
         rejection (insufficient funds, post-only cross, etc.). Raises on
         5xx or transport error.
 
+        Sub-cent path: when the request carries a `limit_price_t1c` that
+        isn't a whole-cent multiple (e.g. 977 = 97.7¢), we send Kalshi
+        the fractional `yes_price_dollars: "0.977"` field. If Kalshi
+        rejects that (4xx — possibly because the market doesn't accept
+        fractional in this range), we fall back ONCE to integer cents
+        (rounded). This way a single bad subcent attempt doesn't stop
+        quoting on that strike — it just degrades.
+
         Note: Kalshi default GTC is implicit — we never send
         `time_in_force` for GTC because Kalshi 400s on the field even
         when the value is correct.
         """
+        t1c = request.effective_t1c()
+        is_subcent = t1c % 10 != 0
+        common_kwargs = dict(
+            ticker=request.ticker,
+            action=request.action,
+            side=request.side,
+            order_type="limit",
+            count=request.count,
+            post_only=request.post_only,
+        )
+        # Try fractional path first when the price is sub-cent.
+        if is_subcent:
+            yes_price_dollars = f"{t1c / 1000.0:.4f}"
+            try:
+                resp = await self._client.create_order(
+                    **common_kwargs,
+                    yes_price_dollars=yes_price_dollars,
+                )
+                order_dict = resp.get("order", {})
+                return _parse_order(
+                    order_dict, ticker=request.ticker,
+                    action=request.action, side=request.side,
+                    limit_price=request.limit_price_cents,
+                    limit_price_t1c=t1c,
+                    count=request.count,
+                )
+            except KalshiResponseError as exc:
+                if 400 <= (exc.status_code or 0) < 500:
+                    logger.warning(
+                        "Kalshi rejected sub-cent yes_price_dollars=%s on %s "
+                        "(status=%s): %s — falling back to integer cents",
+                        yes_price_dollars, request.ticker, exc.status_code, exc,
+                    )
+                    # Fall through to integer-cent retry below.
+                else:
+                    raise
+
+        # Whole-cent path (also the fallback for sub-cent rejections).
         try:
             resp = await self._client.create_order(
-                ticker=request.ticker,
-                action=request.action,
-                side=request.side,
-                order_type="limit",
-                count=request.count,
+                **common_kwargs,
                 yes_price=request.limit_price_cents,
-                post_only=request.post_only,
             )
         except KalshiResponseError as exc:
             if 400 <= (exc.status_code or 0) < 500:
-                # Genuine rejection (post-only cross, insufficient funds, etc.)
                 logger.info(
                     "Kalshi place_order rejected (status=%s): %s",
                     exc.status_code, exc,
@@ -120,6 +160,7 @@ class KalshiExchangeAdapter:
         return _parse_order(order_dict, ticker=request.ticker,
                             action=request.action, side=request.side,
                             limit_price=request.limit_price_cents,
+                            limit_price_t1c=t1c,
                             count=request.count)
 
     async def amend_order(
@@ -216,11 +257,19 @@ class KalshiExchangeAdapter:
         no_dollars = ob_fp.get("no_dollars", []) or []
         yes_lv, yes_subcent = _parse_depth(yes_dollars)
         no_lv, no_subcent = _parse_depth(no_dollars)
+        has_subcent = yes_subcent or no_subcent
+        # Infer a per-range tick schedule from the observed levels.
+        # Some Kalshi markets have a "U-shape" schedule (sub-cent at
+        # the edges, whole-cent in the middle). Inference is
+        # best-effort; a band only flags as sub-cent if at least one
+        # observed level there has t1c % 10 != 0.
+        tick_schedule = _infer_tick_schedule(yes_lv, no_lv)
         return OrderbookLevels(
             ticker=ticker,
             yes_levels=yes_lv,
             no_levels=no_lv,
-            has_subcent_ticks=yes_subcent or no_subcent,
+            has_subcent_ticks=has_subcent,
+            tick_schedule=tick_schedule,
         )
 
     async def list_resting_orders(self) -> list[Order]:
@@ -279,12 +328,17 @@ class KalshiExchangeAdapter:
 
 def _parse_depth(levels: list) -> tuple[list[tuple[int, float]], bool]:
     """Parse Kalshi `[[price_str_dollars, size_str], ...]` into
-    `[(price_cents, size), ...]` sorted highest-first.
+    `[(price_t1c, size), ...]` sorted highest-first.
 
-    Returns `(levels, has_subcent)`. `has_subcent` is True when any
-    input price had a non-integer cent value (e.g., "0.4510" → 45.1¢).
-    Kalshi order placement is integer-cents-only, so a True flag means
-    the bot cannot competitively quote this market."""
+    `t1c` = tenths-of-a-cent (10 = 1¢, 1 = 0.1¢). For a normal
+    whole-cent market level "0.4500" → 4500/10 = 450 t1c. For a
+    sub-cent level "0.9778" → 977.8 → 978 t1c (rounded to nearest
+    0.1¢ since Kalshi prices come as 4-decimal dollars).
+
+    Returns `(levels_t1c, has_subcent)`. `has_subcent` is True when
+    any level isn't a whole-cent multiple — used by the caller to
+    select the right tick schedule and route place_order through
+    the fractional path."""
     if not levels:
         return [], False
     parsed: list[tuple[int, float]] = []
@@ -293,19 +347,50 @@ def _parse_depth(levels: list) -> tuple[list[tuple[int, float]], bool]:
         if not isinstance(lv, (list, tuple)) or len(lv) < 2:
             continue
         try:
-            cents_float = float(lv[0]) * 100.0
+            # dollars × 1000 = tenths-of-a-cent
+            t1c_float = float(lv[0]) * 1000.0
             sz = float(lv[1])
         except (ValueError, TypeError):
             continue
-        # Detect fractional cents (e.g., 45.1 → not equal to its rounded
-        # integer). Tolerance handles float-rep noise from "0.4500".
-        rounded = round(cents_float)
-        if abs(cents_float - rounded) > 1e-3:
+        t1c = int(round(t1c_float))
+        # Sub-cent if t1c isn't a whole-cent multiple. Tolerance handled
+        # by rounding above (fp noise from "0.4500" still rounds to 4500).
+        if t1c % 10 != 0:
             has_subcent = True
-        px = int(rounded)
-        parsed.append((px, sz))
+        parsed.append((t1c, sz))
     parsed.sort(key=lambda x: -x[0])  # highest-first
     return parsed, has_subcent
+
+
+def _infer_tick_schedule(
+    yes_t1c: list[tuple[int, float]],
+    no_t1c: list[tuple[int, float]],
+) -> "TickSchedule":
+    """Best-effort inference of the per-range tick granularity from
+    observed levels.
+
+    Heuristic: check whether any level is sub-cent in three regions:
+      - low edge   [10, 100)   (0.1¢..9.9¢)
+      - middle     [100, 900)  (10¢..89.9¢)
+      - high edge  [900, 990)  (90¢..98.9¢)
+    A region is "subcent" iff at least one observed level there has
+    `t1c % 10 != 0`. Otherwise it defaults to whole-cent.
+
+    Default fallback (no levels observed in any region): all
+    whole-cent — the strategy can fall back gracefully.
+    """
+    from lipmm.execution.base import TickSchedule  # local import to avoid cycle
+
+    all_levels = list(yes_t1c) + list(no_t1c)
+    bands = [(10, 100), (100, 900), (900, 990)]
+    schedule: TickSchedule = []
+    for lo, hi in bands:
+        in_band = [t for (t, _) in all_levels if lo <= t < hi]
+        if any(t % 10 != 0 for t in in_band):
+            schedule.append((lo, hi, 1))   # sub-cent in this band
+        else:
+            schedule.append((lo, hi, 10))  # whole-cent in this band
+    return schedule
 
 
 def _parse_order(
@@ -314,6 +399,7 @@ def _parse_order(
     action: str | None = None,
     side: str | None = None,
     limit_price: int | None = None,
+    limit_price_t1c: int | None = None,
     count: int | None = None,
 ) -> Order:
     """Parse a Kalshi order dict into an Order dataclass.
@@ -330,26 +416,36 @@ def _parse_order(
     # (int), but /portfolio/orders returns `yes_price_dollars` as a
     # string like "0.4500". Check the cents field first; fall through
     # to the dollar string field; finally to the kwarg.
+    parsed_t1c: int | None = limit_price_t1c
     if "yes_price" in o and o["yes_price"] is not None:
         try:
             parsed_limit = int(o["yes_price"])
+            if parsed_t1c is None:
+                parsed_t1c = parsed_limit * 10
         except (TypeError, ValueError):
             parsed_limit = limit_price or 0
     elif "yes_price_dollars" in o and o["yes_price_dollars"] is not None:
-        # "0.4500" → 45 cents
+        # "0.4500" → 45 cents; "0.9778" → 977.8 → 978 t1c → 98 cents (rounded)
         try:
-            parsed_limit = int(round(float(o["yes_price_dollars"]) * 100))
+            t1c_from_str = int(round(float(o["yes_price_dollars"]) * 1000))
+            parsed_t1c = t1c_from_str
+            parsed_limit = (t1c_from_str + 5) // 10
         except (TypeError, ValueError):
             parsed_limit = limit_price or 0
     elif "no_price_dollars" in o and o["no_price_dollars"] is not None:
         # Some sell-side orders only return no_price_dollars; convert
-        # via 100 - no_price.
+        # via (1000 - no_t1c) for yes equivalent.
         try:
-            parsed_limit = 100 - int(round(float(o["no_price_dollars"]) * 100))
+            no_t1c = int(round(float(o["no_price_dollars"]) * 1000))
+            yes_t1c = 1000 - no_t1c
+            parsed_t1c = yes_t1c
+            parsed_limit = (yes_t1c + 5) // 10
         except (TypeError, ValueError):
             parsed_limit = limit_price or 0
     elif limit_price is not None:
         parsed_limit = limit_price
+        if parsed_t1c is None:
+            parsed_t1c = limit_price * 10
     else:
         parsed_limit = 0
     if "remaining_count" in o and o["remaining_count"] is not None:
@@ -373,4 +469,5 @@ def _parse_order(
         limit_price_cents=parsed_limit,
         remaining_count=parsed_remaining,
         status=parsed_status,
+        limit_price_t1c=parsed_t1c,
     )

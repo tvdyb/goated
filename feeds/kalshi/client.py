@@ -314,6 +314,8 @@ class KalshiClient:
         count: int,
         yes_price: int | None = None,
         no_price: int | None = None,
+        yes_price_dollars: str | None = None,
+        no_price_dollars: str | None = None,
         time_in_force: str = "gtc",
         client_order_id: str | None = None,
         buy_max_cost: int | None = None,
@@ -354,6 +356,15 @@ class KalshiClient:
             body["yes_price"] = yes_price
         if no_price is not None:
             body["no_price"] = no_price
+        # Sub-cent pricing on markets with 0.1¢ tick granularity.
+        # Kalshi's documented payload supports an integer yes_price/no_price
+        # in cents; the decimal-dollars form is included defensively for
+        # markets that accept fractional prices. Adapter falls back to
+        # integer cents on a 4xx that smells like "fractional not allowed".
+        if yes_price_dollars is not None:
+            body["yes_price_dollars"] = yes_price_dollars
+        if no_price_dollars is not None:
+            body["no_price_dollars"] = no_price_dollars
         if client_order_id is not None:
             body["client_order_id"] = client_order_id
         if buy_max_cost is not None:

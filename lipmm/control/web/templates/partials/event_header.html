@@ -28,6 +28,25 @@
         </span>
       {% endif %}
     </div>
+    {# Live earning-rate pills: real-time aggregate of pool_share × pool
+       across all strikes, normalized to per-minute/hour/day units.
+       Sub-cent-precision math; updates each cycle via the orderbook
+       broadcast. #}
+    {% if summary.lip_rate_hourly and summary.lip_rate_hourly > 0 %}
+      <div class="flex items-center gap-2"
+           title="Aggregate LIP rate across all active strikes (current pool-share × pool, time-normalized). Updates each runner cycle.">
+        <span class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">earning</span>
+        <span class="font-mono tabular-nums text-[11px]" style="color: var(--lip);">
+          ${{ "%.4f"|format(summary.lip_rate_per_minute or 0) }}/m
+        </span>
+        <span class="font-mono tabular-nums text-[11px]" style="color: var(--lip);">
+          ${{ "%.3f"|format(summary.lip_rate_hourly or 0) }}/h
+        </span>
+        <span class="font-mono tabular-nums text-[11px]" style="color: var(--lip);">
+          ${{ "%.2f"|format(summary.lip_rate_daily or 0) }}/d
+        </span>
+      </div>
+    {% endif %}
   </div>
   {% include "partials/events_strip.html" %}
 </section>

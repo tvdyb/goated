@@ -54,6 +54,10 @@ from lipmm.control.broadcaster import Broadcaster
 from lipmm.control.commands import (
     AddEventRequest,
     AddEventResponse,
+    EventKnobClearRequest,
+    EventKnobUpdateRequest,
+    StrikeKnobClearRequest,
+    StrikeKnobUpdateRequest,
     ArmRequest,
     AuthRequest,
     AuthResponse,
@@ -317,39 +321,83 @@ def build_app(
         request: Request,
         actor: str = Depends(require_auth),
     ) -> CommandResponse:
+        """Engage the kill switch.
+
+        Latency-critical: responds **immediately** after the state
+        mutation (sub-50ms typically) so the dashboard reflects "killed"
+        instantly. Order cancellation runs in the BACKGROUND because
+        cancelling N orders against Kalshi can take seconds (per-order
+        REST calls under rate limits). The runner sees is_killed=True
+        within microseconds of the state mutation, so it stops placing
+        new orders even before cancellation finishes.
+
+        Background task emits a follow-up audit + broadcast when the
+        cancel sweep completes (or fails), so the operator sees the
+        final orders_cancelled count without polling.
+        """
         _check_if_version(req.if_version)
         version_before = state.version
         new_version = await state.kill()
-        # Invoke the kill handler (cancel all resting orders) AFTER
-        # state mutation so the runner sees is_killed=True if it races.
-        cancelled = 0
-        handler = request.app.state.kill_handler
-        if handler is not None:
-            try:
-                cancelled = await handler()
-            except Exception as exc:
-                logger.exception("kill_handler raised: %s", exc)
-                emit_audit(
-                    request.app.state.decision_logger,
-                    request_id=req.request_id, actor=actor,
-                    command_type="kill",
-                    command_payload=req.model_dump(),
-                    state_version_before=version_before,
-                    state_version_after=new_version,
-                    succeeded=False,
-                    error=f"kill_handler error: {exc!r}",
-                    side_effect_summary={"orders_cancelled": cancelled},
-                )
-                raise HTTPException(500, f"kill handler error: {exc!r}") from exc
+        # Broadcast the state change FIRST so connected dashboards
+        # render "killed" immediately. Other tabs converge in <1s.
+        await _broadcast_change("kill", request_id=req.request_id, actor=actor)
         emit_audit(
             request.app.state.decision_logger,
             request_id=req.request_id, actor=actor,
             command_type="kill", command_payload=req.model_dump(),
             state_version_before=version_before, state_version_after=new_version,
             succeeded=True,
-            side_effect_summary={"orders_cancelled": cancelled},
+            side_effect_summary={"cancellation": "in_progress"},
         )
-        await _broadcast_change("kill", request_id=req.request_id, actor=actor)
+
+        # Fire-and-forget the cancel sweep. Don't await it.
+        handler = request.app.state.kill_handler
+        if handler is not None:
+            async def _cancel_sweep() -> None:
+                try:
+                    cancelled = await handler()
+                except Exception as exc:
+                    logger.exception("kill cancel sweep failed: %s", exc)
+                    emit_audit(
+                        request.app.state.decision_logger,
+                        request_id=req.request_id + ":cancel-sweep",
+                        actor=actor,
+                        command_type="kill_cancel_sweep",
+                        command_payload={},
+                        state_version_before=new_version,
+                        state_version_after=state.version,
+                        succeeded=False,
+                        error=f"cancel_all_resting raised: {exc!r}",
+                    )
+                    return
+                logger.info("kill cancel sweep finished: %d orders cancelled", cancelled)
+                emit_audit(
+                    request.app.state.decision_logger,
+                    request_id=req.request_id + ":cancel-sweep",
+                    actor=actor,
+                    command_type="kill_cancel_sweep",
+                    command_payload={},
+                    state_version_before=new_version,
+                    state_version_after=state.version,
+                    succeeded=True,
+                    side_effect_summary={"orders_cancelled": cancelled},
+                )
+                # Push a fresh runtime snapshot so the dashboard sees
+                # the resting-orders panel empty out without waiting
+                # for the next 5s tick.
+                broadcaster = request.app.state.broadcaster
+                collect = request.app.state.collect_runtime
+                if broadcaster is not None and callable(collect):
+                    try:
+                        snap = await collect()
+                        await broadcaster.broadcast_runtime(snap)
+                    except Exception as exc:
+                        logger.info(
+                            "post-kill runtime broadcast failed: %s", exc,
+                        )
+
+            asyncio.create_task(_cancel_sweep())
+
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
@@ -435,6 +483,110 @@ def build_app(
             succeeded=True,
         )
         await _broadcast_change("clear_knob", request_id=req.request_id, actor=actor)
+        return CommandResponse(
+            new_version=new_version, request_id=req.request_id, actor=actor,
+        )
+
+    # ── Per-scope knob overrides (event / strike) ─────────────────
+
+    @app.post("/control/set_event_knob", response_model=CommandResponse)
+    async def post_set_event_knob(
+        req: EventKnobUpdateRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        _check_if_version(req.if_version)
+        version_before = state.version
+        try:
+            new_version = await state.set_event_knob(
+                req.event_ticker, req.name, req.value,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="set_event_knob", command_payload=req.model_dump(),
+            state_version_before=version_before, state_version_after=new_version,
+            succeeded=True,
+        )
+        await _broadcast_change(
+            "set_event_knob", request_id=req.request_id, actor=actor,
+        )
+        return CommandResponse(
+            new_version=new_version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.post("/control/clear_event_knob", response_model=CommandResponse)
+    async def post_clear_event_knob(
+        req: EventKnobClearRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        _check_if_version(req.if_version)
+        version_before = state.version
+        new_version = await state.clear_event_knob(req.event_ticker, req.name)
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="clear_event_knob", command_payload=req.model_dump(),
+            state_version_before=version_before, state_version_after=new_version,
+            succeeded=True,
+        )
+        await _broadcast_change(
+            "clear_event_knob", request_id=req.request_id, actor=actor,
+        )
+        return CommandResponse(
+            new_version=new_version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.post("/control/set_strike_knob", response_model=CommandResponse)
+    async def post_set_strike_knob(
+        req: StrikeKnobUpdateRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        _check_if_version(req.if_version)
+        version_before = state.version
+        try:
+            new_version = await state.set_strike_knob(
+                req.ticker, req.name, req.value,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="set_strike_knob", command_payload=req.model_dump(),
+            state_version_before=version_before, state_version_after=new_version,
+            succeeded=True,
+        )
+        await _broadcast_change(
+            "set_strike_knob", request_id=req.request_id, actor=actor,
+        )
+        return CommandResponse(
+            new_version=new_version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.post("/control/clear_strike_knob", response_model=CommandResponse)
+    async def post_clear_strike_knob(
+        req: StrikeKnobClearRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        _check_if_version(req.if_version)
+        version_before = state.version
+        new_version = await state.clear_strike_knob(req.ticker, req.name)
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="clear_strike_knob", command_payload=req.model_dump(),
+            state_version_before=version_before, state_version_after=new_version,
+            succeeded=True,
+        )
+        await _broadcast_change(
+            "clear_strike_knob", request_id=req.request_id, actor=actor,
+        )
         return CommandResponse(
             new_version=new_version, request_id=req.request_id, actor=actor,
         )
@@ -787,6 +939,7 @@ def build_app(
                 reason=req.reason,
                 actor=actor,
                 mode=req.mode,
+                auto_clear_seconds=req.auto_clear_seconds,
             )
         except ValueError as exc:
             emit_audit(
@@ -1268,6 +1421,7 @@ class ControlServer:
         runtime_refresh_s: float | None = 5.0,
         incentive_provider: "Any | None" = None,
         incentives_refresh_s: float | None = 3600.0,
+        incentive_cache: "IncentiveCache | None" = None,
         event_validator: Any = None,
         rate_limit_stats: Any = None,
     ) -> None:
@@ -1275,14 +1429,16 @@ class ControlServer:
         # Auto-create a broadcaster if none provided — the server's WS
         # endpoint requires one to function.
         self._broadcaster = broadcaster if broadcaster is not None else Broadcaster()
-        # Auto-wrap an IncentiveProvider in a cache if one was passed.
-        # Caller can also pass a pre-built cache via build_app directly,
-        # but this is the simpler path for deploy scripts.
-        self._incentive_cache: IncentiveCache | None = None
-        if incentive_provider is not None and incentives_refresh_s is not None:
+        # Use a pre-built cache when provided (so runner + server share
+        # one); else auto-wrap a passed IncentiveProvider; else None.
+        if incentive_cache is not None:
+            self._incentive_cache = incentive_cache
+        elif incentive_provider is not None and incentives_refresh_s is not None:
             self._incentive_cache = IncentiveCache(
                 incentive_provider, refresh_s=incentives_refresh_s,
             )
+        else:
+            self._incentive_cache = None
         self._app = build_app(
             state,
             decision_logger=decision_logger,
@@ -1321,6 +1477,12 @@ class ControlServer:
     @property
     def app(self) -> FastAPI:
         return self._app
+
+    @property
+    def incentive_cache(self) -> "IncentiveCache | None":
+        """Public accessor so the runner can share this server's
+        IncentiveCache (for end-of-cycle earnings accrual)."""
+        return self._incentive_cache
 
     async def start(
         self, *, host: str = "127.0.0.1", port: int = 8080,

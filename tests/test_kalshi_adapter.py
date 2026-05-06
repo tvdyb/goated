@@ -313,9 +313,10 @@ async def test_get_orderbook_parses_depth_and_sorts_highest_first() -> None:
     }
     ob = await adapter.get_orderbook("KX-T50")
     assert isinstance(ob, OrderbookLevels)
-    # Sorted highest-first
-    assert ob.yes_levels == [(46, 50.0), (45, 100.0), (44, 200.0)]
-    assert ob.no_levels == [(55, 30.0)]
+    # Sorted highest-first; prices are now in tenths-of-a-cent (t1c)
+    # so 46¢ → 460, 45¢ → 450, etc. Sub-cent markets carry e.g. 977 t1c.
+    assert ob.yes_levels == [(460, 50.0), (450, 100.0), (440, 200.0)]
+    assert ob.no_levels == [(550, 30.0)]
 
 
 @pytest.mark.asyncio

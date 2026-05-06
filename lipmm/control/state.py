@@ -49,6 +49,8 @@ class ControlConfig:
         # Risk gate knobs
         "max_notional_per_side_dollars": (0.0, 1000.0),
         "max_orders_per_cycle": (1.0, 1000.0),
+        "max_position_per_side": (0.0, 100000.0),
+        "mid_delta_threshold_c": (0.0, 100.0),
     })
 
 
@@ -117,6 +119,14 @@ class TheoOverride:
     set_at: float             # unix timestamp
     actor: str                # who set it (from JWT)
     mode: Literal["fixed", "track_mid"] = "fixed"
+    auto_clear_at: float | None = None
+    """Unix timestamp at which the runner stops honoring this override
+    (treated as if cleared). None = no auto-expiry. Used for
+    time-bounded manual market making sessions: operator can pin a
+    strike for N minutes and walk away knowing the override expires
+    on its own. The state isn't auto-deleted (so the operator can
+    still see the expired override on the dashboard with a "expired"
+    badge) — it's just ignored at quote time."""
 
 
 @dataclass(frozen=True)
@@ -167,6 +177,13 @@ class ControlState:
         # set each cycle and yields all open markets across them. The
         # operator adds/removes via the dashboard. Runtime-only.
         self._active_events: set[str] = set()
+        # Per-event knob overrides: event_ticker → {knob_name: value}.
+        # Layered between global knob_overrides and strike-level
+        # overrides. Runtime-only.
+        self._event_knob_overrides: dict[str, dict[str, float]] = {}
+        # Per-strike knob overrides: strike_ticker → {knob_name: value}.
+        # Highest precedence — wins over event and global.
+        self._strike_knob_overrides: dict[str, dict[str, float]] = {}
 
     @property
     def version(self) -> int:
@@ -237,8 +254,20 @@ class ControlState:
 
         Called by the runner each cycle BEFORE the registered TheoProvider —
         if an override exists, it short-circuits the provider entirely.
+
+        Honors `auto_clear_at`: an override past its expiry is treated
+        as if absent (returns None). The actual record stays in the
+        dict so the dashboard can still display "expired N min ago"
+        for transparency.
         """
-        return self._theo_overrides.get(ticker)
+        ov = self._theo_overrides.get(ticker)
+        if ov is None:
+            return None
+        if ov.auto_clear_at is not None:
+            import time as _t
+            if _t.time() >= ov.auto_clear_at:
+                return None
+        return ov
 
     def all_theo_overrides(self) -> dict[str, TheoOverride]:
         """All current overrides. Used by the dashboard's overview render."""
@@ -266,12 +295,51 @@ class ControlState:
     def all_knobs(self) -> dict[str, float]:
         return dict(self._knob_overrides)
 
-    def control_overrides_for_strategy(self) -> dict[str, Any]:
+    def all_event_knobs(self) -> dict[str, dict[str, float]]:
+        """Per-event knob override map: event_ticker → {name: value}."""
+        return {
+            ev: dict(knobs) for ev, knobs in self._event_knob_overrides.items()
+        }
+
+    def all_strike_knobs(self) -> dict[str, dict[str, float]]:
+        """Per-strike knob override map: strike_ticker → {name: value}."""
+        return {
+            t: dict(knobs) for t, knobs in self._strike_knob_overrides.items()
+        }
+
+    def effective_knobs_for(self, ticker: str) -> dict[str, float]:
+        """Return the merged knob dict for `ticker`, applying precedence:
+
+            strike-level  >  event-level  >  global  >  config default
+
+        Strike-level wins per-knob over event-level (so an operator can
+        override `dollars_per_side` for one strike while keeping the
+        rest of the event's knobs). Event-level wins over global.
+        Global wins where neither event nor strike sets a value.
+        Caller should fall back to the strategy's config default for
+        any knob NOT in the returned dict.
+        """
+        merged: dict[str, float] = dict(self._knob_overrides)
+        # Event prefix = everything before the last '-'. Same convention
+        # the renderer uses (KXISMPMI-26MAY-50 → KXISMPMI-26MAY).
+        event = ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
+        merged.update(self._event_knob_overrides.get(event, {}))
+        merged.update(self._strike_knob_overrides.get(ticker, {}))
+        return merged
+
+    def control_overrides_for_strategy(
+        self, ticker: str | None = None,
+    ) -> dict[str, Any]:
         """The dict passed to `strategy.quote(control_overrides=...)`.
 
-        Just an alias for `all_knobs()` today; isolating the call in case
-        the format diverges later (e.g. nested per-strategy keys)."""
-        return dict(self._knob_overrides)
+        When `ticker` is given, returns the merged
+        `effective_knobs_for(ticker)` so per-strike / per-event
+        overrides take effect. When None (legacy / non-ticker callers
+        like the runtime broadcast), returns just the global map.
+        """
+        if ticker is None:
+            return dict(self._knob_overrides)
+        return self.effective_knobs_for(ticker)
 
     def snapshot(self) -> dict[str, Any]:
         """Full state snapshot for `GET /control/state`. Includes the
@@ -306,10 +374,19 @@ class ControlState:
                     "set_at": ov.set_at,
                     "actor": ov.actor,
                     "mode": ov.mode,
+                    "auto_clear_at": ov.auto_clear_at,
                 }
                 for ticker, ov in sorted(self._theo_overrides.items())
             ],
             "active_events": sorted(self._active_events),
+            "event_knob_overrides": {
+                ev: dict(knobs)
+                for ev, knobs in sorted(self._event_knob_overrides.items())
+            },
+            "strike_knob_overrides": {
+                t: dict(knobs)
+                for t, knobs in sorted(self._strike_knob_overrides.items())
+            },
         }
 
     # ── Mutations (locked + version-bumped) ─────────────────────────
@@ -408,6 +485,81 @@ class ControlState:
             self._knob_overrides.pop(name, None)
             return self._bump_version()
 
+    async def set_event_knob(
+        self, event_ticker: str, name: str, value: float,
+    ) -> int:
+        """Set a knob override for one event. Layered between global
+        and strike overrides — wins over global for strikes under
+        this event prefix; loses to strike-level overrides on the
+        same knob name.
+        """
+        if name not in self._cfg.knob_bounds:
+            raise ValueError(
+                f"unknown knob {name!r}; permitted: {sorted(self._cfg.knob_bounds)}"
+            )
+        lo, hi = self._cfg.knob_bounds[name]
+        if value < lo or value > hi:
+            raise ValueError(
+                f"knob {name!r}={value} out of bounds [{lo}, {hi}]"
+            )
+        ev = event_ticker.strip().upper()
+        if not ev:
+            raise ValueError("event_ticker required")
+        async with self._lock:
+            self._event_knob_overrides.setdefault(ev, {})[name] = float(value)
+            return self._bump_version()
+
+    async def clear_event_knob(
+        self, event_ticker: str, name: str | None = None,
+    ) -> int:
+        """Clear a single per-event knob (when `name` is given) or
+        every per-event knob for that event (when `name` is None).
+        Idempotent — bumps version even on no-op."""
+        ev = event_ticker.strip().upper()
+        async with self._lock:
+            if name is None:
+                self._event_knob_overrides.pop(ev, None)
+            else:
+                if ev in self._event_knob_overrides:
+                    self._event_knob_overrides[ev].pop(name, None)
+                    if not self._event_knob_overrides[ev]:
+                        self._event_knob_overrides.pop(ev, None)
+            return self._bump_version()
+
+    async def set_strike_knob(
+        self, ticker: str, name: str, value: float,
+    ) -> int:
+        """Highest-precedence knob override: applies to one strike only."""
+        if name not in self._cfg.knob_bounds:
+            raise ValueError(
+                f"unknown knob {name!r}; permitted: {sorted(self._cfg.knob_bounds)}"
+            )
+        lo, hi = self._cfg.knob_bounds[name]
+        if value < lo or value > hi:
+            raise ValueError(
+                f"knob {name!r}={value} out of bounds [{lo}, {hi}]"
+            )
+        if not ticker or not ticker.strip():
+            raise ValueError("ticker required")
+        async with self._lock:
+            self._strike_knob_overrides.setdefault(ticker, {})[name] = float(value)
+            return self._bump_version()
+
+    async def clear_strike_knob(
+        self, ticker: str, name: str | None = None,
+    ) -> int:
+        """Clear a single per-strike knob, or all per-strike knobs for
+        the ticker when `name` is None."""
+        async with self._lock:
+            if name is None:
+                self._strike_knob_overrides.pop(ticker, None)
+            else:
+                if ticker in self._strike_knob_overrides:
+                    self._strike_knob_overrides[ticker].pop(name, None)
+                    if not self._strike_knob_overrides[ticker]:
+                        self._strike_knob_overrides.pop(ticker, None)
+            return self._bump_version()
+
     async def lock_side(
         self,
         ticker: str,
@@ -449,6 +601,7 @@ class ControlState:
         reason: str,
         actor: str = "operator",
         mode: Literal["fixed", "track_mid"] = "fixed",
+        auto_clear_seconds: float | None = None,
     ) -> int:
         """Plug a manual theo value for `ticker`. Strict bounds:
         `yes_probability ∈ [0,1]`, `confidence ∈ [0,1]`, reason non-empty
@@ -478,15 +631,23 @@ class ControlState:
             raise ValueError(
                 f"mode must be 'fixed' or 'track_mid', got {mode!r}"
             )
+        if auto_clear_seconds is not None:
+            if auto_clear_seconds <= 0 or auto_clear_seconds > 86400 * 7:
+                raise ValueError(
+                    f"auto_clear_seconds must be in (0, 7d], got {auto_clear_seconds}"
+                )
         import time as _t
+        now = _t.time()
+        auto_clear_at = (now + auto_clear_seconds) if auto_clear_seconds else None
         async with self._lock:
             self._theo_overrides[ticker] = TheoOverride(
                 yes_probability=float(yes_probability),
                 confidence=float(confidence),
                 reason=reason.strip(),
-                set_at=_t.time(),
+                set_at=now,
                 actor=actor,
                 mode=mode,
+                auto_clear_at=auto_clear_at,
             )
             return self._bump_version()
 

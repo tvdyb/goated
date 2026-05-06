@@ -114,6 +114,42 @@ class KnobClearRequest(BaseModel):
     if_version: int | None = Field(default=None, ge=0)
 
 
+class EventKnobUpdateRequest(BaseModel):
+    """POST /control/set_event_knob — per-event knob override.
+    Layered between global and per-strike overrides."""
+    event_ticker: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=64)
+    value: float
+    request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
+
+
+class EventKnobClearRequest(BaseModel):
+    """POST /control/clear_event_knob. When `name` is None, clears
+    every per-event knob for that event."""
+    event_ticker: str = Field(min_length=1, max_length=128)
+    name: str | None = Field(default=None, max_length=64)
+    request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
+
+
+class StrikeKnobUpdateRequest(BaseModel):
+    """POST /control/set_strike_knob — per-strike knob override.
+    Highest precedence — wins over global and per-event."""
+    ticker: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=64)
+    value: float
+    request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
+
+
+class StrikeKnobClearRequest(BaseModel):
+    ticker: str = Field(min_length=1, max_length=128)
+    name: str | None = Field(default=None, max_length=64)
+    request_id: str = Field(min_length=8, max_length=128)
+    if_version: int | None = Field(default=None, ge=0)
+
+
 # ── Strategy swap (placeholder for now) ─────────────────────────────
 
 
@@ -240,6 +276,14 @@ class SetTheoOverrideRequest(BaseModel):
         description=(
             "fixed (default): theo = yes_cents, static. "
             "track_mid: theo follows the orderbook mid each cycle."
+        ),
+    )
+    auto_clear_seconds: float | None = Field(
+        default=None, ge=1.0, le=604800.0,
+        description=(
+            "If set, the override auto-expires after this many seconds. "
+            "Used for time-bounded manual market making sessions: "
+            "operator pins a strike for N minutes and walks away."
         ),
     )
 

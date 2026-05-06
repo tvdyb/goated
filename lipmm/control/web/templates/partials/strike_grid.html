@@ -35,6 +35,21 @@
           {% if group.lip_total_dollars > 0 %}
             <span style="color: var(--lip);">· ${{ "%.0f"|format(group.lip_total_dollars) }} LIP</span>
           {% endif %}
+          {% if group.lip_rate_hourly and group.lip_rate_hourly > 0 %}
+            <span style="color: var(--lip);"
+                  title="Live earning rate: pool_share × pool, time-normalized">
+              · ${{ "%.4f"|format(group.lip_rate_per_minute or 0) }}/m
+              · ${{ "%.3f"|format(group.lip_rate_hourly or 0) }}/h
+              · ${{ "%.2f"|format(group.lip_rate_daily or 0) }}/d
+            </span>
+          {% endif %}
+          {% if group.end_ts_max and group.end_ts_max > 0 %}
+            <span data-time-remaining="true" data-end-ts="{{ group.end_ts_max | int }}"
+                  style="color: var(--ink-mid);"
+                  title="Time left until this event's LIP program ends">
+              · expires in —
+            </span>
+          {% endif %}
           {% if group.strike_count == 0 %}
             <span style="color: var(--ink-dim);">· awaiting markets…</span>
           {% endif %}

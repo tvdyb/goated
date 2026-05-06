@@ -32,6 +32,12 @@ class RiskContext:
     # Knob overrides from ControlState (e.g. max_orders_per_cycle).
     # Optional; gates check for keys they care about and ignore others.
     control_overrides: dict | None = None
+    # Current Yes-side position quantity for this ticker. Positive =
+    # net long Yes, negative = net short. Read from a runner-side
+    # cache populated by the periodic runtime broadcast (5s by
+    # default). Stale up to one refresh interval. Used by the
+    # MaxPositionPerSideGate to prevent runaway accumulation.
+    position_quantity: int = 0
 
 
 @dataclass(frozen=True)
