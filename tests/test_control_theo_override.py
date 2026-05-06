@@ -549,6 +549,90 @@ async def test_runner_track_mid_skips_on_degenerate_book() -> None:
     assert "skip_reason" in theo.extras
 
 
+@pytest.mark.asyncio
+async def test_runner_track_mid_one_sided_book_falls_back_to_yes_cents() -> None:
+    """When the book is one-sided (only asks, no bids), track-mid
+    falls back to the operator's `yes_cents` from the override so
+    the bot can still provide liquidity. This is exactly the
+    scenario where LIP MM is most valuable (be the only quoter on
+    a fresh market with one side empty)."""
+    from lipmm.runner import LIPRunner, RunnerConfig
+    from lipmm.theo import TheoRegistry, TheoResult
+    from lipmm.execution import OrderManager
+    from lipmm.execution.base import OrderbookLevels, Balance
+
+    captured: list[TheoResult] = []
+
+    class _CapturingStrategy:
+        name = "capturing"
+        async def warmup(self) -> None: pass
+        async def shutdown(self) -> None: pass
+        async def quote(self, *, ticker, theo, orderbook, our_state,
+                        now_ts, time_to_settle_s, control_overrides=None):
+            captured.append(theo)
+            from lipmm.quoting import QuotingDecision, SideDecision
+            return QuotingDecision(
+                bid=SideDecision(price=0, size=0, skip=True, reason="t"),
+                ask=SideDecision(price=0, size=0, skip=True, reason="t"),
+            )
+
+    class _StubProvider:
+        series_prefix = "KX"
+        async def warmup(self) -> None: pass
+        async def shutdown(self) -> None: pass
+        async def theo(self, t): raise AssertionError("not used")
+
+    class _AsksOnlyExchange:
+        async def get_orderbook(self, t):
+            # Only asks — best_bid_t1c=0, best_ask=98¢ (980 t1c).
+            # No-side bid at 02 → yes-ask at 98.
+            return OrderbookLevels(
+                ticker=t, yes_levels=[], no_levels=[(20, 100.0)],
+            )
+        async def list_resting_orders(self): return []
+        async def list_positions(self): return []
+        async def get_balance(self): return Balance(0.0, 0.0)
+        async def place_order(self, *a, **k): return None
+        async def amend_order(self, *a, **k): return None
+        async def cancel_order(self, *a, **k): return True
+        async def cancel_orders(self, ids): return {i: True for i in ids}
+
+    class _Source:
+        async def list_active_tickers(self, exchange): return ["KX-T1"]
+
+    state = ControlState()
+    # Operator sets track-mid with yes_cents=30 (= yes_probability 0.30)
+    # as the explicit fallback estimate for one-sided books.
+    await state.set_theo_override(
+        "KX-T1", yes_probability=0.30, confidence=0.95,
+        reason="track-mid with explicit fallback estimate",
+        actor="alice", mode="track_mid",
+    )
+    registry = TheoRegistry()
+    registry.register(_StubProvider())
+    runner = LIPRunner(
+        config=RunnerConfig(cycle_seconds=0.05),
+        theo_registry=registry,
+        strategy=_CapturingStrategy(),
+        order_manager=OrderManager(),
+        exchange=_AsksOnlyExchange(),
+        ticker_source=_Source(),
+        control_state=state,
+    )
+    await runner._theo.warmup_all()  # noqa: SLF001
+    await runner._strategy.warmup()  # noqa: SLF001
+    await runner._cycle()  # noqa: SLF001
+
+    assert len(captured) == 1
+    theo = captured[0]
+    # Fallback used the operator's yes_probability (0.30), NOT 0
+    assert theo.yes_probability == pytest.approx(0.30)
+    assert theo.confidence == 0.95
+    assert theo.source == "manual-override-mid-fallback:alice"
+    assert "fallback_reason" in theo.extras
+    assert "one-sided" in theo.extras["fallback_reason"]
+
+
 # ── Dashboard rendering ────────────────────────────────────────────
 
 

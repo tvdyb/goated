@@ -80,6 +80,19 @@ class DefaultLIPQuotingConfig:
     `theo - 1 + theo_tolerance_c`). To go meaningfully aggressive
     you typically also raise `theo_tolerance_c` so the cap doesn't
     bind."""
+    max_distance_from_extremes_c: int = 0
+    """**Tail-only mode.** When > 0, hard-caps the bid at this many
+    cents above 0 and the ask at the same many cents below 100. So
+    `max_distance_from_extremes_c=5` forces bid ∈ [1, 5¢] and ask ∈
+    [95, 99¢] regardless of theo, best bid/ask, or strategy mode.
+    Default 0 = disabled.
+
+    Use case: batch-released markets with very wide spreads (02/98
+    book) where the middle is untrusted and a naive penny-inside
+    could leave us at 95¢ exposed to a spoof-and-hit. Turning this
+    on for the duration of the launch keeps the bot at the
+    statistical tails (where most binary outcomes settle) and lets
+    it earn LIP rebates safely until the book normalizes."""
 
 
 class DefaultLIPQuoting:
@@ -226,6 +239,9 @@ class DefaultLIPQuoting:
             "penny_inside_distance": int(overrides.get(
                 "penny_inside_distance", base.penny_inside_distance,
             )),
+            "max_distance_from_extremes_c": int(overrides.get(
+                "max_distance_from_extremes_c", base.max_distance_from_extremes_c,
+            )),
         }
         return DefaultLIPQuotingConfig(**kwargs)
 
@@ -288,6 +304,14 @@ class DefaultLIPQuoting:
         # Anti-spoofing cap: never bid above (theo - 1¢ + tolerance¢) — in t1c
         cap_t1c = (fair - 1 + cfg.theo_tolerance_c) * 10
         bound_target_t1c = min(target_t1c, cap_t1c)
+
+        # Tail-only cap: bid ≤ max_distance_from_extremes_c cents.
+        # Operator-controlled (default 0 = disabled). Independent of
+        # theo and orderbook — useful on freshly-launched, low-info
+        # books where the middle is untrusted.
+        if cfg.max_distance_from_extremes_c > 0:
+            extremes_cap_t1c = cfg.max_distance_from_extremes_c * 10
+            bound_target_t1c = min(bound_target_t1c, extremes_cap_t1c)
 
         # Clamp to valid range [1, 989] t1c (= 0.1¢ to 98.9¢)
         final_t1c = max(1, min(989, bound_target_t1c))
@@ -354,6 +378,13 @@ class DefaultLIPQuoting:
 
         floor_t1c = (fair + 1 - cfg.theo_tolerance_c) * 10
         bound_target_t1c = max(target_t1c, floor_t1c)
+
+        # Tail-only floor: ask ≥ (100 − max_distance_from_extremes_c) cents.
+        # Mirror of the bid-side extremes cap.
+        if cfg.max_distance_from_extremes_c > 0:
+            extremes_floor_t1c = (100 - cfg.max_distance_from_extremes_c) * 10
+            bound_target_t1c = max(bound_target_t1c, extremes_floor_t1c)
+
         final_t1c = max(1, min(989, bound_target_t1c))
         final_tick = _tick_at(ob.tick_schedule, final_t1c)
         if final_tick > 1:

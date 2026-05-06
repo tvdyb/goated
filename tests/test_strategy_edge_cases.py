@@ -261,6 +261,93 @@ async def test_one_sided_book_no_bids_uses_half_spread() -> None:
 
 
 @pytest.mark.asyncio
+async def test_max_distance_from_extremes_caps_bid_and_floors_ask() -> None:
+    """Tail-only mode: with max_distance_from_extremes_c=5, on a wide
+    02/98 book with high theo override → bid clamped to 5¢ (would
+    naturally be 95+ via active-penny w/ high theo), ask floored at
+    95¢. Covers the batch-release scenario."""
+    cfg = DefaultLIPQuotingConfig(
+        penny_inside_distance=1, theo_tolerance_c=99,  # disable cap
+        dollars_per_side=1.0,
+        max_distance_from_extremes_c=5,
+    )
+    strat = DefaultLIPQuoting(cfg)
+    # 02/98 book + theo override at 50% (mid)
+    ob = _ob(best_bid=2, best_ask=98)
+    decision = await strat.quote(
+        ticker="KX-T1", theo=_theo(0.50, confidence=0.95),
+        orderbook=ob, our_state=_our_state(),
+        now_ts=0.0, time_to_settle_s=0.0,
+    )
+    # Bid natural target = best_bid + 1 = 3¢ → already inside cap → 3¢
+    assert decision.bid.price_t1c == 30
+    # Ask natural target = best_ask − 1 = 97¢ → already above floor → 97¢
+    assert decision.ask.price_t1c == 970
+
+
+@pytest.mark.asyncio
+async def test_max_distance_from_extremes_clamps_when_natural_exceeds() -> None:
+    """When natural target would exceed the extremes cap, clamp.
+    e.g. high theo override (95%) on a 02/98 book → natural bid =
+    96¢ (per anti-spoofing cap) but extremes cap = 5¢ wins."""
+    cfg = DefaultLIPQuotingConfig(
+        penny_inside_distance=1, theo_tolerance_c=99,
+        dollars_per_side=1.0,
+        max_distance_from_extremes_c=5,
+    )
+    strat = DefaultLIPQuoting(cfg)
+    ob = _ob(best_bid=90, best_ask=98)  # tight high book; bot would penny to 91
+    decision = await strat.quote(
+        ticker="KX-T1", theo=_theo(0.95, confidence=0.95),  # high theo
+        orderbook=ob, our_state=_our_state(),
+        now_ts=0.0, time_to_settle_s=0.0,
+    )
+    # Natural bid = best_bid + 1 = 91¢ (cap doesn't bind because
+    # tolerance is wide). Extremes cap = 5¢ wins → bid = 5¢.
+    assert decision.bid.price_t1c == 50
+    # Natural ask: best_ask − 1 = 97¢ → already above floor 95¢ → 97¢.
+    assert decision.ask.price_t1c == 970
+
+
+@pytest.mark.asyncio
+async def test_max_distance_from_extremes_zero_is_disabled() -> None:
+    """Default 0 = no extremes cap, strategy behaves as before."""
+    cfg = DefaultLIPQuotingConfig(
+        penny_inside_distance=1, theo_tolerance_c=10,
+        dollars_per_side=1.0,
+        max_distance_from_extremes_c=0,
+    )
+    strat = DefaultLIPQuoting(cfg)
+    ob = _ob(best_bid=40, best_ask=60)
+    decision = await strat.quote(
+        ticker="KX-T1", theo=_theo(0.50, 0.95),
+        orderbook=ob, our_state=_our_state(),
+        now_ts=0.0, time_to_settle_s=0.0,
+    )
+    # No extremes cap → standard active-penny behavior
+    assert decision.bid.price_t1c == 410
+    assert decision.ask.price_t1c == 590
+
+
+@pytest.mark.asyncio
+async def test_max_distance_from_extremes_via_control_overrides() -> None:
+    """Operator-set knob (per-strike override) reaches the strategy
+    via control_overrides=... and binds the same way."""
+    strat = DefaultLIPQuoting()  # default cfg has knob=0
+    ob = _ob(best_bid=2, best_ask=98)
+    decision = await strat.quote(
+        ticker="KX-T1", theo=_theo(0.50, confidence=0.95),
+        orderbook=ob, our_state=_our_state(),
+        now_ts=0.0, time_to_settle_s=0.0,
+        control_overrides={"max_distance_from_extremes_c": 5},
+    )
+    # With high theo conf and a wide book, anti-spoofing cap
+    # alone would let bid go up. Extremes cap forces bid ≤ 5¢.
+    assert decision.bid.price_t1c <= 50
+    assert decision.ask.price_t1c >= 950
+
+
+@pytest.mark.asyncio
 async def test_fair_at_extreme_low_clamps_safely() -> None:
     """Theo says yes_prob = 0.01 → fair = 1¢. Strategy still produces
     a valid bid (clamped to t1c floor 1) and ask without crashing."""

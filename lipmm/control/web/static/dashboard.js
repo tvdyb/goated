@@ -280,14 +280,11 @@
   }
 
   // Mode select toggles yes_cents visual state. In track_mid mode the
-  // cents input is just a placeholder (server ignores it), so we make
-  // it OBVIOUSLY non-functional: dim the whole cell, strike-through
-  // the value, retitle the label, and surface a yellow note row.
-  //
-  // NOTE: We use `readOnly` (not `disabled`) so the input still submits
-  // as part of FormData. A disabled input is omitted from the form
-  // submission entirely, which would break the server's required-field
-  // validation on yes_cents in track_mid mode.
+  // cents input is the FALLBACK theo used when the book is one-sided
+  // (no bids OR no asks): the runner uses orderbook mid when both
+  // sides exist, and falls back to this value otherwise. It's still
+  // useful for the operator to set deliberately rather than leaving
+  // at 50, so we DIM (not strike-through) and label "fallback".
   function applyModeToggle(form) {
     const sel = form.querySelector("[data-mode-select]");
     const cents = form.querySelector("[data-yes-cents]");
@@ -297,17 +294,20 @@
       && form.parentElement.querySelector("[data-track-mid-note]");
     if (!sel || !cents || !cell || !lbl) return;
     const isMid = sel.value === "track_mid";
-    cents.readOnly = isMid;
-    cents.disabled = false;  // never disable — that strips it from FormData
+    cents.readOnly = false;
+    cents.disabled = false;
     if (isMid) {
-      cell.style.opacity = "0.35";
-      cell.style.background = "#1a1a1a";
+      cell.style.opacity = "0.75";
+      cell.style.background = "var(--surface)";
       cell.style.borderStyle = "dashed";
-      cents.style.textDecoration = "line-through";
-      cents.style.cursor = "not-allowed";
-      cents.title = "ignored — theo follows orderbook mid each cycle";
-      lbl.textContent = "Yes (cents) — IGNORED";
-      lbl.style.color = "var(--no)";
+      cents.style.textDecoration = "";
+      cents.style.cursor = "";
+      cents.title = (
+        "fallback theo: used when the orderbook is one-sided "
+        "(no bids OR no asks). When both sides exist, the live mid wins."
+      );
+      lbl.textContent = "Yes (¢) — fallback";
+      lbl.style.color = "var(--lip)";
       if (note) note.classList.remove("hidden");
     } else {
       cell.style.opacity = "";

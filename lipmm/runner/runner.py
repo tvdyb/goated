@@ -444,9 +444,26 @@ class LIPRunner:
         )
         if override is not None and override.mode == "track_mid":
             # Market-following: theo = orderbook mid each cycle.
-            # Degenerate book (one-sided or crossed) → confidence=0
-            # so the strategy skips both sides safely.
-            if best_bid_t1c > 0 and best_ask_t1c < 1000 and best_bid_t1c < best_ask_t1c:
+            #
+            # Three book shapes to handle:
+            #   1. Two-sided non-crossed → use mid.
+            #   2. One-sided (no bids OR no asks, but not both) →
+            #      fall back to the operator's `yes_cents` placeholder
+            #      so the bot can still provide liquidity on the
+            #      missing side. This is exactly the scenario where
+            #      LIP MM is most valuable (be the only liquidity
+            #      provider on a fresh market).
+            #   3. Crossed or fully empty → skip (genuinely degenerate).
+            book_crossed = (
+                best_bid_t1c > 0 and best_ask_t1c < 1000
+                and best_bid_t1c >= best_ask_t1c
+            )
+            book_empty = best_bid_t1c <= 0 and best_ask_t1c >= 1000
+            book_two_sided = (
+                best_bid_t1c > 0 and best_ask_t1c < 1000
+                and best_bid_t1c < best_ask_t1c
+            )
+            if book_two_sided:
                 # Mid in t1c precision so sub-cent mids carry through.
                 mid_t1c = (best_bid_t1c + best_ask_t1c) / 2.0
                 mid_cents = mid_t1c / 10.0
@@ -463,7 +480,7 @@ class LIPRunner:
                         "best_bid_t1c": best_bid_t1c, "best_ask_t1c": best_ask_t1c,
                     },
                 )
-            else:
+            elif book_crossed or book_empty:
                 theo = TheoResult(
                     yes_probability=0.5,
                     confidence=0.0,
@@ -471,8 +488,28 @@ class LIPRunner:
                     source=f"manual-override-mid:{override.actor}",
                     extras={
                         "override_reason": override.reason,
-                        "skip_reason": "degenerate book — track-mid disabled",
+                        "skip_reason": (
+                            "crossed book" if book_crossed else "empty book"
+                        ),
                         "best_bid_c": best_bid, "best_ask_c": best_ask,
+                    },
+                )
+            else:
+                # One-sided book → fall back to operator's yes_cents.
+                theo = TheoResult(
+                    yes_probability=override.yes_probability,
+                    confidence=override.confidence,
+                    computed_at=now_ts,
+                    source=f"manual-override-mid-fallback:{override.actor}",
+                    extras={
+                        "override_reason": override.reason,
+                        "fallback_reason": (
+                            "one-sided book — track-mid using "
+                            "override.yes_cents as fair"
+                        ),
+                        "best_bid_c": best_bid, "best_ask_c": best_ask,
+                        "best_bid_t1c": best_bid_t1c,
+                        "best_ask_t1c": best_ask_t1c,
                     },
                 )
         elif override is not None:

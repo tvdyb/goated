@@ -196,10 +196,13 @@ async def test_cooldown_produces_skip() -> None:
 
     # Cycle 2: attacker pennies the ask side — best_ask drops to 40.
     # Base produces ask=49 (anti-spoof binds), sticky goes AGGRESSIVE
-    # with current_price=65 (theo+min_dist floor).
+    # with current_price=65 (theo+min_dist floor). best_bid lowered to
+    # 35 to keep the book non-crossed (the strategy now correctly
+    # skips both sides on a crossed book; the attack is still
+    # represented by the asymmetric ask drop).
     ob2 = OrderbookSnapshot(
-        yes_depth=[(45, 100.0)], no_depth=[(60, 100.0)],
-        best_bid=45, best_ask=40,
+        yes_depth=[(35, 100.0)], no_depth=[(60, 100.0)],
+        best_bid=35, best_ask=40,
     )
     state = OurState(
         cur_bid_px=44, cur_bid_size=10, cur_bid_id="b1",

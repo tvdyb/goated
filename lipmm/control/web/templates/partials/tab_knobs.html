@@ -29,6 +29,8 @@
      'ADVERSE-SELECTION SAFEGUARD. Maximum |position| per strike before a side is vetoed. When net long Yes ≥ this, bid is blocked (we won''t buy more); when net short Yes ≥ this, ask is blocked. Set per-strike via the strike row to be more aggressive on illiquid markets, more conservative on volatile ones.'),
     ('mid_delta_threshold_c', 8.0, 0.0, 100.0, 1.0,
      'ADVERSE-SELECTION SAFEGUARD. Cents threshold for the mid-delta gate. If a strike''s mid jumped by ≥ this many cents since the last cycle, BOTH sides veto for that cycle (the bot pulls quotes during fast moves). 0 = disabled. Lower = more cautious. Tune per-strike for ones you know are jumpier.'),
+    ('max_distance_from_extremes_c', 0.0, 0.0, 50.0, 1.0,
+     'TAIL-ONLY MODE. When > 0, hard-caps bid at this many cents above 0¢ and ask at the same many cents below 100¢. e.g. 5 → bid ∈ [1, 5¢] and ask ∈ [95, 99¢] regardless of theo or book. 0 = disabled. Use case: batch-released markets with very wide spreads (02/98) where the middle is untrusted and naive pennying would expose us at risky prices like 95¢. Restricts the bot to the statistical tails until the book normalizes.'),
   ] %}
   <div class="text-[9px] uppercase tracking-wider mb-2" style="color: var(--ink-lo);">
     Active overrides ({{ snapshot.knob_overrides | length if snapshot and snapshot.knob_overrides else 0 }})

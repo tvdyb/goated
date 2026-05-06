@@ -491,14 +491,16 @@
           </button>
         </div>
       </form>
-      {# Mode-aware note. Shown in track-mid mode to make the
-         "yes_cents is ignored" reality unmistakable. #}
+      {# Mode-aware note. Shown in track-mid mode to explain mid +
+         one-sided fallback semantics. #}
       <div data-track-mid-note
            class="mt-2 text-[10px] leading-snug rounded border px-2 py-1.5 hidden"
            style="background: #1f1a08; border-color: #7a6230; color: var(--lip);
                   font-family: 'JetBrains Mono', ui-monospace;">
-        <strong>market-following mode:</strong> theo = (best_bid + best_ask) / 2 each cycle.
-        <span style="color: var(--ink-mid);">Yes (cents) is ignored at quote time.
+        <strong>market-following mode:</strong> theo = (best_bid + best_ask) / 2 when both sides exist.
+        <span style="color: var(--ink-mid);">When the book is one-sided (no bids OR no asks)
+        the bot falls back to your <strong>Yes (¢)</strong> setting so it can still provide
+        liquidity on the missing side. Crossed / fully empty → skip.
         Confidence still picks the strategy mode (penny/match/follow).</span>
       </div>
       <div class="mt-2 text-[10px] leading-snug rounded border px-2 py-1.5"
@@ -580,6 +582,7 @@
             <option value="sticky_desert_jump_cents">sticky_desert_jump_cents</option>
             <option value="max_position_per_side">max_position_per_side</option>
             <option value="mid_delta_threshold_c">mid_delta_threshold_c</option>
+            <option value="max_distance_from_extremes_c">max_distance_from_extremes_c</option>
           </select>
           <input type="number" name="value" step="0.05" required placeholder="value"
                  class="bg-transparent outline-none text-[11px] rounded border px-1.5 py-0.5 w-24"

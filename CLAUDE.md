@@ -220,6 +220,61 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
   ships `GBMCommodityProvider` (used by soy). New markets need their
   own provider; until then, `StubTheoProvider` + dashboard overrides
   is the path.
+- **Sub-cent quoting (t1c).** Internal price representation is
+  **tenths-of-a-cent** (`int t1c`; 1¢ = 10 t1c). The Kalshi adapter's
+  `_parse_depth` returns levels in t1c and `_infer_tick_schedule`
+  detects per-band granularity (some markets are sub-cent only at
+  edges, e.g. `[(10, 100, 1), (100, 900, 10), (900, 990, 1)]`). The
+  strategy adds/subtracts `tick_at(schedule, price)` instead of `1`,
+  so on a sub-cent market a "penny inside" is 0.1¢. Place-order
+  routes through Kalshi's fractional `yes_price_dollars="0.978"`
+  endpoint when the price isn't a whole-cent multiple, with a
+  one-shot fallback to integer-cent if Kalshi 4xx's. The runner
+  logs each sub-cent ticker exactly once at startup
+  (`subcent_market: ...`); displayed prices on the dashboard show one
+  decimal when sub-cent (the `%g` Jinja filter strips trailing zeros).
+- **Sub-cent theo override input.** The dashboard form's `Yes (¢)`
+  field accepts `0.1..99.9` with `step="0.1"`. `SetTheoOverrideRequest`
+  Pydantic field is `yes_cents: float`. Stored on `TheoOverride` as
+  `yes_probability` (the float carries the 0.1¢ precision).
+- **Strategy edge-case guards.** `DefaultLIPQuoting.quote` skips
+  both sides on a **crossed book** (`best_bid_t1c >= best_ask_t1c`)
+  with reason `"crossed book: …"`. In active-penny mode, `n_ticks`
+  is clamped per-side so the target stays strictly inside the
+  opposite best (prevents narrow-spread sabotage where high
+  `penny_inside_distance` would otherwise cross and trigger the
+  no-cross guard's pull-back).
+- **Tail-only mode (`max_distance_from_extremes_c`).** Operator-
+  controlled knob (default 0 = off). When > 0, hard-caps bid at N¢
+  and floors ask at (100 − N)¢ regardless of theo or book. Designed
+  for batch-released markets with wide spreads (02/98) where the
+  middle is untrusted: turn on at e.g. 5 → bot only quotes 1..5¢ on
+  bid and 95..99¢ on ask, harvesting LIP rebates safely at the
+  statistical tails until the book normalizes. Configurable global,
+  per-event, or per-strike via the dashboard.
+- **Balance-aware sizing.** Runner caches `Balance.cash_dollars × 100`
+  once per cycle and pushes to `OrderManager.set_available_cash_cents`.
+  `_place_new` skips placement (logs at INFO) when
+  `committed_cents + new_cents > available × 0.9`. Stops Kalshi
+  insufficient-collateral push-spam.
+- **Startup zombie sweep.** `deploy/lipmm_run.py` lists +
+  `cancel_orders` every resting order on the account before runner
+  starts. Frees collateral that the OrderManager doesn't have
+  in-memory state for (prior session zombies, manual orders, etc.).
+- **Adverse-selection gates.**
+  - `MaxPositionPerSideGate` (`lipmm/risk/gates/position.py`): vetoes
+    bid when `position_quantity >= max_position_per_side`, vetoes ask
+    when `<= -max_position_per_side`. Per-strike position from the
+    runner's once-per-cycle `list_positions()` cache.
+  - `MidDeltaGate` (`lipmm/risk/gates/mid_delta.py`): tracks last
+    seen mid per ticker; vetoes both sides if delta ≥
+    `mid_delta_threshold_c` (cents). Self-clears next cycle.
+- **Layered knob overrides.** Per-strike > per-event > global > config
+  default. Operator sets via the strike row's expanded drawer (form
+  `data-form="strike-knob-set"` with a "set strike" / "set event"
+  button). `ControlState.effective_knobs_for(ticker)` does the merge;
+  the runner passes the merged dict as `control_overrides` to both
+  the strategy and the risk gates.
 - See `prompts/theo/README.md` for legacy soy theo stack status.
 
 ## Main loop (lipmm cycle, default 3s)
@@ -253,7 +308,7 @@ The dashboard's runtime panel polls positions/orders/balance every
 - **Event ticker field**: `event_ticker` (not `ticker`) in events response.
 - **Order creation**: do NOT send `time_in_force: "gtc"` — causes 400. Omit it.
 - **Orderbook**: response key is `orderbook_fp` with `yes_dollars` and `no_dollars` arrays of `[price_str, size_str]`.
-- **Prices**: dollars as strings (`"0.4500"`) in responses, cents as integers in order creation (`yes_price: 45`).
+- **Prices**: dollars as strings (`"0.4500"`) in responses, cents as integers in order creation (`yes_price: 45`). For sub-cent markets the adapter sends `yes_price_dollars: "0.477"` instead — the dollars-string field accepts 0.1¢ precision; falls back to integer cents on Kalshi 4xx.
 - **Positions**: `position_fp` is a float string (`"11.00"`), not integer.
 - **Batch cancel**: `DELETE /portfolio/orders/batch` returns 404; use individual cancels (or `/portfolio/orders/batched` per the lipmm adapter).
 - **Rate limiting**: Basic tier = 200 read tokens/sec, 100 write tokens/sec (10 tokens/request). 20 reads/sec, 10 writes/sec effective.

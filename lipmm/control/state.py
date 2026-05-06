@@ -43,6 +43,7 @@ class ControlConfig:
         "max_distance_from_best": (0.0, 50.0),
         "desert_threshold_c": (0.0, 50.0),
         "dollars_per_side": (0.0, 100.0),
+        "max_distance_from_extremes_c": (0.0, 50.0),
         # StickyDefenseQuoting knobs
         "sticky_min_distance_from_theo": (0.0, 50.0),
         "sticky_desert_jump_cents": (0.0, 50.0),
