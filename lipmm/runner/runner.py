@@ -480,11 +480,11 @@ class LIPRunner:
             "best_bid_c": int(best_bid),
             "best_ask_c": int(best_ask),
             "yes_levels": [
-                {"price_cents": int(p), "size": float(sz)}
+                {"price_cents": int(p) // 10, "price_t1c": int(p), "size": float(sz)}
                 for (p, sz) in ob_levels.yes_levels[:50]
             ],
             "no_levels": [
-                {"price_cents": int(p), "size": float(sz)}
+                {"price_cents": int(p) // 10, "price_t1c": int(p), "size": float(sz)}
                 for (p, sz) in ob_levels.no_levels[:50]
             ],
             "ts": now_ts,
