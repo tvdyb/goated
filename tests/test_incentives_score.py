@@ -526,3 +526,93 @@ def test_join_strike_data_lip_score_is_none_without_orderbook() -> None:
     strikes = join_strike_data({}, runtime, {}, {})
     s = strikes[0]
     assert s["lip_score"] is None
+
+
+# ── t1c (sub-cent) walkdown ─────────────────────────────────────────
+
+
+def test_subcent_levels_via_price_t1c_field() -> None:
+    """Levels carrying `price_t1c` (the sub-cent representation)
+    should drive the walkdown directly. A 50¢ ref with a 49.5¢
+    qualifying level produces distance = 0.5¢, mult = DF^0.5."""
+    s = compute_strike_score(
+        our_orders=[{"order_id": "a", "side": "bid",
+                     "price_t1c": 495, "price_cents": 50, "size": 1.0}],
+        yes_levels=[
+            {"price_t1c": 500, "price_cents": 50, "size": 1.0},  # ref
+            {"price_t1c": 495, "price_cents": 50, "size": 5.0},  # 49.5¢
+        ],
+        no_levels=[],
+        best_bid_c=50, best_ask_c=60,
+        discount_factor=0.25, target_size_contracts=4.0,
+    )
+    m = next(m for m in s.multipliers if m.order_id == "a")
+    assert m.qualified is True
+    # distance = 0.5 cents → DF^0.5 = sqrt(0.25) = 0.5
+    assert m.multiplier == pytest.approx(0.5, abs=1e-9)
+
+
+def test_subcent_reference_price_gate_at_990_t1c() -> None:
+    """The 99¢ disqualifying gate, in t1c, fires at 990 (= 99.0¢).
+    A best yes bid at exactly 990 t1c → side disqualified."""
+    s = compute_strike_score(
+        our_orders=[{"order_id": "a", "side": "bid",
+                     "price_t1c": 990, "price_cents": 99, "size": 1.0}],
+        yes_levels=[{"price_t1c": 990, "price_cents": 99, "size": 100.0}],
+        no_levels=[],
+        best_bid_c=99, best_ask_c=100,
+        discount_factor=0.25, target_size_contracts=10.0,
+    )
+    assert s.yes_qualifying is False
+    assert s.our_yes_score == 0.0
+
+
+def test_subcent_reference_price_gate_passes_at_989() -> None:
+    """989 t1c (= 98.9¢) is below the 990 gate → side qualifies."""
+    s = compute_strike_score(
+        our_orders=[{"order_id": "a", "side": "bid",
+                     "price_t1c": 989, "price_cents": 99, "size": 1.0}],
+        yes_levels=[{"price_t1c": 989, "price_cents": 99, "size": 100.0}],
+        no_levels=[],
+        best_bid_c=99, best_ask_c=100,
+        discount_factor=0.25, target_size_contracts=10.0,
+    )
+    assert s.yes_qualifying is True
+    assert s.our_yes_score > 0.0
+
+
+def test_legacy_price_cents_only_levels_still_work() -> None:
+    """Backward-compat: levels with only `price_cents` (no `price_t1c`)
+    are still scored correctly — convert × 10 internally."""
+    s = compute_strike_score(
+        our_orders=[{"order_id": "a", "side": "bid",
+                     "price_cents": 50, "size": 5.0}],
+        yes_levels=[
+            {"price_cents": 50, "size": 5.0},
+            {"price_cents": 49, "size": 5.0},  # distance = 1¢
+        ],
+        no_levels=[],
+        best_bid_c=50, best_ask_c=60,
+        discount_factor=0.25, target_size_contracts=8.0,  # walk past 50¢
+    )
+    # Walks past the 50¢ level (5 contracts) into the 49¢ level (5
+    # more) to reach target=8. yes_total = 1.0*5 + 0.25*5 = 6.25.
+    m = next(m for m in s.multipliers if m.order_id == "a")
+    assert m.multiplier == pytest.approx(1.0)
+    assert s.yes_total_score == pytest.approx(6.25)
+
+
+def test_subcent_ref_price_displayed_in_cents() -> None:
+    """Public API: `yes_ref_price_c` is rounded cents for the
+    dashboard (the internal walkdown uses t1c)."""
+    s = compute_strike_score(
+        our_orders=[],
+        yes_levels=[
+            {"price_t1c": 477, "price_cents": 48, "size": 100.0},
+        ],
+        no_levels=[],
+        best_bid_c=48, best_ask_c=60,
+        discount_factor=0.25, target_size_contracts=10.0,
+    )
+    # 477 t1c = 47.7¢ rounds to 48¢
+    assert s.yes_ref_price_c == 48

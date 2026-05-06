@@ -152,7 +152,7 @@
                title="theo follows orderbook mid each cycle">mid · auto</div>
         {% else %}
           <div class="font-mono text-[12px] font-semibold tabular-nums" style="color: var(--lip);">
-            {{ s.override.yes_cents }}¢
+            {{ '%g' | format(s.override.yes_cents) }}¢{# %g strips trailing .0 so 55.0→55 and 47.7 stays 47.7 #}
           </div>
           <div class="text-[9px]" style="color: var(--ink-dim);">manual</div>
         {% endif %}
@@ -443,8 +443,8 @@
                class="rounded border px-2 py-1 flex flex-col transition-opacity"
                style="background: var(--surface); border-color: var(--border);">
           <span data-yes-cents-label
-                class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Yes (cents)</span>
-          <input type="number" name="yes_cents" min="1" max="99" required data-yes-cents
+                class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">Yes (¢, 0.1 step)</span>
+          <input type="number" name="yes_cents" min="0.1" max="99.9" step="0.1" required data-yes-cents
                  value="{{ s.override.yes_cents if has_override else (s.chance or 50) }}"
                  class="bg-transparent outline-none tabular-nums text-[13px]"
                  style="color: var(--ink-hi); font-family: 'JetBrains Mono', ui-monospace;">

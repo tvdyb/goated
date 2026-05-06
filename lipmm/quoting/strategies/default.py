@@ -134,14 +134,32 @@ class DefaultLIPQuoting:
                     ask=SideDecision(price=0, size=0, skip=True, reason=reason),
                 )
 
+            # Crossed-book guard: when best_bid >= best_ask (with both
+            # sides present), the orderbook is in an inconsistent state
+            # — usually a transient mid-snapshot artifact. Quoting
+            # through it produces side decisions that fight each other
+            # via the no-cross guard. Skip both sides; next cycle will
+            # see a clean book.
+            best_bid_t1c = orderbook.best_bid_t1c
+            best_ask_t1c = orderbook.best_ask_t1c
+            if (best_bid_t1c > 0 and best_ask_t1c < 1000
+                    and best_bid_t1c >= best_ask_t1c):
+                reason = (
+                    f"crossed book: bid_t1c={best_bid_t1c} >= "
+                    f"ask_t1c={best_ask_t1c}"
+                )
+                return QuotingDecision(
+                    bid=SideDecision(price=0, size=0, skip=True, reason=reason),
+                    ask=SideDecision(price=0, size=0, skip=True, reason=reason),
+                )
+
             fair = theo.yes_cents
             bid_decision = self._compute_bid(fair, orderbook, theo.confidence)
             ask_decision = self._compute_ask(fair, orderbook, theo.confidence)
 
             # No-cross guard in t1c so sub-cent quotes pull back by one
             # tick (not a full cent). post_only would reject crossing.
-            best_ask_t1c = orderbook.best_ask_t1c
-            best_bid_t1c = orderbook.best_bid_t1c
+            # (best_bid_t1c / best_ask_t1c already read above.)
             if (bid_decision.effective_t1c() > 0 and best_ask_t1c < 1000
                     and bid_decision.effective_t1c() >= best_ask_t1c):
                 tick = _tick_at(orderbook.tick_schedule, best_ask_t1c)
@@ -246,9 +264,17 @@ class DefaultLIPQuoting:
             target_t1c = best_bid_t1c
             mode = "deep-itm-match"
         elif confidence >= cfg.penny_inside_min_confidence:
-            # Highest-confidence: N ticks INSIDE the best
+            # Highest-confidence: N ticks INSIDE the best. Clamp the
+            # step so the target stays strictly below the opposite
+            # best — on a 1¢ spread with N=3, target=best+3¢ would
+            # cross the ask and the no-cross guard would over-pull.
             n_ticks = max(1, cfg.penny_inside_distance)
-            target_t1c = best_bid_t1c + n_ticks * tick
+            best_ask_t1c = ob.best_ask_t1c
+            if best_ask_t1c < 1000 and best_ask_t1c > best_bid_t1c:
+                max_inside_t1c = best_ask_t1c - tick
+                target_t1c = min(best_bid_t1c + n_ticks * tick, max_inside_t1c)
+            else:
+                target_t1c = best_bid_t1c + n_ticks * tick
             mode = "active-penny"
         elif confidence >= cfg.match_best_min_confidence:
             # Mid-confidence: MATCH the best
@@ -308,8 +334,16 @@ class DefaultLIPQuoting:
             target_t1c = best_ask_t1c
             mode = "deep-itm-match"
         elif confidence >= cfg.penny_inside_min_confidence:
+            # Highest-confidence: N ticks INSIDE the best, clamped so
+            # the target stays strictly above the opposite best (the
+            # mirror of the bid-side narrow-spread guard).
             n_ticks = max(1, cfg.penny_inside_distance)
-            target_t1c = best_ask_t1c - n_ticks * tick
+            best_bid_t1c = ob.best_bid_t1c
+            if best_bid_t1c > 0 and best_bid_t1c < best_ask_t1c:
+                min_inside_t1c = best_bid_t1c + tick
+                target_t1c = max(best_ask_t1c - n_ticks * tick, min_inside_t1c)
+            else:
+                target_t1c = best_ask_t1c - n_ticks * tick
             mode = "active-penny"
         elif confidence >= cfg.match_best_min_confidence:
             target_t1c = best_ask_t1c

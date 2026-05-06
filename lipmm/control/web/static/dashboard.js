@@ -994,14 +994,16 @@
         // usable value, default to 50 in track_mid; require valid in
         // fixed mode.
         const rawCents = fd.get("yes_cents");
-        let yes_cents = parseInt(rawCents, 10);
-        if (!Number.isInteger(yes_cents) || yes_cents < 1 || yes_cents > 99) {
+        let yes_cents = parseFloat(rawCents);
+        if (!Number.isFinite(yes_cents) || yes_cents < 0.1 || yes_cents > 99.9) {
           if (mode === "track_mid") {
-            yes_cents = 50;  // unused at quote time; just keep Pydantic happy
+            yes_cents = 50.0;  // unused at quote time; just keep Pydantic happy
           } else {
-            return showToast("yes_cents must be 1..99");
+            return showToast("yes_cents must be 0.1..99.9");
           }
         }
+        // Snap to 0.1 precision (drop trailing float noise like 47.69999)
+        yes_cents = Math.round(yes_cents * 10) / 10;
         if (!ticker) return showToast("ticker required");
         if (mode !== "fixed" && mode !== "track_mid") {
           return showToast(`unknown mode "${mode}"`);

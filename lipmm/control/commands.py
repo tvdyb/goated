@@ -264,8 +264,8 @@ class SetTheoOverrideRequest(BaseModel):
     before activating, since a runaway market mid is dangerous.
     """
     ticker: str = Field(min_length=1, max_length=128)
-    yes_cents: int = Field(ge=1, le=99,
-                           description="Operator's fair-value estimate in cents (1..99). Placeholder when mode=track_mid.")
+    yes_cents: float = Field(ge=0.1, le=99.9,
+                             description="Operator's fair-value estimate in cents (0.1..99.9, sub-cent precision). Placeholder when mode=track_mid.")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     reason: str = Field(min_length=4, max_length=512,
                         description="Required audit string — why this override?")
@@ -341,7 +341,7 @@ class TheoOverrideEntry(BaseModel):
     """One row in the GET /control/state theo_overrides list."""
     ticker: str
     yes_probability: float
-    yes_cents: int
+    yes_cents: float
     confidence: float
     reason: str
     set_at: float

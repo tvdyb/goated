@@ -368,7 +368,7 @@ class ControlState:
                 {
                     "ticker": ticker,
                     "yes_probability": ov.yes_probability,
-                    "yes_cents": int(round(ov.yes_probability * 100)),
+                    "yes_cents": round(ov.yes_probability * 100, 1),
                     "confidence": ov.confidence,
                     "reason": ov.reason,
                     "set_at": ov.set_at,

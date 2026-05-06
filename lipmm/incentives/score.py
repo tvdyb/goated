@@ -53,6 +53,11 @@ gate qualifying bids on `Reference Price < highest possible price`,
 i.e. a 99¢ best bid disqualifies the side from earning that
 snapshot."""
 
+MAX_PRICE_T1C = 990
+"""Same gate, in tenths-of-a-cent (the scorer's internal unit on
+sub-cent markets). 990 t1c = 99.0¢. Anything ≥ this disqualifies
+the side."""
+
 
 # ── Per-resting / per-strike result types ───────────────────────────
 
@@ -161,14 +166,26 @@ class StrikeScore:
 
 
 def _coerce_levels(levels: list[Any]) -> list[tuple[int, float]]:
-    """Coerce wire `[{price_cents, size}, ...]` or `[(price, size), ...]`
-    into a list of (price_c, size) tuples, dropping malformed entries
-    and zero/negative sizes. Sorted descending by price."""
+    """Coerce wire `[{price_t1c, price_cents, size}, ...]` or
+    `[(price, size), ...]` into a list of `(price_t1c, size)` tuples,
+    dropping malformed entries and zero/negative sizes. Sorted
+    descending by price.
+
+    Prefers the broadcast's `price_t1c` (raw tenths-of-cent) when
+    present; otherwise falls back to `price_cents * 10`. Tuple inputs
+    are interpreted as `(price_t1c, size)` — the runner emits t1c.
+    Integer-cent test inputs that pass `(50, 10.0)` would be treated
+    as 5.0¢ t1c, not 50¢. Tests that need integer-cent semantics
+    should pass dicts with `price_cents`.
+    """
     out: list[tuple[int, float]] = []
     for lvl in levels or []:
         try:
             if isinstance(lvl, dict):
-                p = int(lvl["price_cents"])
+                if "price_t1c" in lvl and lvl["price_t1c"] is not None:
+                    p = int(lvl["price_t1c"])
+                else:
+                    p = int(lvl["price_cents"]) * 10
                 sz = float(lvl["size"])
             else:
                 p, sz = int(lvl[0]), float(lvl[1])
@@ -192,49 +209,55 @@ def _qualifying_walkdown(
     levels_desc: list[tuple[int, float]],
     target_size: float,
     *,
-    max_price: int = MAX_PRICE_CENTS,
+    max_price_t1c: int = MAX_PRICE_T1C,
 ) -> tuple[int, int] | None:
     """Walk down `levels_desc` (sorted highest-price-first) accumulating
-    size until cumulative ≥ `target_size`. Returns (reference_price,
-    threshold_price) — both in cents — where threshold_price is the
-    lowest price in the qualifying set. Returns None if:
+    size until cumulative ≥ `target_size`. Returns (reference_price_t1c,
+    threshold_price_t1c) — both in t1c — where threshold is the lowest
+    price in the qualifying set. Returns None if:
 
       - levels is empty
-      - the highest price is NOT strictly less than max_price (99)
+      - the highest price is NOT strictly less than max_price_t1c (990)
       - cumulative size never reaches target_size
 
     Per Appendix A: bids strictly below the threshold price do NOT
     qualify, even though they sit on the book."""
     if not levels_desc:
         return None
-    ref_price = levels_desc[0][0]
-    if ref_price >= max_price:
+    ref_price_t1c = levels_desc[0][0]
+    if ref_price_t1c >= max_price_t1c:
         return None
     cumulative = 0.0
-    threshold = ref_price
+    threshold_t1c = ref_price_t1c
     for p, sz in levels_desc:
         cumulative += sz
-        threshold = p
+        threshold_t1c = p
         if cumulative >= target_size:
-            return ref_price, threshold
+            return ref_price_t1c, threshold_t1c
     # Exhausted without reaching target → no qualifying bids
     return None
 
 
 def _side_score_total(
     levels_desc: list[tuple[int, float]],
-    ref_price: int,
-    threshold: int,
+    ref_price_t1c: int,
+    threshold_t1c: int,
     discount_factor: float,
 ) -> float:
     """Σ over qualifying bids of DF^(ref - price) × size. Bids below
-    `threshold` are excluded."""
+    `threshold` are excluded.
+
+    Per Appendix A the exponent is the distance in *cents* (with
+    sub-cent precision when applicable). Both ref_price and price are
+    in t1c here, so distance_c = (ref_t1c - price_t1c) / 10.0 — a
+    float distance in cents that yields fractional exponents on
+    sub-cent markets (e.g. 0.5¢ apart → DF^0.5)."""
     total = 0.0
     for p, sz in levels_desc:
-        if p < threshold:
+        if p < threshold_t1c:
             break  # levels are sorted descending; rest are below threshold
-        distance = ref_price - p
-        total += (discount_factor ** distance) * sz
+        distance_c = (ref_price_t1c - p) / 10.0
+        total += (discount_factor ** distance_c) * sz
     return total
 
 
@@ -303,19 +326,22 @@ def compute_strike_score(
     yes_walk = _qualifying_walkdown(yes, target)
     no_walk = _qualifying_walkdown(no, target)
 
-    yes_ref, yes_thresh = yes_walk if yes_walk else (None, None)
-    no_ref, no_thresh = no_walk if no_walk else (None, None)
+    yes_ref_t1c, yes_thresh_t1c = yes_walk if yes_walk else (None, None)
+    no_ref_t1c, no_thresh_t1c = no_walk if no_walk else (None, None)
 
     yes_total = (
-        _side_score_total(yes, yes_ref, yes_thresh, df)
+        _side_score_total(yes, yes_ref_t1c, yes_thresh_t1c, df)
         if yes_walk else 0.0
     )
     no_total = (
-        _side_score_total(no, no_ref, no_thresh, df)
+        _side_score_total(no, no_ref_t1c, no_thresh_t1c, df)
         if no_walk else 0.0
     )
 
-    # Now score each of our orders.
+    # Now score each of our orders. Orders carry `price_cents` from
+    # OrderManager (cents-rounded display value); we convert to t1c
+    # for distance math and prefer `price_t1c` if present (future
+    # callers passing precise sub-cent prices).
     our_yes_score = 0.0
     our_no_score = 0.0
     mults: list[RestingMultiplier] = []
@@ -323,58 +349,60 @@ def compute_strike_score(
         try:
             order_id = str(o["order_id"])
             side = str(o["side"])
-            p = int(o["price_cents"])
+            if "price_t1c" in o and o["price_t1c"] is not None:
+                p_t1c = int(o["price_t1c"])
+            else:
+                p_t1c = int(o["price_cents"]) * 10
             sz = float(o["size"])
         except (KeyError, TypeError, ValueError):
             continue
         if sz <= 0:
             continue
+        p_c = (p_t1c + 5) // 10  # rounded for display
 
         if side == "bid":
             # Yes-bid at price p. Reference is yes_ref. Qualifies iff
             # the Yes side has qualifying bids AND p ≥ yes_thresh.
-            if yes_walk and p >= yes_thresh:
-                distance = yes_ref - p
-                mult = df ** distance if distance >= 0 else 0.0
+            if yes_walk and p_t1c >= yes_thresh_t1c:
+                distance_c = (yes_ref_t1c - p_t1c) / 10.0
+                mult = df ** distance_c if distance_c >= 0 else 0.0
                 contrib = mult * sz
                 our_yes_score += contrib
                 qualified = True
             else:
-                # Compute mult informationally (relative to best yes bid)
-                # so the operator sees how far off they are; contribution = 0
-                ref_for_display = yes_ref if yes_ref is not None else best_bid_c
-                distance = max(0, ref_for_display - p)
-                mult = df ** distance
+                # Informational only: distance to displayed best bid; contribution = 0
+                ref_t1c_for_display = (
+                    yes_ref_t1c if yes_ref_t1c is not None else best_bid_c * 10
+                )
+                distance_c = max(0.0, (ref_t1c_for_display - p_t1c) / 10.0)
+                mult = df ** distance_c
                 contrib = 0.0
                 qualified = False
             mults.append(RestingMultiplier(
-                order_id=order_id, side=side, price_c=p, size=sz,
+                order_id=order_id, side=side, price_c=p_c, size=sz,
                 multiplier=mult, score_contribution=contrib,
                 qualified=qualified,
             ))
         elif side == "ask":
-            # Yes-ask at price p ⇔ No-bid at price (100 - p).
-            no_price = MAX_PRICE_CENTS + 1 - p  # i.e. 100 - p (since prices are 1..99)
-            # The "max possible price" symmetry: a yes-ask at 1¢ = no-bid at 99¢.
-            # Use 100 - p directly, NOT MAX_PRICE_CENTS+1-p, to keep math clean.
-            no_price = 100 - p
-            if no_walk and no_price >= no_thresh:
-                distance = no_ref - no_price
-                mult = df ** distance if distance >= 0 else 0.0
+            # Yes-ask at price p ⇔ No-bid at price (1000 - p) in t1c.
+            no_price_t1c = 1000 - p_t1c
+            if no_walk and no_price_t1c >= no_thresh_t1c:
+                distance_c = (no_ref_t1c - no_price_t1c) / 10.0
+                mult = df ** distance_c if distance_c >= 0 else 0.0
                 contrib = mult * sz
                 our_no_score += contrib
                 qualified = True
             else:
-                ref_for_display = (
-                    no_ref if no_ref is not None
-                    else max(0, 100 - best_ask_c)
+                ref_t1c_for_display = (
+                    no_ref_t1c if no_ref_t1c is not None
+                    else max(0, (100 - best_ask_c) * 10)
                 )
-                distance = max(0, ref_for_display - no_price)
-                mult = df ** distance
+                distance_c = max(0.0, (ref_t1c_for_display - no_price_t1c) / 10.0)
+                mult = df ** distance_c
                 contrib = 0.0
                 qualified = False
             mults.append(RestingMultiplier(
-                order_id=order_id, side=side, price_c=p, size=sz,
+                order_id=order_id, side=side, price_c=p_c, size=sz,
                 multiplier=mult, score_contribution=contrib,
                 qualified=qualified,
             ))
@@ -392,6 +420,15 @@ def compute_strike_score(
     sides_active = (1 if yes_walk else 0) + (1 if no_walk else 0)
     pool_share = snapshot_score / sides_active if sides_active > 0 else 0.0
 
+    # Output ref prices in cents (rounded from t1c) for backward
+    # compatibility with the dashboard's display fields.
+    yes_ref_c_out = (
+        (yes_ref_t1c + 5) // 10 if yes_ref_t1c is not None else None
+    )
+    no_ref_c_out = (
+        (no_ref_t1c + 5) // 10 if no_ref_t1c is not None else None
+    )
+
     return StrikeScore(
         our_yes_score=our_yes_score,
         yes_total_score=yes_total,
@@ -401,8 +438,8 @@ def compute_strike_score(
         our_no_normalized=our_no_norm,
         yes_qualifying=bool(yes_walk),
         no_qualifying=bool(no_walk),
-        yes_ref_price_c=yes_ref,
-        no_ref_price_c=no_ref,
+        yes_ref_price_c=yes_ref_c_out,
+        no_ref_price_c=no_ref_c_out,
         snapshot_score=snapshot_score,
         pool_share=pool_share,
         multipliers=mults,

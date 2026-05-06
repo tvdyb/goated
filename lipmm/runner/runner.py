@@ -144,6 +144,10 @@ class LIPRunner:
         # by MaxPositionPerSideGate to veto sides that would deepen an
         # already-lopsided position.
         self._position_cache: dict[str, int] = {}
+        # Tickers we've already logged the sub-cent banner for. Without
+        # this dedup, the runner spams an INFO line every cycle for
+        # every sub-cent ticker (every 3s × however many strikes).
+        self._subcent_logged: set[str] = set()
 
     async def run(self) -> None:
         """Main loop. Returns on stop()."""
@@ -379,18 +383,18 @@ class LIPRunner:
         # overrides need best_bid/best_ask to compute the mid).
         ob_levels = await self._exchange.get_orderbook(ticker)
 
-        # Sub-cent tick detection: Kalshi's place_order API is
-        # integer-cents-only. Some markets show fractional-cent levels
-        # in the orderbook (e.g., 97.8¢). The bot rounds those to the
-        # nearest integer cent and quotes anyway — we'd rather quote
-        # slightly suboptimally than not at all. The badge on the
-        # dashboard tells the operator which markets are affected so
-        # they can choose to pause manually if the adverse selection
-        # is unacceptable.
-        if ob_levels.has_subcent_ticks:
+        # Sub-cent tick detection: log once per ticker (not every
+        # cycle) that this market has sub-cent granularity. The
+        # strategy quotes in t1c and the adapter routes through
+        # Kalshi's `yes_price_dollars` fractional path; falls back to
+        # integer cents on a 4xx for that market only.
+        if ob_levels.has_subcent_ticks and ticker not in self._subcent_logged:
+            self._subcent_logged.add(ticker)
             logger.info(
-                "subcent_market: %s has sub-cent tick granularity in book; "
-                "quoting at rounded integer cents", ticker,
+                "subcent_market: %s has sub-cent tick granularity; "
+                "quoting at 0.1¢ precision via fractional yes_price_dollars "
+                "(falls back to integer cents on Kalshi 4xx)",
+                ticker,
             )
 
         # Compute best_bid / best_ask excluding our own resting orders

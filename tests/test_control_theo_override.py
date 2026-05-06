@@ -154,6 +154,40 @@ def test_post_set_theo_override_updates_state() -> None:
     assert ov.mode == "fixed"
 
 
+def test_post_set_theo_override_accepts_subcent() -> None:
+    """Sub-cent precision (0.1¢) is accepted for sub-cent markets like
+    PMI / election strikes where the orderbook carries 47.7¢ levels."""
+    client, state, _ = _client()
+    r = client.post("/control/set_theo_override", json={
+        "ticker": "KX-T1",
+        "yes_cents": 47.7,
+        "confidence": 0.95,
+        "reason": "subcent override on 0.1¢ tick market",
+        "request_id": "req-theo-subcent-1",
+    }, headers=_h())
+    assert r.status_code == 200, r.text
+    ov = state.get_theo_override("KX-T1")
+    assert ov is not None
+    assert abs(ov.yes_probability - 0.477) < 1e-9
+    # Snapshot exposes one-decimal precision for the dashboard chip.
+    snap = state.snapshot()
+    entries = {e["ticker"]: e for e in snap["theo_overrides"]}
+    assert entries["KX-T1"]["yes_cents"] == 47.7
+
+
+def test_post_set_theo_override_rejects_subcent_below_min() -> None:
+    """Pydantic gate: yes_cents < 0.1 fails validation."""
+    client, _, _ = _client()
+    r = client.post("/control/set_theo_override", json={
+        "ticker": "KX-T1",
+        "yes_cents": 0.05,
+        "confidence": 0.9,
+        "reason": "should reject",
+        "request_id": "req-theo-low-1",
+    }, headers=_h())
+    assert r.status_code == 422
+
+
 def test_post_set_theo_override_track_mid_mode() -> None:
     client, state, _ = _client()
     r = client.post("/control/set_theo_override", json={
