@@ -518,7 +518,7 @@
     // every ~3s when the strike grid OOB-swaps.
     document.body.addEventListener("htmx:beforeSwap", captureScroll);
     document.body.addEventListener("htmx:wsBeforeMessage", captureScroll);
-    document.body.addEventListener("htmx:afterSwap", () => {
+    const reapplyAll = () => {
       applyPersistedDrawerState();
       applyPersistedExpansions();
       applyTheoDrafts();
@@ -526,16 +526,28 @@
       applyAllModeToggles();
       tickCountdowns();
       restoreScroll();
-    });
-    document.body.addEventListener("htmx:wsAfterMessage", () => {
-      applyPersistedDrawerState();
-      applyPersistedExpansions();
-      applyTheoDrafts();
-      applyKnobDrafts();
-      applyAllModeToggles();
-      tickCountdowns();
-      restoreScroll();
-    });
+    };
+    // Hook every htmx swap-completion path. Different swap mechanisms
+    // (regular AJAX response vs WebSocket OOB vs hx-load) fire
+    // different events; covering all of them ensures form drafts get
+    // restored regardless of how the strike grid was updated.
+    document.body.addEventListener("htmx:afterSwap", reapplyAll);
+    document.body.addEventListener("htmx:wsAfterMessage", reapplyAll);
+    document.body.addEventListener("htmx:oobAfterSwap", reapplyAll);
+    document.body.addEventListener("htmx:load", reapplyAll);
+    // Belt-and-suspenders: a MutationObserver on the strike grid
+    // catches any DOM replacement we missed via the htmx events. Fires
+    // synchronously on subtree mutations and re-applies drafts. Cheap
+    // — applyKnobDrafts is idempotent and short-circuits when values
+    // already match.
+    const grid = document.getElementById("strike-grid");
+    if (grid) {
+      const obs = new MutationObserver(() => {
+        applyTheoDrafts();
+        applyKnobDrafts();
+      });
+      obs.observe(grid, { childList: true, subtree: true });
+    }
   }
 
   function bindKnobInline() {
@@ -1232,6 +1244,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    console.log("[lipmm] dashboard.js loaded — knob-drafts+scroll-preserve build");
     setupHtmxAuth();
     bindLoginForm();
     bindLogout();

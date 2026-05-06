@@ -426,6 +426,7 @@
         {% endif %}
       </div>
       <form class="grid gap-3" data-form="theo-override-inline" data-ticker="{{ s.ticker }}"
+            id="theo-override-form-{{ s.slug }}" hx-preserve="true"
             style="grid-template-columns: 110px 90px 90px 1fr 110px auto;">
         <input type="hidden" name="ticker" value="{{ s.ticker }}">
         <label class="rounded border px-2 py-1 flex flex-col"
@@ -555,7 +556,14 @@
             {% endfor %}
           </div>
         {% endif %}
-        <form class="flex items-center gap-2" data-form="strike-knob-set" data-ticker="{{ s.ticker }}">
+        {# hx-preserve keeps this form's live DOM (including dropdown
+           selection and typed value) across the strike-grid OOB swaps
+           that fire every ~3s. Without it, the user can't pick a knob
+           or type a value — the form gets destroyed mid-interaction.
+           Requires a stable `id` per strike. The active-overrides chips
+           above are OUTSIDE the form, so they still update. #}
+        <form class="flex items-center gap-2" data-form="strike-knob-set" data-ticker="{{ s.ticker }}"
+              id="strike-knob-form-{{ s.slug }}" hx-preserve="true">
           <input type="hidden" name="ticker" value="{{ s.ticker }}">
           <select name="name"
                   class="bg-transparent outline-none text-[11px] rounded border px-1.5 py-0.5"
