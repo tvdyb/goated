@@ -221,6 +221,19 @@ class LIPRunner:
             logger.warning("LIPRunner: ticker source failed: %s", exc)
             return
 
+        # Refresh balance once per cycle so OrderManager can skip
+        # placements that would push past available cash. Kalshi
+        # auto-cancels collateral-short orders and the operator gets
+        # push-notification spam; the skip turns those into a quiet
+        # no-op. Failures don't block the cycle — when balance is
+        # unknown, OrderManager falls back to legacy (no check).
+        try:
+            balance = await self._exchange.get_balance()
+            self._om.set_available_cash_cents(balance.cash_dollars * 100.0)
+        except Exception as exc:
+            logger.info("balance refresh failed: %s", exc)
+            self._om.set_available_cash_cents(None)
+
         # Refresh position cache once per cycle. One API call regardless
         # of strike count. Failures here don't block the cycle — gates
         # that read positions just see {} and won't veto.

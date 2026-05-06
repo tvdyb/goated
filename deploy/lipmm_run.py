@@ -279,6 +279,30 @@ async def _amain(args: argparse.Namespace) -> int:
     await client.open()
     exchange = KalshiExchangeAdapter.from_client(client)
 
+    # Sweep any zombie resting orders from a prior session before the
+    # runner starts. Without this, Kalshi continues to lock collateral
+    # against orders the OrderManager doesn't know about — the bot's
+    # in-memory commitment view diverges from reality and new orders
+    # get auto-cancelled with "insufficient collateral" notifications.
+    try:
+        zombies = await exchange.list_resting_orders()
+        if zombies:
+            ids = [o.order_id for o in zombies]
+            logger.info(
+                "startup: sweeping %d zombie resting order(s) from prior session",
+                len(ids),
+            )
+            results = await exchange.cancel_orders(ids)
+            cancelled = sum(1 for ok in results.values() if ok)
+            logger.info("startup: cancelled %d/%d zombie orders", cancelled, len(ids))
+    except Exception as exc:
+        logger.warning(
+            "startup: zombie sweep failed (%s); proceeding anyway. "
+            "If you see 'insufficient collateral' notifications, "
+            "manually cancel resting orders on Kalshi and restart.",
+            exc,
+        )
+
     # 2. Parse and pre-validate seed event tickers (if any).
     # `--event-ticker` is now optional and accepts comma-separated values.
     # When omitted, the bot starts with no events; the operator adds them

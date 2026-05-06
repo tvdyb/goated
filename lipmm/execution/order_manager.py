@@ -80,6 +80,13 @@ class OrderManager:
         # from different tasks (e.g. runner cycle vs manual-order endpoint
         # both touching the same key in flight). Lazy-allocated.
         self._locks: dict[tuple[str, SideName], asyncio.Lock] = {}
+        # Cached available cash for balance-aware sizing. Pushed in by the
+        # runner once per cycle from exchange.get_balance(). When None,
+        # the collateral check is disabled (legacy behavior).
+        self._available_cash_cents: float | None = None
+        # Safety factor against the cached balance — Kalshi's collateral
+        # accounting can lag our local view, so we hold back 10%.
+        self._collateral_safety_factor: float = 0.9
 
     def _lock_for(self, key: tuple[str, SideName]) -> asyncio.Lock:
         if key not in self._locks:
@@ -106,6 +113,25 @@ class OrderManager:
             if ro is not None and ro.order_id == order_id:
                 return (ticker, side, ro)
         return None
+
+    def set_available_cash_cents(self, cents: float | None) -> None:
+        """Cache available cash from exchange.get_balance() for the
+        collateral-aware skip in _place_new. Pass None to disable the
+        check (back-compat for tests / callers that don't poll balance).
+        """
+        self._available_cash_cents = cents
+
+    def _committed_cents(self) -> float:
+        """Sum of cents committed to existing resting orders. For each
+        bid: price × size. For each ask: (100 - price) × size (since a
+        Yes ask at P translates to a No bid at 100−P on Kalshi)."""
+        total = 0.0
+        for (_, side), ro in self._resting.items():
+            if ro is None:
+                continue
+            cost_per = ro.price_cents if side == "bid" else max(0, 100 - ro.price_cents)
+            total += cost_per * ro.size
+        return total
 
     def forget(self, ticker: str, side: SideName) -> RestingOrder | None:
         """Drop the (ticker, side) entry from internal state without
@@ -293,6 +319,26 @@ class OrderManager:
         success. Returns the RestingOrder or None on rejection."""
         key = (ticker, side)
         action: Literal["buy", "sell"] = "buy" if side == "bid" else "sell"
+        # Collateral-aware skip. If we know the cash balance, refuse to
+        # fire a doomed placement that would push committed past the
+        # safety threshold. Kalshi auto-cancels these and the operator
+        # gets push-notification spam.
+        if self._available_cash_cents is not None:
+            cost_per = decision.price if side == "bid" else max(0, 100 - decision.price)
+            new_cents = cost_per * decision.size
+            committed = self._committed_cents()
+            budget = self._available_cash_cents * self._collateral_safety_factor
+            if committed + new_cents > budget:
+                logger.info(
+                    "OrderManager %s %s: skipping place at %dc × %d "
+                    "— would commit ¢%.0f on top of ¢%.0f committed; "
+                    "budget ¢%.0f (cash ¢%.0f × %.2f)",
+                    ticker, side, decision.price, decision.size,
+                    new_cents, committed, budget,
+                    self._available_cash_cents,
+                    self._collateral_safety_factor,
+                )
+                return None
         try:
             order = await exchange.place_order(PlaceOrderRequest(
                 ticker=ticker,
