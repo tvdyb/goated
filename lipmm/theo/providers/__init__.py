@@ -19,11 +19,26 @@ class implementing the TheoProvider protocol directly. See
 """
 
 from lipmm.theo.providers._function import function_provider
+from lipmm.theo.providers._truev_index import (
+    DEFAULT_ANCHOR_PLACEHOLDER,
+    DEFAULT_WEIGHTS_Q4_2025,
+    TruEvAnchor,
+    TruEvWeights,
+    reconstruct_index,
+)
 from lipmm.theo.providers.file import FilePollTheoProvider
 from lipmm.theo.providers.http import HttpPollTheoProvider
+from lipmm.theo.providers.truev import TruEVConfig, TruEVTheoProvider
 
 __all__ = [
+    "DEFAULT_ANCHOR_PLACEHOLDER",
+    "DEFAULT_WEIGHTS_Q4_2025",
     "FilePollTheoProvider",
     "HttpPollTheoProvider",
+    "TruEVConfig",
+    "TruEVTheoProvider",
+    "TruEvAnchor",
+    "TruEvWeights",
     "function_provider",
+    "reconstruct_index",
 ]

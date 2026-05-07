@@ -352,8 +352,14 @@ async def _amain(args: argparse.Namespace) -> int:
     # ONLY if no CLI provider already covers that prefix (specifically or
     # via "*" wildcard). For events added later via the dashboard, the
     # registry's no-provider fallback (or the wildcard) handles them.
+    #
+    # Special-case: KXTRUEV gets a real TruEV theo provider (not a
+    # stub). Settlement time is required — operator passes via
+    # --truev-settlement-iso. Anchor and σ have sane defaults but can
+    # be overridden via flags.
     has_wildcard = "*" in cli_prefixes
     seen_prefixes: set[str] = set()
+    truev_providers: list[Any] = []
     for ev in seed_event_tickers:
         prefix = _series_prefix(ev)
         if prefix in seen_prefixes:
@@ -361,6 +367,53 @@ async def _amain(args: argparse.Namespace) -> int:
         seen_prefixes.add(prefix)
         if prefix in cli_prefixes or has_wildcard:
             continue  # CLI provider already covers this prefix
+        if prefix == "KXTRUEV":
+            from feeds.truflation import TruEvForwardSource
+            from lipmm.theo.providers import (
+                DEFAULT_ANCHOR_PLACEHOLDER,
+                DEFAULT_WEIGHTS_Q4_2025,
+                TruEVConfig,
+                TruEVTheoProvider,
+                TruEvAnchor,
+            )
+            if not args.truev_settlement_iso:
+                logger.error(
+                    "KXTRUEV detected but --truev-settlement-iso missing; "
+                    "falling back to StubTheoProvider. Pass e.g. "
+                    "--truev-settlement-iso 2026-05-07T23:59:00+00:00"
+                )
+                theo_registry.register(StubTheoProvider(prefix))
+                continue
+            anchor = DEFAULT_ANCHOR_PLACEHOLDER
+            if (args.truev_anchor_index is not None
+                    or args.truev_anchor_date is not None):
+                anchor = TruEvAnchor(
+                    anchor_date=args.truev_anchor_date or anchor.anchor_date,
+                    anchor_index_value=(
+                        args.truev_anchor_index
+                        if args.truev_anchor_index is not None
+                        else anchor.anchor_index_value
+                    ),
+                    anchor_prices=dict(anchor.anchor_prices),
+                )
+            cfg = TruEVConfig(
+                settlement_time_iso=args.truev_settlement_iso,
+                weights=DEFAULT_WEIGHTS_Q4_2025,
+                anchor=anchor,
+                annualized_vol=args.truev_vol,
+                max_confidence=args.truev_max_confidence,
+            )
+            forward_src = TruEvForwardSource(poll_interval_s=120.0)
+            prov = TruEVTheoProvider(cfg, forward_src)
+            theo_registry.register(prov)
+            truev_providers.append(prov)
+            logger.info(
+                "registered TruEVTheoProvider: prefix=%s settle=%s "
+                "σ=%.3f anchor_date=%s anchor_idx=%.4f",
+                prefix, args.truev_settlement_iso,
+                args.truev_vol, anchor.anchor_date, anchor.anchor_index_value,
+            )
+            continue
         theo_registry.register(StubTheoProvider(prefix))
     strategy = _build_strategy(args.strategy)
     risk = _build_risk_registry(args.cap_dollars)
@@ -567,6 +620,35 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Spec: 'URL[:SERIES_PREFIX[:REFRESH_S]]'. URL must include "
             "scheme. Repeatable."
         ),
+    )
+    # ── TruEV-specific flags (only consumed when an event with prefix
+    # KXTRUEV is seeded). Settlement is required because the daily
+    # binary lognormal pricer needs a fixed settle time. Operator
+    # should set anchor_index from truflation.com/marketplace/ev-index
+    # and σ from observed daily range or a recent calibration.
+    p.add_argument(
+        "--truev-settlement-iso", default="",
+        help="REQUIRED for KXTRUEV markets. ISO 8601 datetime "
+             "(e.g. '2026-05-07T23:59:00+00:00') of the binary settle.",
+    )
+    p.add_argument(
+        "--truev-vol", type=float, default=0.30,
+        help="Annualized σ for the TruEV lognormal pricer (default 0.30).",
+    )
+    p.add_argument(
+        "--truev-anchor-index", type=float, default=None,
+        help="Override the placeholder anchor index value. Read today's "
+             "value from truflation.com/marketplace/ev-index.",
+    )
+    p.add_argument(
+        "--truev-anchor-date", default=None,
+        help="Informational label for the anchor date (default 2026-05-07).",
+    )
+    p.add_argument(
+        "--truev-max-confidence", type=float, default=0.7,
+        help="Cap on TruEV theo confidence (default 0.7). σ is "
+             "uncalibrated in Phase 1, so we don't go beyond active-match "
+             "mode by default.",
     )
     return p.parse_args(argv)
 
