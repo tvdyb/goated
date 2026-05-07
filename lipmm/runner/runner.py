@@ -285,6 +285,24 @@ class LIPRunner:
                     await self._markout.observe_position_delta(
                         ticker, prev_q, cur_q, mid_c=mid_c,
                     )
+                    # Also broadcast a fill event so the dashboard can
+                    # surface a banner/sound notification. price_c is a
+                    # mid proxy (we don't get exact fill price in a
+                    # position-delta sweep); it's still actionable for
+                    # the operator. Best-effort; never blocks the cycle.
+                    if self._broadcaster is not None:
+                        try:
+                            await self._broadcaster.broadcast({
+                                "event_type": "fill",
+                                "ticker": ticker,
+                                "delta": cur_q - prev_q,
+                                "prev_qty": prev_q,
+                                "cur_qty": cur_q,
+                                "price_c": mid_c,
+                                "ts": time.time(),
+                            })
+                        except Exception as exc:
+                            logger.info("fill broadcast failed: %s", exc)
             except Exception as exc:
                 logger.info("markout observe failed: %s", exc)
 

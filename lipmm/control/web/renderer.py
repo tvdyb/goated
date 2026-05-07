@@ -914,6 +914,33 @@ class HtmlWebSocketAdapter:
         if et == "heartbeat":
             # Keep the feed silent on heartbeats; presence stays in sync.
             return ""
+        if et == "fill":
+            # Tiny OOB-swap that adds a child to #fill-events. The
+            # dashboard JS observes that mount and triggers a beep +
+            # browser Notification. We don't render the fill into the
+            # decision feed here — the runner already emits a separate
+            # decision record for the order-state transition.
+            ticker = event.get("ticker", "")
+            delta = int(event.get("delta", 0) or 0)
+            price_c = event.get("price_c")
+            size = abs(delta)
+            # action is from the bot's perspective: buy_yes / sell_yes
+            action = "buy_yes" if delta > 0 else "sell_yes"
+            price_attr = (
+                f'data-fill-price-c="{float(price_c):.2f}"'
+                if price_c is not None else ''
+            )
+            return (
+                '<div id="fill-events" hx-swap-oob="afterbegin">'
+                f'<div class="fill-event hidden" '
+                f'data-fill-ticker="{ticker}" '
+                f'data-fill-action="{action}" '
+                f'data-fill-size="{size}" '
+                f'{price_attr} '
+                f'data-fill-ts="{event.get("ts", 0)}">'
+                '</div>'
+                '</div>'
+            )
         # Unknown event — render as a JSON line in the feed for debugging.
         self._records.append({
             "ts": event.get("ts", 0.0),

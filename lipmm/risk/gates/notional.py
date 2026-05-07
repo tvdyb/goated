@@ -38,21 +38,36 @@ class MaxNotionalPerSideGate:
         bid_reason = ""
         ask_reason = ""
 
-        # Per-strike / per-event / global override (knob:
-        # "max_notional_per_side_dollars"). Without this, an operator who
-        # bumps `dollars_per_side` per strike higher than the gate's
-        # static cap silently sees the bot stop trading on that strike —
-        # the strategy sizes up, the gate vetoes, no signal in the UI.
-        # Mirrors the override behaviour of the position / mid-delta /
-        # cycle-throttle gates.
+        # The gate exists to catch SIZING BUGS — runaway strategy logic
+        # producing absurd notionals — not to second-guess explicit
+        # operator intent. Two override paths, with different semantics:
+        #
+        #   max_notional_per_side_dollars  →  REPLACES the constructor
+        #   value. Can go up (more aggressive) or down (tighten on an
+        #   illiquid edge market).
+        #
+        #   dollars_per_side               →  LIFTS the cap to at least
+        #   the strategy's budget. Can only widen, never narrow. Without
+        #   this implicit lift, bumping the strategy budget per-strike
+        #   silently dead-ends at the gate with no UI signal — exactly
+        #   the footgun that prompted this gate to start honoring
+        #   overrides in the first place.
         effective_max = self._max_dollars
-        if context.control_overrides is not None:
-            ov = context.control_overrides.get("max_notional_per_side_dollars")
-            if ov is not None:
-                try:
-                    effective_max = float(ov)
-                except (TypeError, ValueError):
-                    pass
+        ov = context.control_overrides or {}
+
+        explicit = ov.get("max_notional_per_side_dollars")
+        if explicit is not None:
+            try:
+                effective_max = float(explicit)
+            except (TypeError, ValueError):
+                pass
+
+        budget = ov.get("dollars_per_side")
+        if budget is not None:
+            try:
+                effective_max = max(effective_max, float(budget))
+            except (TypeError, ValueError):
+                pass
 
         if not decision.bid.skip:
             # t1c × contracts / 1000 = dollars (10 t1c = 1¢, 100¢ = $1)

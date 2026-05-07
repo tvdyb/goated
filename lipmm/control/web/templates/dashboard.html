@@ -25,5 +25,13 @@
   </main>
 
   {% include "partials/operator_drawer.html" %}
+
+  {# Fill notification mount. Runner emits a "fill" event whenever a
+     position-delta is detected; the WS adapter renders an OOB swap
+     into this div with `hx-swap-oob="afterbegin"`. dashboard.js
+     observes new children, beeps, and posts a browser Notification.
+     The empty container is essential — htmx OOB-swap requires a
+     pre-existing element with the matching id. #}
+  <div id="fill-events" class="hidden" aria-hidden="true"></div>
 </div>
 {% endblock %}

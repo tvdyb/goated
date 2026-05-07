@@ -117,6 +117,46 @@ async def test_notional_gate_honors_per_strike_override_higher() -> None:
 
 
 @pytest.mark.asyncio
+async def test_notional_gate_dollars_per_side_implicitly_lifts_cap() -> None:
+    """Bumping `dollars_per_side` per strike implicitly lifts the gate's
+    effective cap so the strategy's intent isn't silently vetoed. The
+    gate exists to catch sizing bugs, not to second-guess explicit
+    operator overrides.
+    """
+    gate = MaxNotionalPerSideGate(max_dollars=2.0)
+    # bid: 50¢ × 10 = $5 — would fail at the constructor cap, but should
+    # pass because the operator explicitly budgeted $25 / side.
+    ctx = _ctx(
+        bid_price=50, bid_size=10, ask_price=85, ask_size=10,
+        control_overrides={"dollars_per_side": 25.0},
+    )
+    v = await gate.check(ctx)
+    assert v.bid_allow is True
+    assert v.ask_allow is True
+
+
+@pytest.mark.asyncio
+async def test_notional_gate_explicit_replaces_then_dollars_per_side_lifts() -> None:
+    """Explicit gate override REPLACES the constructor (can go up or
+    down). `dollars_per_side` then LIFTS the result if the budget is
+    higher — the gate must accommodate explicit operator intent."""
+    gate = MaxNotionalPerSideGate(max_dollars=10.0)
+    # Operator tightened the gate to $1, but budgeted $25/side. The
+    # budget should lift the cap to $25 (the operator's intent
+    # supersedes a manually-tightened gate).
+    ctx = _ctx(
+        bid_price=50, bid_size=10, ask_price=85, ask_size=10,
+        control_overrides={
+            "max_notional_per_side_dollars": 1.0,
+            "dollars_per_side": 25.0,
+        },
+    )
+    v = await gate.check(ctx)
+    assert v.bid_allow is True
+    assert v.ask_allow is True
+
+
+@pytest.mark.asyncio
 async def test_notional_gate_honors_per_strike_override_lower() -> None:
     """Operator can also tighten the gate per-strike, e.g. for an
     illiquid edge market — sides that the constructor would have allowed

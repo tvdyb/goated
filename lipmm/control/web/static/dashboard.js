@@ -463,7 +463,10 @@
   // ── Operator drawer (Phase 10c) ────────────────────────────────
   const DRAWER_KEY = "lipmm_drawer_open";
   const TAB_KEY = "lipmm_drawer_tab";
-  const VALID_TABS = new Set(["theos", "pauses", "knobs", "locks", "manual"]);
+  const VALID_TABS = new Set([
+    "theos", "pauses", "knobs", "locks", "manual",
+    "pnl", "earnings", "markout",
+  ]);
 
   function openDrawer(tab) {
     document.body.classList.add("drawer-open");
@@ -1285,6 +1288,96 @@
   // first scan.
   setupHtmxAuth();
 
+  // ── Fill notifications ─────────────────────────────────────────
+  // The runner emits a "fill" WS event on every position-delta. The
+  // server-side adapter renders that as an OOB-swap that adds a child
+  // to #fill-events. We observe that mount, play a short beep, and
+  // post a browser/macOS Notification so the operator hears about
+  // fills without staring at the dashboard.
+  //
+  // Permission for Notification is requested on first user click —
+  // browsers reject requestPermission() that isn't user-initiated.
+
+  const FILL_NOTIFY_KEY = "lipmm_fill_notify";   // "1" / "0"
+  function fillNotifyEnabled() {
+    return localStorage.getItem(FILL_NOTIFY_KEY) !== "0";
+  }
+  function setFillNotifyEnabled(on) {
+    localStorage.setItem(FILL_NOTIFY_KEY, on ? "1" : "0");
+  }
+
+  let _audioCtx = null;
+  function beep(action) {
+    if (!fillNotifyEnabled()) return;
+    try {
+      _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const ctx = _audioCtx;
+      // Two short tones — buy = ascending (A4→E5), sell = descending.
+      const seq = action === "sell_yes" ? [659, 440] : [440, 659];
+      let t = ctx.currentTime;
+      for (const freq of seq) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.18, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.2);
+        t += 0.18;
+      }
+    } catch (_) { /* AudioContext blocked; silent fail */ }
+  }
+
+  function ensureNotifyPermission() {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "default") {
+      // Must be triggered by a user gesture; harmless if fired here.
+      try { Notification.requestPermission(); } catch (_) {}
+    }
+  }
+
+  function notifyFill(node) {
+    if (!fillNotifyEnabled()) return;
+    const ticker = node.dataset.fillTicker || "?";
+    const action = node.dataset.fillAction || "";
+    const size = node.dataset.fillSize || "?";
+    const priceC = node.dataset.fillPriceC;
+    const human = action === "sell_yes" ? "SELL" : "BUY";
+    const priceLabel = priceC ? `~${priceC}¢` : "?";
+    const title = `${human} ${size} @ ${priceLabel}`;
+    const body = `${ticker}`;
+    if ("Notification" in window && Notification.permission === "granted") {
+      try { new Notification(title, { body, tag: `fill-${node.dataset.fillTs}` }); }
+      catch (_) {}
+    }
+    beep(action);
+  }
+
+  function observeFillMount() {
+    const mount = document.getElementById("fill-events");
+    if (!mount) return;
+    const seen = new WeakSet();
+    const handle = (n) => {
+      if (!(n instanceof HTMLElement)) return;
+      if (!n.classList.contains("fill-event")) return;
+      if (seen.has(n)) return;
+      seen.add(n);
+      notifyFill(n);
+    };
+    // Children added by htmx OOB swap fire MutationObserver callbacks.
+    const obs = new MutationObserver((muts) => {
+      for (const m of muts) {
+        m.addedNodes.forEach(handle);
+      }
+    });
+    obs.observe(mount, { childList: true });
+    // Also handle anything already there at boot.
+    mount.querySelectorAll(".fill-event").forEach(handle);
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     console.log("[lipmm] dashboard.js loaded — knob-drafts+scroll-preserve build");
     bindLoginForm();
@@ -1312,6 +1405,18 @@
       applyTheoDrafts();
       applyKnobDrafts();
       applyAllModeToggles();
+      ensureNotifyPermission();
+      observeFillMount();
+      // Lazily unlock the AudioContext on the first user click —
+      // Chrome/Safari block AudioContext until a user gesture.
+      const unlock = () => {
+        try {
+          _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+          if (_audioCtx.state === "suspended") _audioCtx.resume();
+        } catch (_) {}
+        document.removeEventListener("click", unlock);
+      };
+      document.addEventListener("click", unlock, { once: true });
     }
   });
 })();
