@@ -65,6 +65,10 @@ from lipmm.control.commands import (
     CancelOrderResponse,
     ClearTheoOverrideRequest,
     CommandResponse,
+    ExploitMarketEntry,
+    ExploitStartRequest,
+    ExploitStateResponse,
+    ExploitTickerRequest,
     HealthResponse,
     IncentiveProgramEntry,
     IncentiveSnapshotResponse,
@@ -116,6 +120,8 @@ def build_app(
     incentive_cache: IncentiveCache | None = None,
     event_validator: Any = None,
     rate_limit_stats: Any = None,
+    exploit_state: Any = None,
+    exploit_kill_handler: Any = None,
 ) -> FastAPI:
     """Construct the FastAPI app. Caller wires in the ControlState and
     optional collaborators:
@@ -155,6 +161,12 @@ def build_app(
     # tokens available, total 429s, total throttle waits). When wired,
     # surfaces in the GET /control/runtime payload + dashboard.
     app.state.rate_limit_stats = rate_limit_stats
+    # Optional exploit-mode integration (separate runner). When wired,
+    # /control/exploit/* endpoints become functional; otherwise they
+    # 503. exploit_kill_handler is awaited on /kill or /kill_all so the
+    # runner can cancel its resting orders synchronously.
+    app.state.exploit_state = exploit_state
+    app.state.exploit_kill_handler = exploit_kill_handler
     if broadcaster is not None:
         broadcaster.attach_state(state)
 
@@ -1101,6 +1113,205 @@ def build_app(
         }
 
     app.state.collect_incentives = _collect_incentives
+
+    # ── Exploit-mode endpoints ────────────────────────────────────────
+
+    def _require_exploit_state():
+        es = app.state.exploit_state
+        if es is None:
+            raise HTTPException(503, "exploit-mode not wired into this deployment")
+        return es
+
+    @app.post("/control/exploit/start", response_model=CommandResponse)
+    async def post_exploit_start(
+        req: ExploitStartRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        """Register / reconfigure a market for exploit mode."""
+        es = _require_exploit_state()
+        from lipmm.exploit.state import ExploitConfig
+        version_before = es.version
+        try:
+            cfg = ExploitConfig(
+                ticker=req.ticker.upper(),
+                bid_target_c=req.bid_target_c,
+                ask_target_c=req.ask_target_c,
+                step_c=req.step_c,
+                contracts_per_round=req.contracts_per_round,
+                predator_offset_c=req.predator_offset_c,
+                cycle_seconds=req.cycle_seconds,
+                cooldown_between_legs_s=req.cooldown_between_legs_s,
+                cooldown_after_round_s=req.cooldown_after_round_s,
+                max_loss_dollars=req.max_loss_dollars,
+                predator_absence_timeout_cycles=req.predator_absence_timeout_cycles,
+                max_rounds=req.max_rounds,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        es.add(cfg)
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="exploit_start", command_payload=req.model_dump(),
+            state_version_before=version_before, state_version_after=es.version,
+            succeeded=True,
+        )
+        await _broadcast_change("exploit_start", request_id=req.request_id, actor=actor)
+        return CommandResponse(
+            new_version=state.version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.post("/control/exploit/pause", response_model=CommandResponse)
+    async def post_exploit_pause(
+        req: ExploitTickerRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        es = _require_exploit_state()
+        ticker = req.ticker.upper()
+        m = es.pause(ticker)
+        if m is None:
+            raise HTTPException(404, f"no exploit market for {ticker}")
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="exploit_pause", command_payload=req.model_dump(),
+            state_version_before=state.version, state_version_after=state.version,
+            succeeded=True,
+        )
+        await _broadcast_change("exploit_pause", request_id=req.request_id, actor=actor)
+        return CommandResponse(
+            new_version=state.version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.post("/control/exploit/resume", response_model=CommandResponse)
+    async def post_exploit_resume(
+        req: ExploitTickerRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        es = _require_exploit_state()
+        ticker = req.ticker.upper()
+        m = es.resume(ticker)
+        if m is None:
+            raise HTTPException(404, f"no exploit market for {ticker}")
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="exploit_resume", command_payload=req.model_dump(),
+            state_version_before=state.version, state_version_after=state.version,
+            succeeded=True,
+        )
+        await _broadcast_change("exploit_resume", request_id=req.request_id, actor=actor)
+        return CommandResponse(
+            new_version=state.version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.post("/control/exploit/kill", response_model=CommandResponse)
+    async def post_exploit_kill(
+        req: ExploitTickerRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        es = _require_exploit_state()
+        ticker = req.ticker.upper()
+        m = es.kill(ticker, reason=f"operator kill by {actor}")
+        if m is None:
+            raise HTTPException(404, f"no exploit market for {ticker}")
+        # Best-effort cancel: spawn the kill_handler so cancels don't
+        # block the response. Mirrors the global /control/kill pattern.
+        kh = app.state.exploit_kill_handler
+        if kh is not None:
+            asyncio.create_task(kh())
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="exploit_kill", command_payload=req.model_dump(),
+            state_version_before=state.version, state_version_after=state.version,
+            succeeded=True,
+        )
+        await _broadcast_change("exploit_kill", request_id=req.request_id, actor=actor)
+        return CommandResponse(
+            new_version=state.version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.post("/control/exploit/kill_all", response_model=CommandResponse)
+    async def post_exploit_kill_all(
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        es = _require_exploit_state()
+        n = es.kill_all(reason=f"operator kill_all by {actor}")
+        kh = app.state.exploit_kill_handler
+        if kh is not None:
+            asyncio.create_task(kh())
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=f"exploit-killall-{int(time.time())}", actor=actor,
+            command_type="exploit_kill_all",
+            command_payload={"killed_count": n},
+            state_version_before=state.version, state_version_after=state.version,
+            succeeded=True,
+        )
+        await _broadcast_change("exploit_kill_all", request_id="exploit-killall", actor=actor)
+        return CommandResponse(
+            new_version=state.version, request_id="exploit-killall", actor=actor,
+        )
+
+    @app.post("/control/exploit/remove", response_model=CommandResponse)
+    async def post_exploit_remove(
+        req: ExploitTickerRequest,
+        request: Request,
+        actor: str = Depends(require_auth),
+    ) -> CommandResponse:
+        """Drop the market entirely from exploit state. Operator must
+        ensure no resting orders remain; a prior /kill is recommended."""
+        es = _require_exploit_state()
+        ticker = req.ticker.upper()
+        m = es.remove(ticker)
+        if m is None:
+            raise HTTPException(404, f"no exploit market for {ticker}")
+        emit_audit(
+            request.app.state.decision_logger,
+            request_id=req.request_id, actor=actor,
+            command_type="exploit_remove", command_payload=req.model_dump(),
+            state_version_before=state.version, state_version_after=state.version,
+            succeeded=True,
+        )
+        await _broadcast_change("exploit_remove", request_id=req.request_id, actor=actor)
+        return CommandResponse(
+            new_version=state.version, request_id=req.request_id, actor=actor,
+        )
+
+    @app.get("/control/exploit/state", response_model=ExploitStateResponse)
+    async def get_exploit_state(
+        actor: str = Depends(require_auth),
+    ) -> ExploitStateResponse:
+        es = _require_exploit_state()
+        now = time.time()
+        rows: list[ExploitMarketEntry] = []
+        for ticker, m in es.all_markets().items():
+            rows.append(ExploitMarketEntry(
+                ticker=ticker,
+                phase=m.phase.value,
+                leading_side=m.leading_side,
+                current_ladder_c=int(m.current_ladder_c),
+                paused=m.paused,
+                round_counter=m.round_counter,
+                realized_pnl_dollars=m.realized_pnl_dollars(),
+                bid_target_c=m.config.bid_target_c,
+                ask_target_c=m.config.ask_target_c,
+                step_c=m.config.step_c,
+                contracts_per_round=m.config.contracts_per_round,
+                max_loss_dollars=m.config.max_loss_dollars,
+                last_reason=m.last_reason,
+                started_at_ts=m.started_at_ts,
+                cooldown_remaining_s=max(0.0, m.cooldown_until_ts - now),
+            ))
+        return ExploitStateResponse(
+            markets=rows, version=es.version, ts=now,
+        )
 
     @app.get("/control/orderbooks", response_model=OrderbookSnapshotResponse)
     async def get_orderbooks(

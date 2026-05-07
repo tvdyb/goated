@@ -513,6 +513,75 @@ class CommandResponse(BaseModel):
     actor: str
 
 
+# ── Exploit-mode commands ──────────────────────────────────────────
+
+
+class ExploitStartRequest(BaseModel):
+    """POST /control/exploit/start — register a market for exploit mode.
+
+    Replaces any existing exploit config for the same ticker (operator
+    re-tunes between rounds). The runner picks up the new config on the
+    next cycle.
+    """
+    ticker: str = Field(min_length=1, max_length=128)
+    bid_target_c: int = Field(ge=1, le=99,
+        description="Ladder our bid up to this price.")
+    ask_target_c: int = Field(ge=1, le=99,
+        description="Ladder our ask down to this price.")
+    step_c: int = Field(default=10, ge=1, le=50)
+    contracts_per_round: int = Field(default=5, ge=1, le=200)
+    predator_offset_c: int = Field(default=4, ge=1, le=50)
+    cycle_seconds: float = Field(default=1.5, ge=0.5, le=30.0)
+    cooldown_between_legs_s: float = Field(default=5.0, ge=0.0, le=300.0)
+    cooldown_after_round_s: float = Field(default=35.0, ge=0.0, le=600.0)
+    max_loss_dollars: float = Field(default=5.0, ge=0.0, le=10000.0)
+    predator_absence_timeout_cycles: int = Field(default=3, ge=1, le=100)
+    max_rounds: int = Field(default=0, ge=0, le=1000,
+        description="0 = unlimited (operator must kill).")
+    request_id: str = Field(min_length=8, max_length=128)
+
+    @model_validator(mode="after")
+    def _bid_below_ask(self):
+        if self.bid_target_c >= self.ask_target_c:
+            raise ValueError(
+                f"bid_target_c ({self.bid_target_c}) must be < ask_target_c "
+                f"({self.ask_target_c}); otherwise the round has no profit window."
+            )
+        return self
+
+
+class ExploitTickerRequest(BaseModel):
+    """Used by /pause /resume /kill /remove — anything that just names a market."""
+    ticker: str = Field(min_length=1, max_length=128)
+    request_id: str = Field(min_length=8, max_length=128)
+
+
+class ExploitMarketEntry(BaseModel):
+    """One row in the GET /control/exploit/state list."""
+    ticker: str
+    phase: str                       # ExploitPhase.value
+    leading_side: Literal["bid", "ask"]
+    current_ladder_c: int
+    paused: bool
+    round_counter: int
+    realized_pnl_dollars: float
+    bid_target_c: int
+    ask_target_c: int
+    step_c: int
+    contracts_per_round: int
+    max_loss_dollars: float
+    last_reason: str
+    started_at_ts: float
+    cooldown_remaining_s: float = 0.0
+
+
+class ExploitStateResponse(BaseModel):
+    """GET /control/exploit/state."""
+    markets: list[ExploitMarketEntry] = Field(default_factory=list)
+    version: int = 0
+    ts: float
+
+
 class HealthResponse(BaseModel):
     ok: bool = True
     state_version: int
