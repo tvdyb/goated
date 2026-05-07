@@ -286,30 +286,65 @@ class KalshiExchangeAdapter:
         return [_parse_order(o) for o in resp.get("orders", [])]
 
     async def list_positions(self) -> list[Position]:
-        """All non-zero positions."""
+        """All non-zero positions.
+
+        Kalshi /portfolio/positions field semantics (v2):
+          position / position_fp:  signed share count (int / float-string)
+          market_exposure:         current cost basis on the OPEN position,
+                                   in cents — integer. (NOT total_traded,
+                                   which is lifetime including closed legs.)
+          realized_pnl, fees_paid: cents, integer.
+
+        We derive `avg_cost_cents` as `market_exposure / |position|`
+        because Kalshi does not return an explicit avg-cost field. We
+        also tolerate a few alternative key names in case of future
+        schema drift — `average_cost_cents`, `realized_pnl_dollars`,
+        `fees_paid_dollars` — falling through to derivation when they're
+        absent or zero.
+        """
+        def _f(d: dict, *keys: str, default: float = 0.0) -> float:
+            for k in keys:
+                v = d.get(k)
+                if v is None or v == "":
+                    continue
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    continue
+            return default
+
         resp = await self._client.get_positions(limit=200)
         out: list[Position] = []
         for p in resp.get("market_positions", []):
-            try:
-                qty = int(round(float(p.get("position_fp", "0") or 0)))
-            except (ValueError, TypeError):
-                qty = 0
+            qty = int(round(_f(p, "position_fp", "position")))
             if qty == 0:
                 continue
-            try:
-                avg_cost_cents = int(round(float(
-                    p.get("average_cost_cents", 0) or 0
-                )))
-            except (ValueError, TypeError):
-                avg_cost_cents = 0
-            try:
-                realized = float(p.get("realized_pnl_dollars", 0) or 0)
-            except (ValueError, TypeError):
-                realized = 0.0
-            try:
-                fees = float(p.get("fees_paid_dollars", 0) or 0)
-            except (ValueError, TypeError):
-                fees = 0.0
+
+            avg_cost_cents = int(round(
+                _f(p, "average_cost_cents")  # legacy / hypothetical
+            ))
+            if avg_cost_cents == 0:
+                # Derive from market_exposure (cost basis on open position
+                # in cents). Sign of market_exposure mirrors `position` so
+                # we take abs to express avg cost as a positive cents.
+                exposure = _f(p, "market_exposure")
+                if exposure and qty != 0:
+                    avg_cost_cents = int(round(abs(exposure) / abs(qty)))
+
+            # Realized PnL: prefer cents-named field per current docs;
+            # fall back to dollars-named if a future schema renames it.
+            realized_cents = _f(p, "realized_pnl", "realized_pnl_cents")
+            if realized_cents:
+                realized = realized_cents / 100.0
+            else:
+                realized = _f(p, "realized_pnl_dollars")
+
+            fees_cents = _f(p, "fees_paid", "fees_paid_cents")
+            if fees_cents:
+                fees = fees_cents / 100.0
+            else:
+                fees = _f(p, "fees_paid_dollars")
+
             out.append(Position(
                 ticker=p.get("ticker", ""),
                 quantity=qty,

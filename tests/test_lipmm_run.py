@@ -67,20 +67,21 @@ async def test_stub_theo_warmup_shutdown_no_op() -> None:
 
 def test_build_strategy_default() -> None:
     from deploy.lipmm_run import _build_strategy
-    s = _build_strategy("default")
+    s = _build_strategy("default", dollars_per_side=2.5)
     assert isinstance(s, DefaultLIPQuoting)
+    assert s._cfg.dollars_per_side == 2.5
 
 
 def test_build_strategy_sticky() -> None:
     from deploy.lipmm_run import _build_strategy
-    s = _build_strategy("sticky")
+    s = _build_strategy("sticky", dollars_per_side=2.5)
     assert isinstance(s, StickyDefenseQuoting)
 
 
 def test_build_strategy_unknown_raises() -> None:
     from deploy.lipmm_run import _build_strategy
     with pytest.raises(ValueError, match="unknown --strategy"):
-        _build_strategy("nonsense")
+        _build_strategy("nonsense", dollars_per_side=1.0)
 
 
 def test_build_risk_registry_has_three_gates() -> None:

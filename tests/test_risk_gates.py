@@ -27,6 +27,7 @@ def _ctx(
     ask_price: int = 56, ask_size: int = 10, ask_skip: bool = False,
     theo_yes_prob: float = 0.50,
     cycle_id: int = 1, time_to_settle_s: float = 3600.0,
+    control_overrides: dict | None = None,
 ) -> RiskContext:
     decision = QuotingDecision(
         bid=SideDecision(price=bid_price, size=bid_size, skip=bid_skip,
@@ -50,6 +51,7 @@ def _ctx(
         now_ts=time.time(),
         all_resting_count=0,
         all_resting_notional=0.0,
+        control_overrides=control_overrides,
     )
 
 
@@ -95,6 +97,40 @@ async def test_notional_gate_vetoes_oversized_ask() -> None:
     assert v.bid_allow is True
     assert v.ask_allow is False
     assert "$5.00" in v.ask_reason
+
+
+@pytest.mark.asyncio
+async def test_notional_gate_honors_per_strike_override_higher() -> None:
+    """Operator bumps the per-strike cap above the constructor default —
+    sides that the constructor would have vetoed must now pass. This is
+    the symptom that triggered the fix: bumping `dollars_per_side` per
+    strike used to silently dead-end at the gate's static cap."""
+    gate = MaxNotionalPerSideGate(max_dollars=2.0)
+    # bid: 50¢ × 10 = $5 — would fail without override
+    ctx = _ctx(
+        bid_price=50, bid_size=10, ask_price=85, ask_size=10,
+        control_overrides={"max_notional_per_side_dollars": 10.0},
+    )
+    v = await gate.check(ctx)
+    assert v.bid_allow is True
+    assert v.ask_allow is True
+
+
+@pytest.mark.asyncio
+async def test_notional_gate_honors_per_strike_override_lower() -> None:
+    """Operator can also tighten the gate per-strike, e.g. for an
+    illiquid edge market — sides that the constructor would have allowed
+    are now vetoed."""
+    gate = MaxNotionalPerSideGate(max_dollars=10.0)
+    # bid: 50¢ × 10 = $5 — would pass without override
+    ctx = _ctx(
+        bid_price=50, bid_size=10, ask_price=20, ask_size=5,
+        control_overrides={"max_notional_per_side_dollars": 1.0},
+    )
+    v = await gate.check(ctx)
+    assert v.bid_allow is False
+    assert v.ask_allow is False
+    assert "$1.00" in v.bid_reason
 
 
 @pytest.mark.asyncio

@@ -38,14 +38,30 @@ class MaxNotionalPerSideGate:
         bid_reason = ""
         ask_reason = ""
 
+        # Per-strike / per-event / global override (knob:
+        # "max_notional_per_side_dollars"). Without this, an operator who
+        # bumps `dollars_per_side` per strike higher than the gate's
+        # static cap silently sees the bot stop trading on that strike —
+        # the strategy sizes up, the gate vetoes, no signal in the UI.
+        # Mirrors the override behaviour of the position / mid-delta /
+        # cycle-throttle gates.
+        effective_max = self._max_dollars
+        if context.control_overrides is not None:
+            ov = context.control_overrides.get("max_notional_per_side_dollars")
+            if ov is not None:
+                try:
+                    effective_max = float(ov)
+                except (TypeError, ValueError):
+                    pass
+
         if not decision.bid.skip:
             # t1c × contracts / 1000 = dollars (10 t1c = 1¢, 100¢ = $1)
             bid_t1c = decision.bid.effective_t1c()
             bid_notional = bid_t1c * decision.bid.size / 1000.0
-            if bid_notional > self._max_dollars:
+            if bid_notional > effective_max:
                 bid_allow = False
                 bid_reason = (
-                    f"bid notional ${bid_notional:.2f} > max ${self._max_dollars:.2f} "
+                    f"bid notional ${bid_notional:.2f} > max ${effective_max:.2f} "
                     f"(price={bid_t1c/10:.1f}¢ × size={decision.bid.size})"
                 )
 
@@ -53,10 +69,10 @@ class MaxNotionalPerSideGate:
             # max loss on ask = (1000 - price_t1c) × size / 1000 dollars
             ask_t1c = decision.ask.effective_t1c()
             ask_notional = (1000 - ask_t1c) * decision.ask.size / 1000.0
-            if ask_notional > self._max_dollars:
+            if ask_notional > effective_max:
                 ask_allow = False
                 ask_reason = (
-                    f"ask notional ${ask_notional:.2f} > max ${self._max_dollars:.2f} "
+                    f"ask notional ${ask_notional:.2f} > max ${effective_max:.2f} "
                     f"(price={ask_t1c/10:.1f}¢ × size={decision.ask.size})"
                 )
 

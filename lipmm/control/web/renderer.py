@@ -267,6 +267,33 @@ def _stats_for_strikes(
     lip_total = sum(
         (s["lip"] or {}).get("period_reward_dollars", 0.0) for s in strikes
     )
+    # Total capital tied to this event = resting collateral (locked in
+    # wallet) + position cost basis (already spent into open contracts).
+    # Bid: locks price × size / 100. Ask: locks (100 − price) × size / 100
+    # since worst case we owe the full Yes payout. Position: |qty| × avg
+    # cost. Surfaced on the event header so the operator can see at a
+    # glance how much of their wallet is committed to the event.
+    collateral_dollars = 0.0
+    for s in strikes:
+        for r in (s.get("resting") or []):
+            try:
+                price_c = int(r.get("price_cents", 0) or 0)
+                size = int(r.get("size", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if r.get("side") == "bid":
+                collateral_dollars += price_c * size / 100.0
+            elif r.get("side") == "ask":
+                collateral_dollars += (100 - price_c) * size / 100.0
+        pos = s.get("position")
+        if pos:
+            try:
+                qty = int(pos.get("quantity", 0) or 0)
+                avg_c = int(pos.get("avg_cost_cents", 0) or 0)
+            except (TypeError, ValueError):
+                qty, avg_c = 0, 0
+            if qty != 0 and avg_c > 0:
+                collateral_dollars += abs(qty) * avg_c / 100.0
     # Latest LIP end_date across the event's strikes — used as the
     # "time left until this event/program ends" countdown on the event
     # header. Falls back to 0 (= unknown) when no strike has a program.
@@ -309,6 +336,7 @@ def _stats_for_strikes(
         "lip_rate_hourly": hourly,
         "lip_rate_daily": daily,
         "lip_projected_period": projected_period,
+        "collateral_dollars": collateral_dollars,
     }
 
 
@@ -328,6 +356,7 @@ def event_meta_from_strikes(
             "strike_count": 0,
             "quoting_count": 0,
             "lip_total_dollars": 0.0,
+            "collateral_dollars": 0.0,
         }
     event_ticker = _event_ticker_of(strikes[0]["ticker"])
     return _stats_for_strikes(strikes, event_ticker)
@@ -372,6 +401,9 @@ def multi_event_summary(
         "strike_count": sum(g["strike_count"] for g in groups),
         "quoting_count": sum(g["quoting_count"] for g in groups),
         "lip_total_dollars": sum(g["lip_total_dollars"] for g in groups),
+        "collateral_dollars": sum(
+            g.get("collateral_dollars", 0.0) for g in groups
+        ),
         "events": [g["event_ticker"] for g in groups],
         # Aggregated LIP earning rate across every active strike. Lets
         # the operator see at a glance "I'm earning $X/min, $Y/hour"

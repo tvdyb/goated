@@ -194,12 +194,28 @@ async def _validate_event(client: KalshiClient, event_ticker: str) -> dict[str, 
 # ── Wire-up ────────────────────────────────────────────────────────
 
 
-def _build_strategy(name: str) -> Any:
+def _build_strategy(name: str, *, dollars_per_side: float) -> Any:
+    """Build the quoting strategy with `dollars_per_side` derived from
+    `--cap-dollars` at startup. Without this, the strategy's default
+    `dollars_per_side=$1.00` ran regardless of the operator's stated
+    budget — sizing collapsed to `min_contracts` (5) at any price above
+    20¢, making `--cap-dollars` look broken even though the gate was
+    correctly capped. Per-strike runtime overrides via the dashboard
+    knobs still take precedence per cycle."""
     name_lower = name.lower()
     if name_lower in ("default", "default-lip-quoting", "default_lip"):
-        return DefaultLIPQuoting(DefaultLIPQuotingConfig())
+        return DefaultLIPQuoting(DefaultLIPQuotingConfig(
+            dollars_per_side=dollars_per_side,
+        ))
     if name_lower in ("sticky", "sticky-defense", "sticky_defense"):
-        return StickyDefenseQuoting(StickyDefenseConfig())
+        # StickyDefenseQuoting wraps a base; sizing lives on the base's
+        # config, not the wrapper's.
+        return StickyDefenseQuoting(
+            DefaultLIPQuoting(DefaultLIPQuotingConfig(
+                dollars_per_side=dollars_per_side,
+            )),
+            StickyDefenseConfig(),
+        )
     raise ValueError(
         f"unknown --strategy {name!r}; pick 'default' or 'sticky'"
     )
@@ -439,7 +455,13 @@ async def _amain(args: argparse.Namespace) -> int:
             )
             continue
         theo_registry.register(StubTheoProvider(prefix))
-    strategy = _build_strategy(args.strategy)
+    # Strategy sizing (dollars_per_side) is derived from --cap-dollars
+    # so the budget the operator states at startup actually drives order
+    # size. The gate (MaxNotionalPerSideGate) caps at the same per-side
+    # value, so by default sizing fills exactly to the gate. Per-strike
+    # runtime knobs override both.
+    per_side_budget = args.cap_dollars / 2.0
+    strategy = _build_strategy(args.strategy, dollars_per_side=per_side_budget)
     risk = _build_risk_registry(args.cap_dollars)
     decision_logger = DecisionLogger(log_dir=log_dir)
     broadcaster = Broadcaster()

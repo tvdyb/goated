@@ -35,6 +35,12 @@
           {% if group.lip_total_dollars > 0 %}
             <span style="color: var(--lip);">· ${{ "%.0f"|format(group.lip_total_dollars) }} LIP</span>
           {% endif %}
+          {% if group.collateral_dollars and group.collateral_dollars > 0 %}
+            <span style="color: var(--info);"
+                  title="Capital tied up in this event: resting bid + ask collateral + position cost basis">
+              · ${{ "%.2f"|format(group.collateral_dollars) }} capital
+            </span>
+          {% endif %}
           {% if group.lip_rate_hourly and group.lip_rate_hourly > 0 %}
             <span style="color: var(--lip);"
                   title="Live earning rate: pool_share × pool, time-normalized">
