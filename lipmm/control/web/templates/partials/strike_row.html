@@ -20,7 +20,7 @@
   <div class="strike-row grid items-center gap-3 px-3 py-2 cursor-pointer transition-colors"
        data-slug="{{ s.slug }}" data-ticker="{{ s.ticker }}"
        role="button" tabindex="0"
-       style="grid-template-columns: 1fr 70px 52px 52px 90px 130px 78px 90px 16px;
+       style="grid-template-columns: 1fr 70px 50px 52px 52px 90px 130px 78px 90px 16px;
               border-bottom: 1px solid var(--border);
               border-left: 2px solid {{ lb }};
               {{ tint }}">
@@ -63,6 +63,21 @@
         </div>
       {% else %}
         <span class="text-[12px]" style="color: var(--ink-dim);">—</span>
+      {% endif %}
+    </div>
+
+    {# Spread (best_ask − best_bid) — quick visual of orderbook tightness.
+       Color scales: green if tight (≤2¢), yellow if 3–10¢, dim if wider. #}
+    <div class="text-right">
+      {% if s.ob_present and s.best_bid_c > 0 and s.best_ask_c < 100 %}
+        {% set sp = s.spread %}
+        <div class="font-mono text-[11px] tabular-nums"
+             style="color: {% if sp <= 2 %}var(--yes){% elif sp <= 10 %}var(--lip){% else %}var(--ink-dim){% endif %};"
+             title="spread = best_ask − best_bid">
+          {{ sp }}¢
+        </div>
+      {% else %}
+        <span class="text-[11px]" style="color: var(--ink-dim);">—</span>
       {% endif %}
     </div>
 
@@ -140,7 +155,13 @@
       {% endif %}
     </div>
 
-    {# Theo #}
+    {# Theo — three-way render:
+         • operator override (yellow var(--lip))
+         • provider-derived theo (cyan var(--info))
+         • none / confidence=0 (dim "—")
+       The provider path piggybacks on the orderbook broadcast's
+       `theo` field which the runner emits each cycle.
+    #}
     <div class="text-right">
       {% if has_override %}
         {% if s.override.mode == 'track_mid' %}
@@ -152,12 +173,23 @@
                title="theo follows orderbook mid each cycle">mid · auto</div>
         {% else %}
           <div class="font-mono text-[12px] font-semibold tabular-nums" style="color: var(--lip);">
-            {{ '%g' | format(s.override.yes_cents) }}¢{# %g strips trailing .0 so 55.0→55 and 47.7 stays 47.7 #}
+            {{ '%g' | format(s.override.yes_cents) }}¢
           </div>
           <div class="text-[9px]" style="color: var(--ink-dim);">manual</div>
         {% endif %}
+      {% elif s.provider_theo and s.provider_theo.confidence and s.provider_theo.confidence > 0 %}
+        <div class="font-mono text-[12px] font-semibold tabular-nums"
+             style="color: var(--info);"
+             title="theo from {{ s.provider_theo.source }} (conf={{ '%.2f'|format(s.provider_theo.confidence) }})">
+          {{ '%g' | format(s.provider_theo.yes_cents) }}¢
+        </div>
+        <div class="text-[9px]" style="color: var(--ink-dim);">
+          {{ s.provider_theo.source[:10] if s.provider_theo.source else 'auto' }}
+        </div>
       {% else %}
-        <span class="text-[11px]" style="color: var(--ink-lo);">auto</span>
+        <div class="text-[12px]" style="color: var(--ink-dim);">—</div>
+        <div class="text-[9px]" style="color: var(--ink-dim);"
+             title="no theo this cycle (confidence=0 or no provider registered)">no theo</div>
       {% endif %}
     </div>
 
@@ -172,25 +204,25 @@
        style="background: var(--bg-base); border-color: var(--border);">
     <div class="grid gap-4 px-3 py-3"
          style="grid-template-columns: 1.4fr 1fr 1.2fr;">
-      {# ── L2 depth ladder ──────────────────────────────── #}
+      {# ── L2 depth ladder (top 12 each side) ───────────────── #}
       <div>
         <div class="text-[9px] uppercase tracking-[0.12em] mb-2" style="color: var(--ink-lo);">
-          Order book — top 5
+          Order book — top 12
         </div>
         {% if not s.ob_present %}
           <div class="text-[11px]" style="color: var(--ink-dim);">
             no orderbook data yet — runner cycle hasn't pushed
           </div>
         {% else %}
-          {% set max_yes = (s.yes_levels[:5] | map(attribute='size') | max) if s.yes_levels else 1 %}
-          {% set max_no  = (s.no_levels[:5]  | map(attribute='size') | max) if s.no_levels  else 1 %}
+          {% set max_yes = (s.yes_levels[:12] | map(attribute='size') | max) if s.yes_levels else 1 %}
+          {% set max_no  = (s.no_levels[:12]  | map(attribute='size') | max) if s.no_levels  else 1 %}
           {% set max_sz = (max_yes if max_yes > max_no else max_no) or 1 %}
           <div class="grid grid-cols-2 gap-2 text-[11px]"
                style="font-family: 'JetBrains Mono', ui-monospace;">
             <div>
               <div class="text-[9px] uppercase tracking-wider mb-1"
                    style="color: var(--ink-dim);">Bids (Yes)</div>
-              {% for lvl in s.yes_levels[:5] %}
+              {% for lvl in s.yes_levels[:12] %}
                 <div class="relative flex justify-between px-1.5 py-0.5">
                   <div class="absolute inset-y-0 left-0 rounded-sm"
                        style="width: {{ (lvl.size / max_sz * 100) | round(0) }}%; background: rgba(61, 220, 151, 0.10);"></div>
@@ -204,7 +236,7 @@
             <div>
               <div class="text-[9px] uppercase tracking-wider mb-1"
                    style="color: var(--ink-dim);">Asks (Yes)</div>
-              {% for lvl in s.no_levels[:5] %}
+              {% for lvl in s.no_levels[:12] %}
                 {% set ask_c = 100 - lvl.price_cents %}
                 <div class="relative flex justify-between px-1.5 py-0.5">
                   <div class="absolute inset-y-0 right-0 rounded-sm"
@@ -394,6 +426,38 @@
                       </span>
                     </div>
                   {% endfor %}
+                </div>
+              {% endif %}
+              {# ── LIP queue headroom — distance from current best to
+                   the qualifying-threshold reference price. Green if
+                   already at/inside (0¢), yellow if within 5¢, dim if
+                   we're well behind. Source: StrikeScore.yes_ref_price_c
+                   and no_ref_price_c, computed by compute_strike_score. #}
+              {% if s.yes_cutoff_distance_c is not none or s.no_cutoff_distance_c is not none %}
+                <div class="mt-2 pt-2 border-t text-[10px] space-y-0.5"
+                     style="border-color: var(--border);
+                            font-family: 'JetBrains Mono', ui-monospace;">
+                  <div class="text-[9px] uppercase tracking-wider" style="color: var(--ink-dim);">
+                    LIP queue headroom
+                  </div>
+                  {% if s.yes_cutoff_distance_c is not none %}
+                    {% set yd = s.yes_cutoff_distance_c %}
+                    <div class="flex items-center justify-between">
+                      <span style="color: var(--yes);">bid → yes cutoff</span>
+                      <span style="color: {% if yd == 0 %}var(--yes){% elif yd <= 5 %}var(--lip){% else %}var(--ink-dim){% endif %};">
+                        {{ yd }}¢
+                      </span>
+                    </div>
+                  {% endif %}
+                  {% if s.no_cutoff_distance_c is not none %}
+                    {% set nd = s.no_cutoff_distance_c %}
+                    <div class="flex items-center justify-between">
+                      <span style="color: var(--no);">ask → no cutoff</span>
+                      <span style="color: {% if nd == 0 %}var(--yes){% elif nd <= 5 %}var(--lip){% else %}var(--ink-dim){% endif %};">
+                        {{ nd }}¢
+                      </span>
+                    </div>
+                  {% endif %}
                 </div>
               {% endif %}
             </div>

@@ -529,6 +529,20 @@ class LIPRunner:
         # qualifying threshold (Target Size can be up to 20,000 contracts
         # per Appendix A — far past top-5 in any realistic book). The
         # depth-ladder UI slices to top 5 at render time.
+        # Snapshot the theo for dashboard rendering. Source-kind
+        # distinguishes operator overrides (yellow in UI) from
+        # provider-derived theos (cyan in UI). Confidence == 0 means
+        # the strategy will skip — UI shows "—" in dim gray.
+        theo_payload: dict | None = None
+        if theo is not None:
+            src = theo.source or ""
+            kind = "override" if src.startswith("manual-override") else "provider"
+            theo_payload = {
+                "yes_cents": round(theo.yes_probability * 100, 2),
+                "confidence": float(theo.confidence),
+                "source": src,
+                "source_kind": kind,
+            }
         self._cycle_orderbooks.append({
             "ticker": ticker,
             "best_bid_c": int(best_bid),
@@ -541,6 +555,7 @@ class LIPRunner:
                 {"price_cents": int(p) // 10, "price_t1c": int(p), "size": float(sz)}
                 for (p, sz) in ob_levels.no_levels[:50]
             ],
+            "theo": theo_payload,
             "ts": now_ts,
         })
 

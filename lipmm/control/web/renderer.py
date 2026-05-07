@@ -187,6 +187,33 @@ def join_strike_data(
                 )
             except Exception:
                 lip_score = None
+        # Provider/override theo snapshot piped from the runner via the
+        # orderbook broadcast. None when no theo was computed this cycle
+        # (e.g. confidence-gate skip). Source-kind distinguishes
+        # override vs provider for color coding in the strike row.
+        provider_theo = ob.get("theo")
+
+        # LIP queue headroom per side: how many cents we'd need to move
+        # our quote to reach the qualifying threshold. Useful for the
+        # operator to see at a glance whether we're in the LIP pool.
+        # Derived from the StrikeScore's per-side ref/threshold prices.
+        yes_cutoff_distance_c = None
+        no_cutoff_distance_c = None
+        if lip_score is not None:
+            ref_yes = getattr(lip_score, "yes_ref_price_c", None)
+            # threshold is on the StrikeScore; we expose it via a helper.
+            # Fall back to ref price when threshold isn't tracked.
+            if ref_yes is not None:
+                # Distance from best_bid to the cutoff. Positive = below
+                # cutoff (need to raise bid); 0 = at cutoff.
+                yes_cutoff_distance_c = max(0, ref_yes - best_bid)
+            ref_no = getattr(lip_score, "no_ref_price_c", None)
+            if ref_no is not None:
+                # No-side ref is in no-cents; convert our ask side
+                # equivalence: our yes-ask equates to no-bid at 100-ask.
+                our_no_bid_c = max(0, 100 - best_ask)
+                no_cutoff_distance_c = max(0, ref_no - our_no_bid_c)
+
         out.append({
             "ticker": ticker,
             "slug": _ticker_slug(ticker),
@@ -202,6 +229,9 @@ def join_strike_data(
             "no_levels": ob.get("no_levels", []),
             "ob_present": ob_present,
             "override": overrides.get(ticker),
+            "provider_theo": provider_theo,
+            "yes_cutoff_distance_c": yes_cutoff_distance_c,
+            "no_cutoff_distance_c": no_cutoff_distance_c,
             "position": positions.get(ticker),
             "resting": ticker_resting,
             "lip": ticker_lip,

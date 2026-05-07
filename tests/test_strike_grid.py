@@ -163,6 +163,37 @@ def test_join_attaches_override_position_resting_lip() -> None:
     assert s1["lip"]["period_reward_dollars"] == 125.0
 
 
+def test_join_attaches_provider_theo_from_broadcast() -> None:
+    """When the orderbook broadcast carries a `theo` payload, the
+    renderer surfaces it as `provider_theo` on the strike dict for the
+    strike row's three-way theo render to consume."""
+    orderbooks = {"strikes": [{
+        "ticker": "KX-T1", "best_bid_c": 50, "best_ask_c": 52,
+        "yes_levels": [], "no_levels": [],
+        "theo": {
+            "yes_cents": 51.5, "confidence": 0.65,
+            "source": "TruEV", "source_kind": "provider",
+        },
+    }]}
+    strikes = join_strike_data({}, {}, {}, orderbooks)
+    s = strikes[0]
+    assert s["provider_theo"]["yes_cents"] == 51.5
+    assert s["provider_theo"]["source"] == "TruEV"
+    assert s["provider_theo"]["source_kind"] == "provider"
+
+
+def test_join_provider_theo_none_when_broadcast_omits_it() -> None:
+    """Older broadcasts without the `theo` field → provider_theo=None
+    so the template falls through to the dim '—' placeholder."""
+    orderbooks = {"strikes": [{
+        "ticker": "KX-T1", "best_bid_c": 50, "best_ask_c": 52,
+        "yes_levels": [], "no_levels": [],
+    }]}
+    strikes = join_strike_data({}, {}, {}, orderbooks)
+    s = strikes[0]
+    assert s["provider_theo"] is None
+
+
 def test_join_sorts_by_ticker() -> None:
     """Stable order makes the rendered grid deterministic."""
     runtime = {"positions": [

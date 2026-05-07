@@ -214,6 +214,14 @@ async def test_runner_aggregates_orderbooks_per_cycle_and_broadcasts() -> None:
     # Best bid/ask present
     assert s1["best_bid_c"] >= 0
     assert s1["best_ask_c"] <= 100
+    # Theo payload is piped through for dashboard rendering. The stub
+    # provider returns confidence=1.0, source="stub" — runner wraps as
+    # a provider-kind payload.
+    assert s1["theo"] is not None
+    assert s1["theo"]["yes_cents"] == 50.0
+    assert s1["theo"]["confidence"] == 1.0
+    assert s1["theo"]["source"] == "stub"
+    assert s1["theo"]["source_kind"] == "provider"
 
 
 @pytest.mark.asyncio
