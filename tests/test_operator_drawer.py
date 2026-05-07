@@ -255,6 +255,7 @@ def test_only_phase10_partials_remain() -> None:
         "decision_feed.html",
         "event_header.html",
         "events_strip.html",  # multi-event: chips + add button
+        "header_panels.html",  # Wave 2 panels promoted to top of page
         "operator_drawer.html",
         "status_bar.html",
         "strike_grid.html",
@@ -265,8 +266,9 @@ def test_only_phase10_partials_remain() -> None:
         "tab_pauses.html",
         "tab_theos.html",
         # Wave 2 dashboard parity tabs (PnL grid, earnings histogram,
-        # fill markout). Each has an outer shell that HTMX-fetches an
-        # _inner partial from the matching /control/* endpoint.
+        # fill markout). Mounted in `header_panels.html` (top of the
+        # page) — not in the operator drawer. Each shell HTMX-fetches
+        # an _inner partial from the matching /control/* endpoint.
         "tab_earnings.html",
         "tab_earnings_inner.html",
         "tab_markout.html",

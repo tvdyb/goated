@@ -465,8 +465,10 @@
   const TAB_KEY = "lipmm_drawer_tab";
   const VALID_TABS = new Set([
     "theos", "pauses", "knobs", "locks", "manual",
-    "pnl", "earnings", "markout",
   ]);
+  const VALID_HTABS = new Set(["pnl", "earnings", "markout"]);
+  const HTAB_KEY = "lipmm_htab";
+  const HTAB_COLLAPSED_KEY = "lipmm_htab_collapsed";
 
   function openDrawer(tab) {
     document.body.classList.add("drawer-open");
@@ -549,6 +551,7 @@
     });
     const reapplyAll = () => {
       applyPersistedDrawerState();
+      applyPersistedHeaderState();
       applyPersistedExpansions();
       applyTheoDrafts();
       applyKnobDrafts();
@@ -1288,6 +1291,56 @@
   // first scan.
   setupHtmxAuth();
 
+  // ── Header panels (PnL / Earnings / Markout) ───────────────────
+  // These were moved out of the operator drawer to live as full
+  // panels at the top of the page. Separate tab namespace
+  // (`data-htab` / `data-htab-panel`) so it doesn't collide with the
+  // drawer's tabs. State persists across reloads + OOB swaps.
+  function setActiveHeaderTab(name) {
+    if (!VALID_HTABS.has(name)) name = "pnl";
+    localStorage.setItem(HTAB_KEY, name);
+    document.querySelectorAll(".header-tab").forEach((b) => {
+      const on = b.dataset.htab === name;
+      b.classList.toggle("active", on);
+      b.style.color = on ? "var(--ink-hi)" : "var(--ink-lo)";
+      const ul = b.querySelector(".header-tab-underline");
+      if (ul) ul.classList.toggle("hidden", !on);
+    });
+    document.querySelectorAll("[data-htab-panel]").forEach((p) => {
+      p.classList.toggle("hidden", p.dataset.htabPanel !== name);
+    });
+  }
+  function bindHeaderPanels() {
+    document.body.addEventListener("click", (e) => {
+      const btn = e.target.closest(".header-tab");
+      if (btn) {
+        setActiveHeaderTab(btn.dataset.htab);
+        return;
+      }
+      const collapse = e.target.closest('[data-action="toggle-header-panels"]');
+      if (collapse) {
+        const wrap = document.getElementById("header-panels");
+        if (!wrap) return;
+        const body = wrap.querySelector(".header-panels-body");
+        const icon = wrap.querySelector(".header-panels-collapse-icon");
+        if (!body) return;
+        const collapsed = body.classList.toggle("hidden");
+        if (icon) icon.textContent = collapsed ? "▸" : "▾";
+        localStorage.setItem(HTAB_COLLAPSED_KEY, collapsed ? "1" : "0");
+      }
+    });
+  }
+  function applyPersistedHeaderState() {
+    setActiveHeaderTab(localStorage.getItem(HTAB_KEY) || "pnl");
+    const wrap = document.getElementById("header-panels");
+    if (wrap && localStorage.getItem(HTAB_COLLAPSED_KEY) === "1") {
+      const body = wrap.querySelector(".header-panels-body");
+      const icon = wrap.querySelector(".header-panels-collapse-icon");
+      if (body) body.classList.add("hidden");
+      if (icon) icon.textContent = "▸";
+    }
+  }
+
   // ── Fill notifications ─────────────────────────────────────────
   // The runner emits a "fill" WS event on every position-delta. The
   // server-side adapter renders that as an OOB-swap that adds a child
@@ -1396,11 +1449,13 @@
     bindKnobDraftSave();
     bindModeToggle();
     bindNotionalPreview();
+    bindHeaderPanels();
     if (location.pathname === "/dashboard") {
       if (!getJwt()) { location.href = "/login"; return; }
       openWebSocket();
       startCountdownTicker();
       applyPersistedDrawerState();
+      applyPersistedHeaderState();
       applyPersistedExpansions();
       applyTheoDrafts();
       applyKnobDrafts();

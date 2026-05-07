@@ -1,0 +1,48 @@
+{# Header panels — PnL / $/hr / Markout. Lives directly under the
+   status bar, above the events strip + strike grid, so the operator
+   sees realized + projected earnings without opening the drawer.
+
+   Tabbed (one panel visible at a time) and collapsible so it doesn't
+   permanently steal vertical real estate. JS in dashboard.js binds
+   `data-htab` clicks to toggle which `data-htab-panel` is shown, and
+   the collapse button hides the whole section. State persists in
+   localStorage. #}
+<section id="header-panels" class="px-4 pt-2">
+  <div class="rounded border overflow-hidden"
+       style="background: var(--surface); border-color: var(--border);">
+    <div class="flex items-center border-b" style="border-color: var(--border);">
+      <div class="flex flex-1">
+        {% for key, label in [
+          ('pnl', 'PnL'),
+          ('earnings', 'Earnings $/hr'),
+          ('markout', 'Markout'),
+        ] %}
+          <button data-htab="{{ key }}"
+                  class="header-tab px-4 py-2 text-[11px] uppercase tracking-wider relative"
+                  style="color: var(--ink-lo);">
+            {{ label }}
+            <span class="header-tab-underline absolute -bottom-px left-2 right-2 h-px hidden"
+                  style="background: var(--info);"></span>
+          </button>
+        {% endfor %}
+      </div>
+      <button data-action="toggle-header-panels"
+              class="px-3 py-2 text-[11px]"
+              style="color: var(--ink-lo);"
+              title="Hide / show this section">
+        <span class="header-panels-collapse-icon">▾</span>
+      </button>
+    </div>
+    <div class="header-panels-body p-3">
+      <div data-htab-panel="pnl">
+        {% include "partials/tab_pnl.html" %}
+      </div>
+      <div data-htab-panel="earnings" class="hidden">
+        {% include "partials/tab_earnings.html" %}
+      </div>
+      <div data-htab-panel="markout" class="hidden">
+        {% include "partials/tab_markout.html" %}
+      </div>
+    </div>
+  </div>
+</section>
