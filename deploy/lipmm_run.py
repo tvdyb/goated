@@ -429,10 +429,37 @@ async def _amain(args: argparse.Namespace) -> int:
     # and the ControlServer share the same cache (single Kalshi
     # /incentive_programs poll, single accrual tally).
     from lipmm.incentives import IncentiveCache
+    from lipmm.observability.earnings_history import EarningsHistory
     incentive_cache = IncentiveCache(
         KalshiIncentiveProvider(), refresh_s=3600.0,
     )
     earnings_accrual = EarningsAccrual()
+    # Persistent $/hr history; survives bot restarts. One sample per
+    # minute appended to a JSONL under the same directory tree as
+    # decision logs so retention sweeps can reach it later.
+    earnings_history = EarningsHistory(
+        history_path=os.path.join(log_dir, "earnings_history.jsonl"),
+    )
+    # Fill-markout tracker. mid_fetch_hook closes over the exchange so
+    # the tracker can sample post-fill mids on its own schedule
+    # (asyncio.sleep + get_orderbook). In-memory; resets on restart.
+    from lipmm.observability.markout import MarkoutTracker
+    async def _markout_mid_hook(ticker: str) -> float | None:
+        try:
+            ob = await exchange.get_orderbook(ticker)
+        except Exception:
+            return None
+        # best yes-bid in cents from yes-levels; best yes-ask = 100 - max(no-levels)
+        if not ob.yes_levels or not ob.no_levels:
+            return None
+        best_bid_t1c = ob.yes_levels[0][0]
+        best_no_bid_t1c = ob.no_levels[0][0]
+        bb_c = best_bid_t1c // 10
+        ba_c = (1000 - best_no_bid_t1c) // 10
+        if 0 < bb_c < ba_c < 100:
+            return (bb_c + ba_c) / 2.0
+        return None
+    markout_tracker = MarkoutTracker(_markout_mid_hook)
 
     runner = LIPRunner(
         config=RunnerConfig(
@@ -453,6 +480,8 @@ async def _amain(args: argparse.Namespace) -> int:
         broadcaster=broadcaster,
         incentive_cache=incentive_cache,
         earnings_accrual=earnings_accrual,
+        earnings_history=earnings_history,
+        markout=markout_tracker,
     )
 
     # 4. ControlServer: dashboard + incentive cache + retention.
@@ -472,6 +501,8 @@ async def _amain(args: argparse.Namespace) -> int:
         rate_limit_stats=lambda: client.rate_limiter.stats(),
         runtime_refresh_s=5.0,
         incentive_cache=incentive_cache,
+        earnings_history=earnings_history,
+        markout_tracker=markout_tracker,
     )
 
     retention = RetentionManager(

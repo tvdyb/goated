@@ -1,0 +1,116 @@
+{# PnL grid tab inner fragment.
+   Per-position row: qty, cost, MTM mark, theo, edge, realized, fees.
+   Totals row at the bottom. Color: green = positive PnL, red = negative. #}
+
+<div>
+  {% if not rows %}
+    <div class="text-[11px]" style="color: var(--ink-dim);">
+      no open positions
+    </div>
+  {% else %}
+    <div class="text-[9px] uppercase tracking-wider mb-2" style="color: var(--ink-lo);">
+      Position PnL — mark-to-market vs expected settlement
+    </div>
+    <div class="rounded border overflow-hidden"
+         style="background: var(--surface); border-color: var(--border);
+                font-family: 'JetBrains Mono', ui-monospace;">
+      <div class="grid items-center gap-1 px-2 py-1 text-[9px] uppercase tracking-wider"
+           style="grid-template-columns: 1.4fr 50px 50px 60px 60px 60px 60px 60px 60px;
+                  background: var(--surface-2); color: var(--ink-dim);">
+        <div>market</div>
+        <div class="text-right">qty</div>
+        <div class="text-right">avg ¢</div>
+        <div class="text-right">cost $</div>
+        <div class="text-right">mtm $</div>
+        <div class="text-right">unreal $</div>
+        <div class="text-right">theo ¢</div>
+        <div class="text-right">exp $</div>
+        <div class="text-right">real $</div>
+      </div>
+      {% for r in rows %}
+        <div class="grid items-center gap-1 px-2 py-1 text-[10px] border-t"
+             style="grid-template-columns: 1.4fr 50px 50px 60px 60px 60px 60px 60px 60px;
+                    border-color: var(--border);">
+          <div class="truncate" title="{{ r.ticker }}"
+               style="color: var(--ink-mid);">
+            …{{ r.ticker[-16:] }}
+            {% if r.resting_count > 0 %}
+              <span class="text-[8px]" style="color: var(--info);">·{{ r.resting_count }}r</span>
+            {% endif %}
+          </div>
+          <div class="text-right tabular-nums"
+               style="color: {% if r.qty > 0 %}var(--yes){% else %}var(--no){% endif %};">
+            {{ '+' if r.qty > 0 else '' }}{{ r.qty }} {{ r.side_label }}
+          </div>
+          <div class="text-right tabular-nums" style="color: var(--ink-mid);">{{ r.avg_cost_c }}</div>
+          <div class="text-right tabular-nums" style="color: var(--ink-mid);">{{ "%.2f"|format(r.total_cost) }}</div>
+          <div class="text-right tabular-nums" style="color: var(--ink-mid);">{{ "%.2f"|format(r.mtm_value) }}</div>
+          <div class="text-right tabular-nums"
+               style="color: {% if r.unrealized > 0 %}var(--yes){% elif r.unrealized < 0 %}var(--no){% else %}var(--ink-dim){% endif %};">
+            {{ "%+.2f"|format(r.unrealized) }}
+          </div>
+          <div class="text-right tabular-nums"
+               style="color: {% if r.theo_source == 'manual' %}var(--lip){% elif r.theo_yes_c is not none %}var(--info){% else %}var(--ink-dim){% endif %};"
+               title="{{ r.theo_source }}">
+            {% if r.theo_yes_c is not none %}{{ "%g"|format(r.theo_yes_c) }}{% else %}—{% endif %}
+          </div>
+          <div class="text-right tabular-nums"
+               style="color: {% if r.expected_settle is not none and r.expected_settle > r.total_cost %}var(--yes){% elif r.expected_settle is not none and r.expected_settle < r.total_cost %}var(--no){% else %}var(--ink-dim){% endif %};">
+            {% if r.expected_settle is not none %}{{ "%.2f"|format(r.expected_settle) }}{% else %}—{% endif %}
+          </div>
+          <div class="text-right tabular-nums"
+               style="color: {% if r.realized > 0 %}var(--yes){% elif r.realized < 0 %}var(--no){% else %}var(--ink-dim){% endif %};">
+            {{ "%+.2f"|format(r.realized) }}
+          </div>
+        </div>
+      {% endfor %}
+      {# Totals row #}
+      <div class="grid items-center gap-1 px-2 py-1.5 text-[10px] font-semibold border-t"
+           style="grid-template-columns: 1.4fr 50px 50px 60px 60px 60px 60px 60px 60px;
+                  border-color: var(--border); background: var(--surface-2);">
+        <div style="color: var(--ink-hi);">TOTAL · {{ rows | length }} pos</div>
+        <div></div>
+        <div></div>
+        <div class="text-right tabular-nums" style="color: var(--ink-hi);">{{ "%.2f"|format(totals.total_cost) }}</div>
+        <div class="text-right tabular-nums" style="color: var(--ink-hi);">{{ "%.2f"|format(totals.mtm_value) }}</div>
+        <div class="text-right tabular-nums"
+             style="color: {% if totals.unrealized > 0 %}var(--yes){% elif totals.unrealized < 0 %}var(--no){% else %}var(--ink-mid){% endif %};">
+          {{ "%+.2f"|format(totals.unrealized) }}
+        </div>
+        <div></div>
+        <div class="text-right tabular-nums" style="color: var(--ink-hi);">{{ "%.2f"|format(totals.expected_settle) }}</div>
+        <div class="text-right tabular-nums"
+             style="color: {% if totals.realized > 0 %}var(--yes){% elif totals.realized < 0 %}var(--no){% else %}var(--ink-mid){% endif %};">
+          {{ "%+.2f"|format(totals.realized) }}
+        </div>
+      </div>
+    </div>
+
+    {# Bottom summary block #}
+    <div class="mt-2 grid grid-cols-3 gap-2 text-[10px]">
+      <div class="rounded border p-1.5"
+           style="background: var(--surface); border-color: var(--border);">
+        <div class="text-[9px] uppercase" style="color: var(--ink-dim);">net (mtm)</div>
+        <div class="font-mono text-[12px] tabular-nums"
+             style="color: {% if totals.realized + totals.unrealized > 0 %}var(--yes){% elif totals.realized + totals.unrealized < 0 %}var(--no){% else %}var(--ink-mid){% endif %};">
+          {{ "%+.2f"|format(totals.realized + totals.unrealized) }}
+        </div>
+      </div>
+      <div class="rounded border p-1.5"
+           style="background: var(--surface); border-color: var(--border);">
+        <div class="text-[9px] uppercase" style="color: var(--ink-dim);">net @ settle</div>
+        <div class="font-mono text-[12px] tabular-nums"
+             style="color: var(--info);">
+          {{ "%+.2f"|format(totals.realized + totals.expected_settle - totals.total_cost) }}
+        </div>
+      </div>
+      <div class="rounded border p-1.5"
+           style="background: var(--surface); border-color: var(--border);">
+        <div class="text-[9px] uppercase" style="color: var(--ink-dim);">fees</div>
+        <div class="font-mono text-[12px] tabular-nums" style="color: var(--ink-mid);">
+          ${{ "%.2f"|format(totals.fees) }}
+        </div>
+      </div>
+    </div>
+  {% endif %}
+</div>

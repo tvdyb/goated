@@ -170,8 +170,8 @@ def test_default_weights_sum_to_one() -> None:
     assert sum(DEFAULT_WEIGHTS_Q4_2025.weights.values()) == pytest.approx(1.0)
 
 
-def test_default_weights_cover_four_yfinance_symbols() -> None:
-    expected = {"HG=F", "LIT", "PA=F", "PL=F"}
+def test_default_weights_cover_six_components() -> None:
+    expected = {"HG=F", "LIT", "NICK.L", "COBALT_TE", "PA=F", "PL=F"}
     assert set(DEFAULT_WEIGHTS_Q4_2025.weights.keys()) == expected
 
 

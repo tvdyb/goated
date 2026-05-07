@@ -1,16 +1,23 @@
-"""TruEvForwardSource — async yfinance polling cache for the 4 modeled
-EV-basket commodities.
+"""TruEvForwardSource — async polling cache for the EV-basket commodities.
+
+Two backends:
+  - **yfinance**: dense daily history; used for HG=F (copper), LIT
+    (lithium ETF proxy), NICK.L (WisdomTree Nickel ETC), PA=F
+    (palladium), PL=F (platinum). Synchronous library — wrapped in
+    `asyncio.to_thread()`.
+  - **TradingEconomics scrape** (`feeds.tradingeconomics.spot`): live
+    spot only (no historicals). Used for cobalt (`COBALT_TE`) which has
+    no clean yfinance ticker.
 
 Mirrors the pattern of `feeds/pyth/forward.py`:
   - `start()` spawns an internal asyncio task running `_poll_loop()`
   - `stop()` cancels it
-  - `latest_prices()` returns a copy of the in-memory cache (price + ts)
-  - readers check timestamps for staleness; the source itself only
-    serves what it has.
+  - `latest_prices()` returns a copy of the in-memory cache
 
-yfinance is synchronous, so each poll wraps the call in
-`asyncio.to_thread()` to avoid blocking the event loop. One call
-batches all symbols via `yf.Tickers(...)`.
+Cache keys are the source-specific symbol (yfinance ticker OR TE
+sentinel like "COBALT_TE"). The basket-weights table in
+`_truev_index.py` uses the same keys, so the index reconstruction
+plumbing doesn't care which backend produced any given price.
 """
 
 from __future__ import annotations
@@ -21,42 +28,60 @@ import time
 
 import yfinance as yf
 
+from feeds.tradingeconomics.spot import (
+    TE_COBALT,
+    get_te_spot,
+)
+
 logger = logging.getLogger(__name__)
 
 
-# Phase 1 symbols. We use LIT (Global X Lithium & Battery Tech ETF) as
-# a proxy for lithium because:
-#   - LTH=F (CME Lithium Hydroxide CIF CJK futures) is too illiquid on
-#     yfinance — only sporadic daily prints, can't backtest.
-#   - LIT has dense daily history and tracks lithium moves with
-#     ~0.7–0.85 correlation. Imperfect but tradeable.
-# Phase 2 should add a real lithium fix (Fastmarkets / Argus / paid TE
-# API) for proper accuracy.
-TRUEV_PHASE1_SYMBOLS: tuple[str, ...] = ("HG=F", "LIT", "PA=F", "PL=F")
+# ── Symbol constants ────────────────────────────────────────────────
+#
+# yfinance-clean tickers:
+#   HG=F     Copper (Comex)
+#   LIT      Global X Lithium & Battery Tech ETF — proxy (CME LTH=F is
+#            too illiquid for daily backtest).
+#   NICK.L   WisdomTree Nickel ETC (LSE) — direct nickel exposure that
+#            tracks LME 3-month nickel.
+#   PA=F     Palladium (NYMEX)
+#   PL=F     Platinum (NYMEX)
+#
+# TradingEconomics scrape sentinel:
+#   COBALT_TE  Cobalt LME — TE has spot only (no historicals); LIVE
+#              theo only. Backtest leaves cobalt unmodeled and
+#              renormalizes the other 5 weights to 1.0.
+COBALT_TE = "COBALT_TE"
+
+TRUEV_PHASE1_SYMBOLS: tuple[str, ...] = (
+    "HG=F", "LIT", "NICK.L", "PA=F", "PL=F", COBALT_TE,
+)
+
+# Subset that yfinance can serve (used by backtest helpers)
+TRUEV_YFINANCE_SYMBOLS: tuple[str, ...] = (
+    "HG=F", "LIT", "NICK.L", "PA=F", "PL=F",
+)
 
 
 class TruEvForwardSource:
-    """Polls yfinance for EV-basket commodity prices on a schedule.
-
-    Cache shape: `_prices: dict[symbol, (price, fetched_at_unix_ts)]`.
-    Readers call `latest_prices()` and check ages themselves.
+    """Polls live commodity prices from yfinance and TE on a schedule.
 
     Args:
-      symbols: yfinance tickers to poll. Defaults to TRUEV_PHASE1_SYMBOLS.
+      symbols: list to track. Defaults to all 6 (5 yfinance + 1 TE
+        cobalt). Backtest scenarios that don't need live cobalt can
+        pass `TRUEV_YFINANCE_SYMBOLS`.
       poll_interval_s: time between polls (default 60).
-      sanity_bounds: per-symbol (lo, hi) plausibility checks. Returned
-        values outside the bounds are dropped (kept stale) with a
-        WARNING log — guards against bad yfinance prints.
+      sanity_bounds: per-symbol (lo, hi) plausibility checks. Out-of-
+        range values are dropped (kept stale) with a WARNING log.
     """
 
-    # Plausibility bounds per Apr 2026 levels — wide enough to allow
-    # 50% moves either direction. If a yfinance print is way off, we
-    # log and refuse to update that symbol.
     DEFAULT_SANITY_BOUNDS: dict[str, tuple[float, float]] = {
-        "HG=F": (1.0, 15.0),     # Copper $/lb
-        "LIT": (10.0, 200.0),    # Global X Lithium ETF $/share
-        "PA=F": (200.0, 5000.0), # Palladium $/oz
-        "PL=F": (200.0, 5000.0), # Platinum $/oz
+        "HG=F": (1.0, 15.0),       # Copper $/lb
+        "LIT": (10.0, 200.0),      # Global X Lithium ETF $/share
+        "NICK.L": (1.0, 100.0),    # WisdomTree Nickel ETC $/share
+        "PA=F": (200.0, 5000.0),   # Palladium $/oz
+        "PL=F": (200.0, 5000.0),   # Platinum $/oz
+        COBALT_TE: (10_000.0, 200_000.0),  # Cobalt $/tonne via TE
     }
 
     def __init__(
@@ -91,14 +116,12 @@ class TruEvForwardSource:
         return max(ts_now - ts for (_p, ts) in self._prices.values())
 
     async def start(self) -> None:
-        """Kick off the background poll loop. Returns after spawning
-        the task; the first successful refresh may not have happened yet
-        — call `prime()` to await the first poll synchronously."""
+        """Kick off the background poll loop. Runs one poll immediately
+        so callers don't have to wait for the first interval to
+        elapse."""
         if self._running:
             return
         self._running = True
-        # Run one poll immediately so callers don't have to wait for the
-        # first interval to elapse.
         await self._poll_once()
         self._task = asyncio.create_task(self._poll_loop())
         logger.info(
@@ -150,32 +173,37 @@ class TruEvForwardSource:
             self._prices[sym] = (price, now)
 
     def _fetch_sync(self) -> dict[str, float]:
-        """Synchronous yfinance fetch. Called via asyncio.to_thread().
-        Returns {symbol: price} for symbols that returned a valid
-        latest close. Missing symbols are simply absent."""
+        """Synchronous fetch for all symbols. Routes per source:
+        yfinance for normal tickers, TE scrape for sentinel symbols.
+        """
         out: dict[str, float] = {}
-        # `yf.Tickers` lets us batch the request; iterate per-symbol
-        # for fault isolation (one bad symbol shouldn't blank the rest).
-        try:
-            handle = yf.Tickers(" ".join(self._symbols))
-        except Exception as exc:
-            logger.warning("yf.Tickers init failed: %s", exc)
-            return out
-        for sym in self._symbols:
+        yf_syms = [s for s in self._symbols if s != COBALT_TE]
+        if yf_syms:
             try:
-                tk = handle.tickers.get(sym)
-                if tk is None:
-                    # yfinance sometimes uppercases / mangles keys
-                    tk = yf.Ticker(sym)
-                hist = tk.history(period="1d")
-                if hist.empty:
-                    logger.info("yfinance: no 1d data for %s", sym)
-                    continue
-                close = float(hist["Close"].iloc[-1])
-                if close <= 0:
-                    logger.info("yfinance: %s close %.4f ≤ 0", sym, close)
-                    continue
-                out[sym] = close
+                handle = yf.Tickers(" ".join(yf_syms))
             except Exception as exc:
-                logger.warning("yfinance fetch failed for %s: %s", sym, exc)
+                logger.warning("yf.Tickers init failed: %s", exc)
+                handle = None
+            for sym in yf_syms:
+                try:
+                    tk = handle.tickers.get(sym) if handle is not None else None
+                    if tk is None:
+                        tk = yf.Ticker(sym)
+                    hist = tk.history(period="1d")
+                    if hist.empty:
+                        logger.info("yfinance: no 1d data for %s", sym)
+                        continue
+                    close = float(hist["Close"].iloc[-1])
+                    if close <= 0:
+                        logger.info("yfinance: %s close %.4f ≤ 0", sym, close)
+                        continue
+                    out[sym] = close
+                except Exception as exc:
+                    logger.warning("yfinance fetch failed for %s: %s", sym, exc)
+
+        # TE scrapes (synchronous httpx). One commodity per sentinel.
+        if COBALT_TE in self._symbols:
+            price = get_te_spot(TE_COBALT)
+            if price is not None and price > 0:
+                out[COBALT_TE] = price
         return out

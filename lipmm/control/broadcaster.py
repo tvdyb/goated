@@ -68,6 +68,7 @@ class Broadcaster:
         # freshly opened dashboard tab can read the most recent prices
         # immediately without waiting for the next cycle (3s).
         self._last_orderbook: dict[str, Any] | None = None
+        self._last_runtime: dict[str, Any] | None = None
 
     def attach_state(self, state: "ControlState") -> None:
         """Optional: wire a ControlState reference so heartbeats include
@@ -181,12 +182,22 @@ class Broadcaster:
     async def broadcast_runtime(self, snapshot: dict[str, Any]) -> None:
         """Push a runtime snapshot (positions + resting orders + balance)
         as a `runtime_snapshot` event. Pre-shaped for the htmx renderer
-        to OOB-swap the positions / resting-orders / balance panels."""
+        to OOB-swap the positions / resting-orders / balance panels.
+
+        Also caches as `last_runtime` so HTMX-fetch endpoints (PnL tab,
+        markout tab) can re-render against the most recent data without
+        waiting for the next periodic broadcast.
+        """
+        self._last_runtime = snapshot
         await self._broadcast_event({
             "event_type": "runtime_snapshot",
             "snapshot": snapshot,
             "ts": time.time(),
         })
+
+    @property
+    def last_runtime(self) -> dict[str, Any] | None:
+        return getattr(self, "_last_runtime", None)
 
     async def broadcast_decision(self, record: dict[str, Any]) -> None:
         """Wrap a decision-log record in an event envelope and push to

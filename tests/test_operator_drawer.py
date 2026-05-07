@@ -264,6 +264,15 @@ def test_only_phase10_partials_remain() -> None:
         "tab_manual.html",
         "tab_pauses.html",
         "tab_theos.html",
+        # Wave 2 dashboard parity tabs (PnL grid, earnings histogram,
+        # fill markout). Each has an outer shell that HTMX-fetches an
+        # _inner partial from the matching /control/* endpoint.
+        "tab_earnings.html",
+        "tab_earnings_inner.html",
+        "tab_markout.html",
+        "tab_markout_inner.html",
+        "tab_pnl.html",
+        "tab_pnl_inner.html",
     }
     actual = {f.name for f in base.iterdir() if f.suffix == ".html"}
     assert actual == expected, f"unexpected partials: {actual ^ expected}"

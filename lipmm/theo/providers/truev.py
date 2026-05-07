@@ -67,7 +67,7 @@ class TruEVConfig:
     anchor: TruEvAnchor = field(
         default_factory=lambda: DEFAULT_ANCHOR_PLACEHOLDER,
     )
-    annualized_vol: float = 0.22             # empirically implied from KXTRUEV backtest 2026-04-15..05-06
+    annualized_vol: float = 0.20             # empirically implied σ_annual from KXTRUEV 5-component backtest 2026-04-15..05-06
     forward_freshness_threshold_s: float = 300.0
     confident_tau_hours: float = 6.0
     max_confidence: float = 0.7              # cap until σ is calibrated

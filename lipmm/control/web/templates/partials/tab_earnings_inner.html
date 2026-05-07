@@ -1,0 +1,78 @@
+{# Inner fragment for the $/hr earnings-history tab. Rendered by
+   render_earnings_history(stats) and served from /control/earnings_history.
+   The outer wrapper (tab_earnings.html) carries the htmx-fetch trigger. #}
+
+<div>
+  {# ── Headline stats ─────────────────────────────── #}
+  <div class="grid gap-2 mb-3" style="grid-template-columns: 1fr 1fr;">
+    <div class="rounded border p-2"
+         style="background: var(--surface); border-color: var(--border);">
+      <div class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">cumulative</div>
+      <div class="font-mono text-[15px] font-semibold tabular-nums"
+           style="color: var(--lip);">
+        ${{ "%.4f"|format(stats.cumulative_dollars) }}
+      </div>
+    </div>
+    <div class="rounded border p-2"
+         style="background: var(--surface); border-color: var(--border);">
+      <div class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">avg $/hr</div>
+      <div class="font-mono text-[15px] font-semibold tabular-nums"
+           style="color: var(--info);">
+        ${{ "%.4f"|format(stats.avg_dollars_per_hour) }}
+      </div>
+    </div>
+    <div class="rounded border p-2"
+         style="background: var(--surface); border-color: var(--border);">
+      <div class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">peak $/hr</div>
+      <div class="font-mono text-[13px] tabular-nums" style="color: var(--ink-hi);">
+        ${{ "%.4f"|format(stats.peak_dollars_per_hour) }}
+      </div>
+    </div>
+    <div class="rounded border p-2"
+         style="background: var(--surface); border-color: var(--border);">
+      <div class="text-[9px] uppercase tracking-wider" style="color: var(--ink-lo);">samples · tracked</div>
+      <div class="font-mono text-[13px] tabular-nums" style="color: var(--ink-mid);">
+        {{ stats.n_samples }} · {{ "%.0f"|format(stats.elapsed_s / 60) }}m
+      </div>
+    </div>
+  </div>
+
+  {# ── Histogram bars ─────────────────────────────── #}
+  <div class="text-[9px] uppercase tracking-wider mb-2" style="color: var(--ink-lo);">
+    $/hr distribution (per-window inter-sample rate)
+  </div>
+  {% set max_count = 1 %}
+  {% for lo, hi, c in stats.bins %}
+    {% if c > max_count %}{% set max_count = c %}{% endif %}
+  {% endfor %}
+  <div class="space-y-0.5 text-[10px]"
+       style="font-family: 'JetBrains Mono', ui-monospace;">
+    {% for lo, hi, c in stats.bins %}
+      <div class="grid items-center gap-2"
+           style="grid-template-columns: 80px 1fr 36px;">
+        <span class="tabular-nums text-right" style="color: var(--ink-dim);">
+          {% if hi == 999999.0 or hi > 100 %}
+            ${{ "%g"|format(lo) }}+
+          {% else %}
+            ${{ "%g"|format(lo) }}–${{ "%g"|format(hi) }}
+          {% endif %}
+        </span>
+        <div class="relative h-3 rounded-sm" style="background: var(--surface-2);">
+          {% if max_count > 0 and c > 0 %}
+            <div class="absolute inset-y-0 left-0 rounded-sm"
+                 style="width: {{ (c * 100 / max_count) | round(1) }}%;
+                        background: var(--info);"></div>
+          {% endif %}
+        </div>
+        <span class="tabular-nums" style="color: var(--ink-mid);">{{ c }}</span>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if stats.n_samples == 0 %}
+    <div class="mt-3 text-[11px]" style="color: var(--ink-dim);">
+      no samples yet. Earnings samples are recorded once per minute by the
+      runner; the file populates over time.
+    </div>
+  {% endif %}
+</div>

@@ -132,43 +132,65 @@ def reconstruct_index(
 
 # ── Phase-1 default weights + anchor ────────────────────────────────
 #
-# Phase 1 models 4 of the 6 components, with weights renormalized to
-# sum to 1.0. Original Q4-2025 weights (per Truflation v1.41 §6.3):
-#   Copper      0.3865    HG=F (Comex futures)
-#   Lithium     0.3354    LIT  (Global X Lithium ETF — proxy)
-#   Nickel      0.1227    (excluded — no clean yfinance ticker)
-#   Cobalt      0.0822    (excluded — no clean yfinance ticker)
-#   Palladium   0.0607    PA=F
-#   Platinum    0.0125    PL=F
-# Modeled subset sums to 0.7951; we divide each by 0.7951 to renormalize.
+# Q4-2025 weights per Truflation v1.41 §6.3.
+# Six components total. Sources:
+#   Copper      0.3865    HG=F      (yfinance Comex)
+#   Lithium     0.3354    LIT       (yfinance Global X Lithium ETF — proxy
+#                                    for CME LTH=F which is too illiquid)
+#   Nickel      0.1227    NICK.L    (yfinance WisdomTree Nickel ETC, LSE)
+#   Cobalt      0.0822    COBALT_TE (TradingEconomics scrape — LIVE ONLY,
+#                                    no historicals; backtest excludes
+#                                    cobalt and renormalizes the other 5)
+#   Palladium   0.0607    PA=F      (yfinance NYMEX)
+#   Platinum    0.0125    PL=F      (yfinance NYMEX)
+# Sum of LIVE weights = 1.0. Sum of BACKTEST weights (cobalt excluded
+# and renormalized) is also 1.0 — see DEFAULT_WEIGHTS_BACKTEST.
 _Q4_2025_RAW = {
-    "HG=F": 0.3865,   # Copper
-    "LIT":  0.3354,   # Lithium ETF proxy (was LTH=F, dropped — too illiquid)
-    "PA=F": 0.0607,   # Palladium
-    "PL=F": 0.0125,   # Platinum
+    "HG=F":      0.3865,
+    "LIT":       0.3354,
+    "NICK.L":    0.1227,
+    "COBALT_TE": 0.0822,
+    "PA=F":      0.0607,
+    "PL=F":      0.0125,
 }
-_Q4_2025_TOTAL = sum(_Q4_2025_RAW.values())
 DEFAULT_WEIGHTS_Q4_2025 = TruEvWeights(
     quarter_start_iso="2025-10-01",
-    weights={k: v / _Q4_2025_TOTAL for k, v in _Q4_2025_RAW.items()},
+    weights=dict(_Q4_2025_RAW),
 )
 
-# Default anchor — bootstrapped on 2026-05-07 from live yfinance prints.
-# anchor_index_value of 1290.40 was the prior research figure; the
-# backtest auto-calibrates a better one. Operator should replace with
-# a fresh truflation.com value before going live.
+# Backtest weights: cobalt excluded (no daily history), other 5
+# renormalized to sum to 1.0. Used by deploy/truev_backtest.py.
+_BACKTEST_RAW = {k: v for k, v in _Q4_2025_RAW.items() if k != "COBALT_TE"}
+_BACKTEST_TOTAL = sum(_BACKTEST_RAW.values())
+DEFAULT_WEIGHTS_BACKTEST = TruEvWeights(
+    quarter_start_iso="2025-10-01",
+    weights={k: v / _BACKTEST_TOTAL for k, v in _BACKTEST_RAW.items()},
+)
+
+# Default anchor — bootstrapped on 2026-05-07 from live data.
+# Operator should refresh with a fresh truflation.com value when
+# quarterly weights change or basket coverage shifts.
 DEFAULT_ANCHOR_PLACEHOLDER = TruEvAnchor(
-    anchor_date="2026-05-07",
-    # 1281.98 was the RMSE-minimizing anchor from the 2026-04-15 →
-    # 2026-05-06 backtest (RMSE 13.2 points, 17 daily settlements,
-    # against the LIT-as-lithium 4-component basket). Should be
-    # refreshed any time the basket weights change (quarterly) or
-    # nickel/cobalt feeds are added (Phase 2).
-    anchor_index_value=1281.9841,
+    # **CRITICAL**: anchor MUST be a real (date, published TruEV value,
+    # same-day component closes) triple. Truflation publishes the
+    # index ONCE per day at end-of-day; an RMSE-minimizing fit across
+    # multiple days is NOT a valid anchor — it produces an inflated
+    # base value that biases today's reconstructed index above truth.
+    #
+    # Re-anchor each morning before bot start: pull yesterday's
+    # truflation.com EV-index close + yesterday's yfinance closes for
+    # each component, plug in here.
+    anchor_date="2026-05-06",
+    anchor_index_value=1259.69,  # truflation.com/marketplace/ev-index, published 2026-05-06
     anchor_prices={
-        "HG=F": 6.20,     # 2026-05-07 yfinance closes
-        "LIT": 90.57,
-        "PA=F": 1555.50,
-        "PL=F": 2073.50,
+        "HG=F": 6.1365,          # 2026-05-06 yfinance Comex copper close
+        "LIT": 91.52,            # 2026-05-06 Global X Lithium ETF close
+        "NICK.L": 16.80,         # 2026-05-06 WisdomTree Nickel ETC close
+        "COBALT_TE": 56_290.0,   # cobalt — TE has no historicals; using
+                                 # today's spot as proxy for yesterday
+                                 # close (cobalt moves slowly day-to-day,
+                                 # acceptable bias for now)
+        "PA=F": 1546.00,         # 2026-05-06 NYMEX palladium close
+        "PL=F": 2048.70,         # 2026-05-06 NYMEX platinum close
     },
 )

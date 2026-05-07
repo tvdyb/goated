@@ -122,6 +122,8 @@ def build_app(
     rate_limit_stats: Any = None,
     exploit_state: Any = None,
     exploit_kill_handler: Any = None,
+    earnings_history: Any = None,
+    markout_tracker: Any = None,
 ) -> FastAPI:
     """Construct the FastAPI app. Caller wires in the ControlState and
     optional collaborators:
@@ -167,6 +169,14 @@ def build_app(
     # runner can cancel its resting orders synchronously.
     app.state.exploit_state = exploit_state
     app.state.exploit_kill_handler = exploit_kill_handler
+    # Optional persistent earnings-history tracker. When wired,
+    # /control/earnings_history returns the $/hr histogram for the
+    # dashboard's earnings tab. None → endpoint returns an empty
+    # fragment.
+    app.state.earnings_history = earnings_history
+    # Optional fill-markout tracker for the dashboard's markout tab.
+    # When None, /control/markout returns an empty placeholder.
+    app.state.markout_tracker = markout_tracker
     if broadcaster is not None:
         broadcaster.attach_state(state)
 
@@ -1313,6 +1323,74 @@ def build_app(
             markets=rows, version=es.version, ts=now,
         )
 
+    @app.get("/control/markout")
+    async def get_markout(
+        actor: str = Depends(require_auth),
+    ) -> Any:
+        """HTML fragment for the markout tab. Reads the tracker's
+        in-memory snapshot of per-ticker stats. Returns an empty
+        placeholder when no tracker is wired."""
+        from fastapi.responses import HTMLResponse
+        from lipmm.control.web.renderer import render_markout
+        mo = app.state.markout_tracker
+        if mo is None:
+            return HTMLResponse(
+                '<div class="text-[11px]" style="color: var(--ink-dim);">'
+                'markout tracker not wired into this deployment'
+                '</div>'
+            )
+        try:
+            stats = mo.snapshot()
+        except Exception as exc:
+            return HTMLResponse(
+                f'<div class="text-[11px]" style="color: var(--no);">'
+                f'error reading markout: {exc}'
+                f'</div>'
+            )
+        return HTMLResponse(render_markout(stats))
+
+    @app.get("/control/pnl_grid")
+    async def get_pnl_grid(
+        actor: str = Depends(require_auth),
+    ) -> Any:
+        """HTML fragment for the PnL tab. Reads the most-recently-cached
+        runtime + orderbook snapshots from the broadcaster and renders
+        per-position PnL rows with totals."""
+        from fastapi.responses import HTMLResponse
+        from lipmm.control.web.renderer import render_pnl_grid
+        bc = app.state.broadcaster
+        runtime = getattr(bc, "last_runtime", None) if bc else None
+        orderbooks = getattr(bc, "last_orderbook", None) if bc else None
+        snap = state.snapshot()
+        return HTMLResponse(render_pnl_grid(runtime, orderbooks, snap))
+
+    @app.get("/control/earnings_history")
+    async def get_earnings_history(
+        actor: str = Depends(require_auth),
+    ) -> Any:
+        """Return an HTML fragment for the dashboard's earnings tab.
+        Reads the persisted history file, computes histogram + stats,
+        renders bars. Returns an empty placeholder when no history is
+        wired."""
+        from fastapi.responses import HTMLResponse
+        eh = app.state.earnings_history
+        if eh is None:
+            return HTMLResponse(
+                '<div class="text-[11px]" style="color: var(--ink-dim);">'
+                'earnings history not wired into this deployment'
+                '</div>'
+            )
+        try:
+            stats = eh.histogram()
+        except Exception as exc:
+            return HTMLResponse(
+                f'<div class="text-[11px]" style="color: var(--no);">'
+                f'error reading earnings history: {exc}'
+                f'</div>'
+            )
+        from lipmm.control.web.renderer import render_earnings_history
+        return HTMLResponse(render_earnings_history(stats))
+
     @app.get("/control/orderbooks", response_model=OrderbookSnapshotResponse)
     async def get_orderbooks(
         actor: str = Depends(require_auth),
@@ -1635,6 +1713,8 @@ class ControlServer:
         incentive_cache: "IncentiveCache | None" = None,
         event_validator: Any = None,
         rate_limit_stats: Any = None,
+        earnings_history: Any = None,
+        markout_tracker: Any = None,
     ) -> None:
         self._state = state
         # Auto-create a broadcaster if none provided — the server's WS
@@ -1663,6 +1743,8 @@ class ControlServer:
             incentive_cache=self._incentive_cache,
             event_validator=event_validator,
             rate_limit_stats=rate_limit_stats,
+            earnings_history=earnings_history,
+            markout_tracker=markout_tracker,
         )
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None

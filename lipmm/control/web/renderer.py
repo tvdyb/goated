@@ -583,6 +583,173 @@ def render_decision_feed(records: list[dict[str, Any]]) -> str:
     return _env.get_template("partials/decision_feed.html").render(records=records)
 
 
+def render_earnings_history(stats: Any) -> str:
+    """Render the earnings tab fragment from a HistogramStats. Used by
+    the /control/earnings_history HTMX endpoint."""
+    return _env.get_template("partials/tab_earnings_inner.html").render(
+        stats=stats,
+    )
+
+
+def _pnl_rows(
+    runtime: dict[str, Any] | None,
+    orderbooks: dict[str, Any] | None,
+    snapshot: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    """Build per-position PnL rows + a totals dict.
+
+    For each non-zero position, compute:
+      - qty (signed; negative = short Yes / long No)
+      - avg_cost_c (cents)
+      - total_cost_$ = qty * avg_cost / 100
+      - mtm_mark_c = best opposite-side price (where we'd close right now)
+      - mtm_value_$ = qty * mtm_mark / 100
+      - unrealized_$ = mtm_value − total_cost
+      - theo_yes_c = bot's theo for that ticker (override if set, else
+        provider; None if neither)
+      - expected_settle_$ = qty * theo_yes_c / 100  (or None if no theo)
+      - edge_per_contract_c = theo_yes − avg_cost (held YES side) or
+                                avg_cost − theo_yes (held NO side)
+      - realized_$, fees_$ — pulled directly from the position record
+
+    Totals roll up across rows.
+
+    Args:
+      runtime: control snapshot with `positions` and `resting_orders`
+      orderbooks: per-strike orderbook broadcast (carries `theo` field
+        and best_bid_c / best_ask_c)
+      snapshot: state snapshot with `theo_overrides` (override beats
+        provider when set)
+    """
+    runtime = runtime or {}
+    orderbooks = orderbooks or {}
+    snapshot = snapshot or {}
+
+    positions: dict[str, dict[str, Any]] = {
+        p["ticker"]: p for p in runtime.get("positions", [])
+        if int(p.get("quantity", 0) or 0) != 0
+    }
+    if not positions:
+        return [], {
+            "total_cost": 0.0, "mtm_value": 0.0, "unrealized": 0.0,
+            "expected_settle": 0.0, "realized": 0.0, "fees": 0.0,
+            "open_exposure": 0.0,
+        }
+
+    obs: dict[str, dict[str, Any]] = {
+        ob["ticker"]: ob for ob in orderbooks.get("strikes", [])
+        if ob.get("ticker")
+    }
+    overrides: dict[str, dict[str, Any]] = {
+        ov["ticker"]: ov for ov in snapshot.get("theo_overrides", [])
+    }
+
+    # Per-ticker resting count (small table, just shows # working orders)
+    resting_count: dict[str, int] = {}
+    for r in runtime.get("resting_orders", []):
+        t = r.get("ticker", "")
+        if t:
+            resting_count[t] = resting_count.get(t, 0) + 1
+
+    rows: list[dict[str, Any]] = []
+    totals = {
+        "total_cost": 0.0, "mtm_value": 0.0, "unrealized": 0.0,
+        "expected_settle": 0.0, "realized": 0.0, "fees": 0.0,
+        "open_exposure": 0.0,
+    }
+    for ticker, pos in sorted(positions.items()):
+        qty = int(pos.get("quantity", 0))
+        avg_cost_c = int(pos.get("avg_cost_cents", 0) or 0)
+        realized = float(pos.get("realized_pnl_dollars", 0.0) or 0.0)
+        fees = float(pos.get("fees_paid_dollars", 0.0) or 0.0)
+
+        ob = obs.get(ticker, {})
+        best_bid_c = int(ob.get("best_bid_c", 0) or 0)
+        best_ask_c = int(ob.get("best_ask_c", 100) or 100)
+
+        # MTM mark = price we'd close at right now.
+        if qty > 0:
+            # Long Yes — to close, sell at best yes-bid.
+            mtm_mark_c = best_bid_c
+        elif qty < 0:
+            # "Short Yes" / long No — to close, buy at best yes-ask.
+            mtm_mark_c = best_ask_c
+        else:
+            mtm_mark_c = 0
+
+        total_cost = abs(qty) * avg_cost_c / 100.0
+        mtm_value = abs(qty) * mtm_mark_c / 100.0 if qty > 0 else \
+                    abs(qty) * (100 - mtm_mark_c) / 100.0
+        unrealized = mtm_value - total_cost
+
+        # Theo: override > provider > none
+        theo_yes_c: float | None = None
+        theo_source = "—"
+        ov = overrides.get(ticker)
+        if ov is not None:
+            theo_yes_c = float(ov.get("yes_cents", 0) or 0)
+            theo_source = "manual"
+        elif ob.get("theo") and (ob["theo"].get("confidence") or 0) > 0:
+            theo_yes_c = float(ob["theo"].get("yes_cents", 0) or 0)
+            theo_source = (ob["theo"].get("source") or "auto")[:8]
+
+        if theo_yes_c is not None:
+            # Held side's theo value: long Yes uses theo, long No uses (1 - theo)
+            held_theo_c = theo_yes_c if qty > 0 else (100 - theo_yes_c)
+            expected_settle = abs(qty) * held_theo_c / 100.0
+            # edge = expected payoff per contract − cost (in cents)
+            edge_per_c = held_theo_c - avg_cost_c
+        else:
+            expected_settle = None
+            edge_per_c = None
+
+        rows.append({
+            "ticker": ticker,
+            "qty": qty,
+            "side_label": "Y" if qty > 0 else "N",
+            "resting_count": resting_count.get(ticker, 0),
+            "avg_cost_c": avg_cost_c,
+            "total_cost": total_cost,
+            "mtm_mark_c": mtm_mark_c,
+            "mtm_value": mtm_value,
+            "unrealized": unrealized,
+            "theo_yes_c": theo_yes_c,
+            "theo_source": theo_source,
+            "expected_settle": expected_settle,
+            "edge_per_c": edge_per_c,
+            "realized": realized,
+            "fees": fees,
+        })
+        totals["total_cost"] += total_cost
+        totals["mtm_value"] += mtm_value
+        totals["unrealized"] += unrealized
+        if expected_settle is not None:
+            totals["expected_settle"] += expected_settle
+        totals["realized"] += realized
+        totals["fees"] += fees
+        totals["open_exposure"] += total_cost
+    return rows, totals
+
+
+def render_pnl_grid(
+    runtime: dict[str, Any] | None,
+    orderbooks: dict[str, Any] | None,
+    snapshot: dict[str, Any] | None,
+) -> str:
+    """Render the PnL tab fragment. Used by /control/pnl_grid endpoint."""
+    rows, totals = _pnl_rows(runtime, orderbooks, snapshot)
+    return _env.get_template("partials/tab_pnl_inner.html").render(
+        rows=rows, totals=totals,
+    )
+
+
+def render_markout(stats_list: list[Any]) -> str:
+    """Render the markout tab fragment from a list of TickerStats."""
+    return _env.get_template("partials/tab_markout_inner.html").render(
+        rows=stats_list,
+    )
+
+
 class HtmlWebSocketAdapter:
     """Adapter so a browser WebSocket can be registered with the JSON
     `Broadcaster`. `send_json(event)` translates each event into an HTML

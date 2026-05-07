@@ -1,0 +1,28 @@
+{# Earnings ($/hr) tab outer shell. Body is fetched on demand from
+   /control/earnings_history (HTMX) so the histogram is fresh whenever
+   the operator looks at the tab without forcing a page reload. #}
+<div>
+  <div class="flex items-center justify-between mb-2">
+    <div class="text-[10px] uppercase tracking-wider" style="color: var(--ink-lo);">
+      Earnings — $/hr histogram (persisted across restarts)
+    </div>
+    <button data-call="/control/earnings_history"
+            data-method="GET"
+            hx-get="/control/earnings_history"
+            hx-target="#earnings-history-body"
+            hx-swap="innerHTML"
+            class="text-[10px] px-2 py-0.5 rounded border hover:brightness-125"
+            style="background: var(--surface-2); color: var(--ink-mid);
+                   border-color: var(--border);">
+      refresh
+    </button>
+  </div>
+  <div id="earnings-history-body"
+       hx-get="/control/earnings_history"
+       hx-trigger="load, every 60s"
+       hx-swap="innerHTML">
+    <div class="text-[11px]" style="color: var(--ink-dim);">
+      loading earnings history…
+    </div>
+  </div>
+</div>

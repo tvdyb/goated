@@ -36,10 +36,10 @@ from typing import Any
 
 from feeds.kalshi.auth import KalshiAuth
 from feeds.kalshi.client import KalshiClient
-from feeds.truflation import TRUEV_PHASE1_SYMBOLS
+from feeds.truflation import TRUEV_YFINANCE_SYMBOLS
 from lipmm.theo.providers._truev_index import (
     DEFAULT_ANCHOR_PLACEHOLDER,
-    DEFAULT_WEIGHTS_Q4_2025,
+    DEFAULT_WEIGHTS_BACKTEST,
     TruEvAnchor,
     TruEvWeights,
     reconstruct_index,
@@ -136,20 +136,36 @@ def _strike_threshold_from_market(m: dict[str, Any]) -> float | None:
     return None
 
 
+def _exact_actual_value_from_expiration(
+    markets: list[dict[str, Any]],
+) -> float | None:
+    """Read the exact TruEV settle value from any market's
+    `expiration_value` field (Kalshi populates this with the
+    underlying's settlement reference price). All markets in the
+    same event share the same expiration_value, so we just take the
+    first one that has a parseable numeric.
+
+    Replaces the older boundary-midpoint estimate which was off by
+    up to half a strike's spacing (~5 pts on a typical 10-pt grid).
+    """
+    for m in markets:
+        v = m.get("expiration_value")
+        if v is None or v == "":
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _implied_actual_value(markets: list[dict[str, Any]]) -> float | None:
-    """Resolve the actual index value from strike resolutions.
+    """Fallback: derive the actual value from strike-resolution
+    boundaries when `expiration_value` isn't populated.
 
     Convention assumed: each strike `T_K` resolves YES iff
-    settle_value > K (i.e. "above K"). Sort strikes by threshold:
-      ... yes yes yes [boundary] no no no ...
-    The actual value lies between the last YES strike and the first
-    NO strike. Use the midpoint as the estimate.
-
-    Returns None if:
-      - no strike has settled (result not in {yes, no})
-      - all strikes resolved YES (actual is above the highest strike)
-      - all strikes resolved NO (actual is below the lowest strike)
-      - the resolution pattern isn't a clean YES…YES NO…NO sweep
+    settle_value > K (i.e. "above K"). Used only when the exact
+    value is missing — yields up to ±(strike_spacing/2) error.
     """
     rows: list[_Strike] = []
     for m in markets:
@@ -165,8 +181,6 @@ def _implied_actual_value(markets: list[dict[str, Any]]) -> float | None:
     if not rows:
         return None
     rows.sort(key=lambda r: r.threshold)
-
-    # Find the boundary: last YES, first NO.
     last_yes_idx = None
     first_no_idx = None
     for i, r in enumerate(rows):
@@ -174,19 +188,13 @@ def _implied_actual_value(markets: list[dict[str, Any]]) -> float | None:
             last_yes_idx = i
         elif r.result == "no" and first_no_idx is None:
             first_no_idx = i
-
     if last_yes_idx is None and first_no_idx is None:
         return None
     if last_yes_idx is None:
-        # All NO → actual below lowest strike. Estimate as just below it.
         return rows[0].threshold - 1.0
     if first_no_idx is None:
-        # All YES → actual above highest strike.
         return rows[-1].threshold + 1.0
-    # Sanity: must be YES…YES NO…NO. If not, the convention may be
-    # inverted ("below K"). Bail and let the operator inspect.
     if last_yes_idx + 1 != first_no_idx:
-        # Try inverted convention: NO…NO YES…YES → "below K"
         last_no_idx = max(
             (i for i, r in enumerate(rows) if r.result == "no"),
             default=None,
@@ -197,7 +205,6 @@ def _implied_actual_value(markets: list[dict[str, Any]]) -> float | None:
         )
         if (last_no_idx is not None and first_yes_idx is not None
                 and last_no_idx + 1 == first_yes_idx):
-            # Inverted convention; midpoint between last NO and first YES.
             return 0.5 * (rows[last_no_idx].threshold + rows[first_yes_idx].threshold)
         return None
     return 0.5 * (rows[last_yes_idx].threshold + rows[first_no_idx].threshold)
@@ -368,7 +375,10 @@ async def _amain(args: argparse.Namespace) -> int:
             anchor_prices=dict(anchor.anchor_prices),
         )
 
-    weights = DEFAULT_WEIGHTS_Q4_2025
+    # 5-component basket for backtest (Cu / Li / Ni / Pd / Pt). Cobalt
+    # is excluded because its only viable feed (TE scrape) has no
+    # historicals; live theo uses 6 components (DEFAULT_WEIGHTS_Q4_2025).
+    weights = DEFAULT_WEIGHTS_BACKTEST
 
     print()
     print("=" * 80)
@@ -420,10 +430,15 @@ async def _amain(args: argparse.Namespace) -> int:
             if t and t not in seen:
                 seen.add(t)
                 unique.append(m)
-        actual = _implied_actual_value(unique)
+        # Prefer the exact `expiration_value` Kalshi populates with
+        # the underlying settle reference; fall back to strike-
+        # boundary midpoint only when missing.
+        actual = _exact_actual_value_from_expiration(unique)
         if actual is None:
-            logger.info("skipping %s — no boundary", et)
-            continue
+            actual = _implied_actual_value(unique)
+            if actual is None:
+                logger.info("skipping %s — no boundary", et)
+                continue
         rows.append((d, et, actual))
 
     rows.sort(key=lambda r: r[0])
@@ -439,7 +454,7 @@ async def _amain(args: argparse.Namespace) -> int:
     print(f"  date range: {earliest} → {latest}")
     print()
     print("  pulling yfinance history…")
-    hist = _fetch_yfinance_history(TRUEV_PHASE1_SYMBOLS, earliest, latest)
+    hist = _fetch_yfinance_history(TRUEV_YFINANCE_SYMBOLS, earliest, latest)
     print()
 
     # 4. Filter to symbols with adequate yfinance coverage. Drop any

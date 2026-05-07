@@ -1,0 +1,11 @@
+{# Fill markout / adverse-selection tab. Filled in by Wave 2-C. #}
+<div>
+  <div id="markout-body"
+       hx-get="/control/markout"
+       hx-trigger="load, every 10s"
+       hx-swap="innerHTML">
+    <div class="text-[11px]" style="color: var(--ink-dim);">
+      loading markout history…
+    </div>
+  </div>
+</div>

@@ -1,0 +1,12 @@
+{# Per-position PnL grid tab. Rendered server-side from runtime+
+   orderbooks+theos. Filled in by Wave 2-B. #}
+<div>
+  <div id="pnl-grid-body"
+       hx-get="/control/pnl_grid"
+       hx-trigger="load, every 10s"
+       hx-swap="innerHTML">
+    <div class="text-[11px]" style="color: var(--ink-dim);">
+      loading positions…
+    </div>
+  </div>
+</div>

@@ -118,6 +118,8 @@ class LIPRunner:
         broadcaster: "Broadcaster | None" = None,
         incentive_cache: "Any | None" = None,
         earnings_accrual: "Any | None" = None,
+        earnings_history: "Any | None" = None,
+        markout: "Any | None" = None,
     ) -> None:
         self._cfg = config
         self._theo = theo_registry
@@ -131,6 +133,16 @@ class LIPRunner:
         self._broadcaster = broadcaster
         self._incentive_cache = incentive_cache
         self._earnings_accrual = earnings_accrual
+        # Optional persistent history of earnings samples (one per N
+        # cycles, default 60s) for the dashboard's $/hr histogram tab.
+        # Survives bot restart so the operator can see long-running
+        # rate trends. None → no persistence.
+        self._earnings_history = earnings_history
+        # Optional fill-markout tracker. When wired, the runner detects
+        # fills via cycle-over-cycle position deltas and feeds the
+        # tracker, which schedules +1m / +5m mid-fetches and aggregates
+        # adverse-selection stats per ticker.
+        self._markout = markout
 
         self._running = False
         self._cycle_id = 0
@@ -241,11 +253,40 @@ class LIPRunner:
         # Refresh position cache once per cycle. One API call regardless
         # of strike count. Failures here don't block the cycle — gates
         # that read positions just see {} and won't veto.
+        prev_position_cache = dict(self._position_cache)
         try:
             positions = await self._exchange.list_positions()
             self._position_cache = {p.ticker: int(p.quantity) for p in positions}
         except Exception as exc:
             logger.info("position cache refresh failed: %s", exc)
+
+        # Detect fills via position-delta and feed the markout tracker.
+        # We use the last-cycle's broadcast mid as the fill price proxy
+        # — coarse but actionable. Best-effort; never blocks the cycle.
+        if self._markout is not None:
+            try:
+                last_obs = {ob["ticker"]: ob for ob in self._cycle_orderbooks}
+                # Note: _cycle_orderbooks gets reset later in this _cycle,
+                # so we capture from last cycle here. Iterate the union of
+                # tickers in prev and current caches to catch new positions
+                # appearing OR disappearing.
+                seen = set(prev_position_cache.keys()) | set(self._position_cache.keys())
+                for ticker in seen:
+                    prev_q = prev_position_cache.get(ticker, 0)
+                    cur_q = self._position_cache.get(ticker, 0)
+                    if prev_q == cur_q:
+                        continue
+                    ob = last_obs.get(ticker, {})
+                    bb = ob.get("best_bid_c")
+                    ba = ob.get("best_ask_c")
+                    mid_c: float | None = None
+                    if bb is not None and ba is not None and 0 < bb < ba < 100:
+                        mid_c = (bb + ba) / 2.0
+                    await self._markout.observe_position_delta(
+                        ticker, prev_q, cur_q, mid_c=mid_c,
+                    )
+            except Exception as exc:
+                logger.info("markout observe failed: %s", exc)
 
         # Round-robin: rotate the iteration starting point each cycle
         # so a per-cycle gate (MaxOrdersPerCycleGate) doesn't always
@@ -296,6 +337,18 @@ class LIPRunner:
                 self._accrue_earnings()
             except Exception as exc:
                 logger.info("earnings accrual failed: %s", exc)
+        # Persist a sample of the running tally to disk if a
+        # history tracker is wired. Internally rate-limited so it
+        # only writes once per minute (default).
+        if self._earnings_history is not None and self._earnings_accrual is not None:
+            try:
+                snap = self._earnings_accrual.snapshot()
+                self._earnings_history.record(
+                    total_dollars=snap.get("total_dollars", 0.0),
+                    elapsed_s=snap.get("elapsed_s", 0.0),
+                )
+            except Exception as exc:
+                logger.info("earnings history record failed: %s", exc)
 
         if self._broadcaster is not None and self._cycle_orderbooks:
             try:

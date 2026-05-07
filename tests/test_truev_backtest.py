@@ -11,6 +11,7 @@ import pytest
 from deploy.truev_backtest import (
     _compute_implied_sigma,
     _date_from_event_ticker,
+    _exact_actual_value_from_expiration,
     _implied_actual_value,
     _strike_threshold_from_market,
 )
@@ -129,6 +130,35 @@ def test_boundary_returns_none_on_messy_pattern() -> None:
         _mk("d", 1310.0, "no"),
     ]
     assert _implied_actual_value(markets) is None
+
+
+# ── Exact `expiration_value` extraction ──────────────────────────
+
+
+def test_exact_expiration_value_returns_first_market_value() -> None:
+    """All markets in an event share the same `expiration_value`. We
+    return the first parseable one — Kalshi's exact settle ref."""
+    markets = [
+        {"ticker": "a", "expiration_value": "1259.69", "result": "yes"},
+        {"ticker": "b", "expiration_value": "1259.69", "result": "yes"},
+    ]
+    assert _exact_actual_value_from_expiration(markets) == pytest.approx(1259.69)
+
+
+def test_exact_expiration_value_returns_none_when_missing() -> None:
+    markets = [
+        {"ticker": "a", "result": "yes"},
+        {"ticker": "b", "expiration_value": "", "result": "yes"},
+    ]
+    assert _exact_actual_value_from_expiration(markets) is None
+
+
+def test_exact_expiration_value_skips_unparseable() -> None:
+    markets = [
+        {"ticker": "a", "expiration_value": "n/a"},
+        {"ticker": "b", "expiration_value": "1212.28"},
+    ]
+    assert _exact_actual_value_from_expiration(markets) == pytest.approx(1212.28)
 
 
 # ── Implied σ from log returns ─────────────────────────────────

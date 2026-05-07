@@ -47,6 +47,9 @@
         ('knobs',  'Knobs',  (snapshot.knob_overrides | length) if snapshot and snapshot.knob_overrides else 0),
         ('locks',  'Locks',  (snapshot.side_locks | length) if snapshot and snapshot.side_locks else 0),
         ('manual', 'Manual', None),
+        ('pnl',    'PnL',    None),
+        ('earnings', '$/hr', None),
+        ('markout', 'Markout', None),
       ] %}
         <button data-tab="{{ key }}"
                 class="flex-1 px-2 py-2 text-[11px] uppercase tracking-wider relative drawer-tab"
@@ -82,6 +85,15 @@
       </div>
       <div data-tab-panel="manual" class="hidden">
         {% include "partials/tab_manual.html" %}
+      </div>
+      <div data-tab-panel="pnl" class="hidden">
+        {% include "partials/tab_pnl.html" %}
+      </div>
+      <div data-tab-panel="earnings" class="hidden">
+        {% include "partials/tab_earnings.html" %}
+      </div>
+      <div data-tab-panel="markout" class="hidden">
+        {% include "partials/tab_markout.html" %}
       </div>
     </div>
   </aside>
