@@ -1271,9 +1271,22 @@
     setInterval(tickCountdowns, 1000);
   }
 
+  // Attach htmx auth + 401 handlers BEFORE DOMContentLoaded fires.
+  // dashboard.js is loaded with defer, so this IIFE runs after HTML
+  // parsing but before DOMContentLoaded. htmx is loaded synchronously
+  // and registers its own DOMContentLoaded handler during parsing —
+  // which means htmx's initial scan (and any `hx-trigger="load"` panels
+  // it fires) runs BEFORE any DOMContentLoaded callback we register
+  // here. If we waited until DOMContentLoaded to attach the
+  // configRequest listener, those load-triggered requests would go out
+  // with no Authorization header, get a 401, and our responseError
+  // handler would clear the session and bounce the operator back to
+  // /login. Attaching now ensures the headers are stamped on the very
+  // first scan.
+  setupHtmxAuth();
+
   document.addEventListener("DOMContentLoaded", () => {
     console.log("[lipmm] dashboard.js loaded — knob-drafts+scroll-preserve build");
-    setupHtmxAuth();
     bindLoginForm();
     bindLogout();
     bindKillPanel();

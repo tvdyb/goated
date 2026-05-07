@@ -376,11 +376,35 @@ async def _amain(args: argparse.Namespace) -> int:
                 TruEVTheoProvider,
                 TruEvAnchor,
             )
-            if not args.truev_settlement_iso:
+            # Auto-detect Kalshi's close_time for this event so the
+            # operator doesn't have to know / type the exact timestamp.
+            # `close_time` is on every market; pick the first market's
+            # value (all strikes in an event share it).
+            settlement_iso = args.truev_settlement_iso
+            if not settlement_iso:
+                try:
+                    er = await client.get_event(ev, with_nested_markets=True)
+                    nested = (er.get("event") or {}).get("markets") or []
+                    sibling = er.get("markets") or []
+                    for m in nested + sibling:
+                        ct = m.get("close_time")
+                        if ct:
+                            settlement_iso = ct
+                            logger.info(
+                                "KXTRUEV %s: auto-detected close_time=%s",
+                                ev, settlement_iso,
+                            )
+                            break
+                except Exception as exc:
+                    logger.warning(
+                        "KXTRUEV %s: close_time auto-detect failed: %s",
+                        ev, exc,
+                    )
+            if not settlement_iso:
                 logger.error(
-                    "KXTRUEV detected but --truev-settlement-iso missing; "
-                    "falling back to StubTheoProvider. Pass e.g. "
-                    "--truev-settlement-iso 2026-05-07T23:59:00+00:00"
+                    "KXTRUEV %s: no close_time discovered and no "
+                    "--truev-settlement-iso passed; falling back to "
+                    "StubTheoProvider", ev,
                 )
                 theo_registry.register(StubTheoProvider(prefix))
                 continue
@@ -397,7 +421,7 @@ async def _amain(args: argparse.Namespace) -> int:
                     anchor_prices=dict(anchor.anchor_prices),
                 )
             cfg = TruEVConfig(
-                settlement_time_iso=args.truev_settlement_iso,
+                settlement_time_iso=settlement_iso,
                 weights=DEFAULT_WEIGHTS_Q4_2025,
                 anchor=anchor,
                 annualized_vol=args.truev_vol,
@@ -410,7 +434,7 @@ async def _amain(args: argparse.Namespace) -> int:
             logger.info(
                 "registered TruEVTheoProvider: prefix=%s settle=%s "
                 "σ=%.3f anchor_date=%s anchor_idx=%.4f",
-                prefix, args.truev_settlement_iso,
+                prefix, settlement_iso,
                 args.truev_vol, anchor.anchor_date, anchor.anchor_index_value,
             )
             continue
