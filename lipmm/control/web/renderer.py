@@ -21,6 +21,7 @@ from __future__ import annotations
 import collections
 import json
 import logging
+import time
 from collections import deque
 from typing import Any
 
@@ -237,6 +238,14 @@ def join_strike_data(
             "lip": ticker_lip,
             "lip_score": lip_score,
             "lip_period_duration_s": period_duration_s,
+            # `lip_time_remaining_s` = seconds from NOW until the LIP
+            # period ends. Lets templates compute "if we hold our
+            # current pool share until period end, how much more do
+            # we earn?" via StrikeScore.projected_remaining_dollars.
+            "lip_time_remaining_s": max(
+                0.0,
+                float((ticker_lip or {}).get("end_date_ts") or 0) - time.time(),
+            ) if ticker_lip else 0.0,
             "side_lock_bid": locks.get((ticker, "bid")),
             "side_lock_ask": locks.get((ticker, "ask")),
             "has_subcent_ticks": bool(ob.get("has_subcent_ticks", False)),
@@ -249,6 +258,9 @@ def join_strike_data(
             ).get(_event_ticker_of(ticker), {}),
             "strike_knob_overrides": (
                 state_snapshot.get("strike_knob_overrides") or {}
+            ).get(ticker, {}),
+            "strike_side_knob_overrides": (
+                state_snapshot.get("strike_side_knob_overrides") or {}
             ).get(ticker, {}),
         })
     return out
@@ -311,6 +323,13 @@ def _stats_for_strikes(
     daily = 0.0
     per_minute = 0.0
     projected_period = 0.0
+    projected_remaining = 0.0
+    # Average pool-share ONLY over strikes where we have a working
+    # bid or ask. Strikes we're not quoting on don't dilute the
+    # number — operator wants to know "of the strikes I'm actually
+    # playing, how big a slice of the pool do I own on average."
+    quoting_pool_shares: list[float] = []
+    now_ts = time.time()
     for s in strikes:
         ls = s.get("lip_score")
         lip = s.get("lip") or {}
@@ -326,6 +345,14 @@ def _stats_for_strikes(
         per_minute += full * 60.0 / period_s
         hourly += full * 3600.0 / period_s
         daily += full * 86400.0 / period_s
+        # Projected remaining: same share × reward × (remaining/period).
+        remaining_s = max(0.0, float(lip.get("end_date_ts") or 0) - now_ts)
+        if remaining_s > 0:
+            projected_remaining += full * min(1.0, remaining_s / period_s)
+        # Only count strikes where we have at least one resting order
+        # in the "quoting" pool share average.
+        if s.get("resting"):
+            quoting_pool_shares.append(share)
     return {
         "event_ticker": event_ticker,
         "strike_count": len(strikes),
@@ -336,6 +363,12 @@ def _stats_for_strikes(
         "lip_rate_hourly": hourly,
         "lip_rate_daily": daily,
         "lip_projected_period": projected_period,
+        "lip_projected_remaining": projected_remaining,
+        "lip_avg_pool_share_quoting": (
+            sum(quoting_pool_shares) / len(quoting_pool_shares)
+            if quoting_pool_shares else 0.0
+        ),
+        "lip_quoting_strike_count": len(quoting_pool_shares),
         "collateral_dollars": collateral_dollars,
     }
 
@@ -356,6 +389,9 @@ def event_meta_from_strikes(
             "strike_count": 0,
             "quoting_count": 0,
             "lip_total_dollars": 0.0,
+            "lip_projected_remaining": 0.0,
+            "lip_avg_pool_share_quoting": 0.0,
+            "lip_quoting_strike_count": 0,
             "collateral_dollars": 0.0,
         }
     event_ticker = _event_ticker_of(strikes[0]["ticker"])

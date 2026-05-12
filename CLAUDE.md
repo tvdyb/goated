@@ -130,7 +130,7 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
   command deploy entry point (9), full dashboard redesign +
   per-strike grid + operator drawer (10), runner ticker bug + per-
   strike LIP scoring per the **CFTC-filed Appendix A formula** (11).
-- **1552 tests passing repo-wide; ~430 lipmm-core.**
+- **~1730 tests passing repo-wide; lipmm-core continues to grow.**
 - **Soy bot paused.** The new entry point `deploy/lipmm_run.py`
   replaces `deploy/lip_mode.py` etc.
 - **Dashboard surface available**: kill/arm flow, pause global/ticker/side,
@@ -269,12 +269,99 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
   - `MidDeltaGate` (`lipmm/risk/gates/mid_delta.py`): tracks last
     seen mid per ticker; vetoes both sides if delta ≥
     `mid_delta_threshold_c` (cents). Self-clears next cycle.
-- **Layered knob overrides.** Per-strike > per-event > global > config
-  default. Operator sets via the strike row's expanded drawer (form
-  `data-form="strike-knob-set"` with a "set strike" / "set event"
-  button). `ControlState.effective_knobs_for(ticker)` does the merge;
-  the runner passes the merged dict as `control_overrides` to both
-  the strategy and the risk gates.
+- **Layered knob overrides — including per-side.** Precedence:
+  strike-side ("bid" or "ask") > strike (both) > event > global >
+  config default. Operator sets via the strike row's expanded drawer
+  (form `data-form="strike-knob-set"` with a side selector
+  `both / bid (yes) / ask (no)`). `ControlState.effective_knobs_for(
+  ticker, side=...)` does the merge; the runner builds separate
+  `bid_overrides` / `ask_overrides` dicts and passes them to
+  `strategy.quote(...)` so the bid and ask sides see independent
+  configs (different `theo_tolerance_c`, `dollars_per_side`, etc.).
+  Risk gates still see the both-side merged dict.
+- **`theo_tolerance_c` accepts negative values.** Bound widened to
+  `[-50, 50]`. Negative tolerance REPELS the bot away from theo
+  (cap = `theo − 1 + tol`; with `tol = −3`, cap = `theo − 4`). Use
+  case: when you don't trust theo and don't want to fill near it.
+- **`max_distance_from_extremes_c` bound widened to `[0, 99]`.** Was
+  `[0, 50]`; bumped so operators can use it for one-sided LIP
+  farming on deep-ITM/OTM strikes (e.g. cap bid at 80¢ on a deeply
+  ITM strike to track close to LIP reference without crossing into
+  uncertain mid-zone exposure).
+
+### TruEV theo provider — KXTRUEV-* daily binaries
+
+- **Status**: live and calibrated. Provider is
+  `lipmm/theo/providers/truev.py`; basket math in `_truev_index.py`;
+  forward source in `feeds/truflation/forward.py`.
+- **Methodology recap (per Truflation v1.42)**: index is a Laspeyres
+  basket of six battery metals — Cu, Li, Ni, Co, Pa, Pt — with
+  per-vehicle metal intensities × EV-type production share as the
+  weights. Quarterly rebalance Jan/Apr/Jul/Oct 1. **Last rebalance:
+  2025-12-31** (effective Q1 2026), set the production-share mix to:
+  HEV 53.99%, BEV 27.97%, PHEV 18.01%, FCEV 0.03%. **No rebalance
+  has occurred since.**
+- **Component sources Truflation actually uses (per their public
+  page)**:
+    - Cu: NYMEX/COMEX futures
+    - Pt, Pa: NYMEX futures
+    - Co: LME spot
+    - Ni: MCX (India) futures
+    - Li: Shanghai Stock Exchange futures
+- **Component sources WE use (live)** — proxies for the real ones
+  since not all are accessible to retail / yfinance:
+    - `HG=F`     copper (yfinance Comex) — same exchange as Truflation ✓
+    - `PA=F`     palladium (yfinance NYMEX) — same ✓
+    - `PL=F`     platinum (yfinance NYMEX) — same ✓
+    - `COBALT_TE` cobalt (TradingEconomics scrape of LME spot) — close ✓
+    - `NICK.L`   WisdomTree Nickel ETC (LSE, GBp-denominated) — basis
+                 risk vs Truflation's MCX nickel; FX contamination too
+    - `LITHIUM_TE` TE scrape of China lithium carbonate spot
+                   (CNY/T) — basis risk vs Shanghai SE lithium futures.
+                   Replaced earlier `LIT` (Global X Lithium ETF) which
+                   was an equity proxy with ~0.6 beta to Russell 2000.
+- **Weights**: `DEFAULT_WEIGHTS_LIVE` aliases `DEFAULT_WEIGHTS_Q1_2026`
+  in `_truev_index.py`. Q1 2026 weights were **fitted via NNLS
+  regression** against the operator-supplied `indexAndBasket.csv`
+  (118 days of actuals + all 6 components, Jan 1 → Apr 28, 2026):
+    - Cu  57.2%   (was 38.7% in stale Q4 hardcode)
+    - Ni  21.9%   (was 12.3%)
+    - Co   7.7%   (was  8.2%)
+    - Pa   7.5%   (was  6.1%)
+    - Li   4.9%   (was 33.5% — collapsed because HEV-heavy mix uses
+                 NiMH, not Li-ion)
+    - Pt   0.8%   (was  1.2%)
+  In-sample fit RMSE = 4.46 pts (0.37%). Walk-forward (daily
+  re-anchor, mirrors live bot) RMSE = 5.12 pts (0.43%). The old Q4
+  weights had walk-forward RMSE = 8.70 pts (0.73%); proper Q1
+  weights are a 41% improvement.
+- **Calibration & overfit honesty**:
+    - Bias ≈ 0.13 pts (essentially unbiased).
+    - **Pa-Pt collinearity = 0.92** in component-price returns over
+      the period → NNLS can't reliably split their 8.3% combined
+      weight. Pt's bootstrap CoV is 87% — could really be 0% or 4%.
+      Doesn't bite in practice because Pa and Pt move together.
+    - Cu and Ni weights are bootstrap-stable (CoV 2.6% and 7.9%).
+    - Sample size 19.7 obs/param — comfortable but more would help.
+- **σ_annual = 15.0%** — calibrated from log returns of the actual
+  index over the full backtest period. Wire via `--truev-vol 0.15`.
+- **Anchor discipline**: `DEFAULT_ANCHOR_PLACEHOLDER` in
+  `_truev_index.py` MUST be (date, published_value, same-day component
+  closes). Re-anchor each morning via `deploy/truev_reanchor.py` (now
+  TE-aware: pulls TE lithium + cobalt spots in addition to yfinance
+  closes for Cu/Ni/Pa/Pt). **Latent staleness pattern to watch**:
+  TE-only commodities (Li, Co) have no historicals, so anchoring uses
+  current spot as a proxy for yesterday's close. If TE has drifted
+  between truflation's EOD print and your anchor refresh, the
+  day-over-day signal for that metal gets zeroed. Mitigation: anchor
+  as close to the EOD print as possible.
+- **Backtest harnesses**:
+    - `deploy/truev_backtest_csv.py` — walk-forward backtest against
+      the operator's CSV. Computes realized σ, RMSE, worst days.
+    - `deploy/truev_fit_weights.py` — NNLS weight-fitter (the script
+      that produced the current `_Q1_2026_FITTED_RAW`).
+    - `deploy/truev_reanchor.py` — daily anchor refresh ritual.
+    - `deploy/truev_smoke.py` — quick sanity check vs Kalshi book.
 - See `prompts/theo/README.md` for legacy soy theo stack status.
 
 ## Main loop (lipmm cycle, default 3s)
@@ -441,13 +528,22 @@ with a `·off` flag for orders below the qualifying threshold.
 | `lipmm/quoting/strategies/default.py` | DefaultLIPQuoting (active-penny / active-follow / desert / deep-itm/otm) |
 | `lipmm/observability/retention.py` | RetentionManager (2 GiB cap, gzip) |
 | `lipmm/execution/adapters/kalshi.py` | KalshiExchangeAdapter |
+| `lipmm/theo/providers/truev.py` | TruEVTheoProvider — KXTRUEV daily binaries |
+| `lipmm/theo/providers/_truev_index.py` | Basket math + Q1 2026 fitted weights + anchor placeholder |
+| `feeds/truflation/forward.py` | TruEvForwardSource — yfinance + TE polling |
+| `feeds/tradingeconomics/spot.py` | TE scraper (cobalt + lithium spot) |
+| `deploy/truev_backtest_csv.py` | CSV-driven walk-forward backtest |
+| `deploy/truev_fit_weights.py` | NNLS weight fitter |
+| `deploy/truev_reanchor.py` | Daily anchor refresh ritual |
 | `prompts/build/PREMISE.md` | Canonical F4 strategic premise |
 | `state/PROJECT_CONTEXT.md` | Soy-era state file |
 
 ## Module status
 
 **lipmm framework (current, tested, deployable):**
-- `lipmm/theo/` — TheoProvider Protocol + GBMCommodityProvider (soy only)
+- `lipmm/theo/` — TheoProvider Protocol + GBMCommodityProvider (soy)
+  + TruEVTheoProvider (KXTRUEV daily binaries, NNLS-fitted Q1 2026
+  weights, ~5 pt RMSE)
 - `lipmm/quoting/` — DefaultLIPQuoting (with active-penny branch at high theo confidence), StickyDefenseQuoting
 - `lipmm/execution/` — OrderManager + ExchangeClient Protocol + KalshiExchangeAdapter
 - `lipmm/risk/` — MaxNotionalPerSideGate, MaxOrdersPerCycleGate, EndgameGuardrailGate

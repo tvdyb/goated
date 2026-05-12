@@ -178,14 +178,35 @@
           <div class="text-[9px]" style="color: var(--ink-dim);">manual</div>
         {% endif %}
       {% elif s.provider_theo and s.provider_theo.confidence and s.provider_theo.confidence > 0 %}
-        <div class="font-mono text-[12px] font-semibold tabular-nums"
-             style="color: var(--info);"
-             title="theo from {{ s.provider_theo.source }} (conf={{ '%.2f'|format(s.provider_theo.confidence) }})">
-          {{ '%g' | format(s.provider_theo.yes_cents) }}¢
-        </div>
-        <div class="text-[9px]" style="color: var(--ink-dim);">
-          {{ s.provider_theo.source[:10] if s.provider_theo.source else 'auto' }}
-        </div>
+        {# When RMSE inflation is active and the raw differs from the
+           adjusted, show both: raw in dim teal (what the lognormal
+           pricer would say without inflation), adjusted in normal cyan
+           (what the bot actually trades on). Helps the operator see
+           the haircut magnitude at a glance — especially the boundary
+           distortion on deep-OTM/ITM strikes. #}
+        {% set adj = s.provider_theo.yes_cents %}
+        {% set raw = s.provider_theo.yes_cents_raw %}
+        {% set rmse = s.provider_theo.model_rmse_pts %}
+        {% if raw is not none and rmse and rmse > 0 and (adj - raw)|abs > 0.5 %}
+          <div class="font-mono text-[10px] tabular-nums" style="color: #5da8c7;"
+               title="Raw model probability (RMSE inflation off). The {{ '%.0f'|format(rmse) }}-pt inflation is widening this to {{ '%g'|format(adj) }}¢ — watch for boundary distortion on deep ITM/OTM strikes.">
+            raw {{ '%g' | format(raw) }}¢
+          </div>
+          <div class="font-mono text-[12px] font-semibold tabular-nums"
+               style="color: var(--info);"
+               title="RMSE-adjusted theo (what the strategy trades on). conf={{ '%.2f'|format(s.provider_theo.confidence) }}">
+            {{ '%g' | format(adj) }}¢
+          </div>
+        {% else %}
+          <div class="font-mono text-[12px] font-semibold tabular-nums"
+               style="color: var(--info);"
+               title="theo from {{ s.provider_theo.source }} (conf={{ '%.2f'|format(s.provider_theo.confidence) }})">
+            {{ '%g' | format(adj) }}¢
+          </div>
+          <div class="text-[9px]" style="color: var(--ink-dim);">
+            {{ s.provider_theo.source[:10] if s.provider_theo.source else 'auto' }}
+          </div>
+        {% endif %}
       {% else %}
         <div class="text-[12px]" style="color: var(--ink-dim);">—</div>
         <div class="text-[9px]" style="color: var(--ink-dim);"
@@ -378,6 +399,22 @@
                     ${{ "%.2f"|format(s.lip_score.projected_reward_dollars(s.lip.period_reward_dollars or 0)) }}
                   </span>
                 </div>
+                {# Forward-looking "if we hold our current pool share
+                   from NOW until period end, how much do we earn".
+                   More actionable than the full-period total because
+                   the period-start portion is already past — that
+                   money is settled either way. #}
+                {% if s.lip_period_duration_s and s.lip_period_duration_s > 0 and s.lip_time_remaining_s and s.lip_time_remaining_s > 0 %}
+                  <div class="flex items-center justify-between">
+                    <span style="color: var(--ink-lo);"
+                          title="If our current pool share holds from now until period end, this is the expected payout for the remaining window only.">
+                      projected (remaining)
+                    </span>
+                    <span style="color: var(--lip);">
+                      ${{ "%.2f"|format(s.lip_score.projected_remaining_dollars(s.lip.period_reward_dollars or 0, s.lip_period_duration_s, s.lip_time_remaining_s)) }}
+                    </span>
+                  </div>
+                {% endif %}
                 {% if s.lip_period_duration_s and s.lip_period_duration_s > 0 %}
                   <div class="flex items-center justify-between">
                     <span style="color: var(--ink-lo);">per hour</span>
@@ -601,11 +638,34 @@
                            font-family: 'JetBrains Mono', ui-monospace;">
                 {{ kn }}={{ '%.2f'|format(val) }}
                 <button data-call="/control/clear_strike_knob"
-                        data-payload='{"ticker":"{{ s.ticker }}","name":"{{ kn }}"}'
+                        data-payload='{"ticker":"{{ s.ticker }}","name":"{{ kn }}","side":"both"}'
                         data-confirm="Clear strike-level {{ kn }} on {{ s.ticker }}? Reverts to event/global/default."
                         class="text-[10px] hover:brightness-150"
                         style="color: var(--no);">×</button>
               </span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {# Per-side strike overrides — distinct color so the operator
+           can tell at a glance that bid/ask is asymmetric here. #}
+        {% if s.strike_side_knob_overrides %}
+          <div class="flex flex-wrap gap-1.5 mb-1.5">
+            {% for side, kvs in s.strike_side_knob_overrides.items() %}
+              {% for kn, val in kvs.items() %}
+                <span class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]"
+                      style="background: {% if side == 'bid' %}#0d2317{% else %}#2a0d12{% endif %};
+                             color: {% if side == 'bid' %}var(--yes){% else %}var(--no){% endif %};
+                             border-color: {% if side == 'bid' %}#1f4427{% else %}#522028{% endif %};
+                             font-family: 'JetBrains Mono', ui-monospace;"
+                      title="Per-side override on the {{ side }} side only — layered above the both-side override.">
+                  {{ side }}:{{ kn }}={{ '%.2f'|format(val) }}
+                  <button data-call="/control/clear_strike_knob"
+                          data-payload='{"ticker":"{{ s.ticker }}","name":"{{ kn }}","side":"{{ side }}"}'
+                          data-confirm="Clear {{ side }}-side {{ kn }} on {{ s.ticker }}? The both-side override (if any) stays."
+                          class="text-[10px] hover:brightness-150"
+                          style="color: var(--ink-mid);">×</button>
+                </span>
+              {% endfor %}
             {% endfor %}
           </div>
         {% endif %}
@@ -653,6 +713,18 @@
                  class="bg-transparent outline-none text-[11px] rounded border px-1.5 py-0.5 w-24"
                  style="background: var(--surface); color: var(--ink-hi); border-color: var(--border);
                         font-family: 'JetBrains Mono', ui-monospace;">
+          {# Side selector — defaults to "both". Bid = YES side
+             commitment (we buy yes); Ask = NO side commitment (we sell
+             yes / take no). Per-side overrides layer on top of the
+             "both" override for the same knob. #}
+          <select name="side"
+                  class="bg-transparent outline-none text-[11px] rounded border px-1.5 py-0.5"
+                  style="background: var(--surface); color: var(--ink-hi); border-color: var(--border);"
+                  title="which side this knob applies to">
+            <option value="both">both</option>
+            <option value="bid">bid (yes)</option>
+            <option value="ask">ask (no)</option>
+          </select>
           <button type="submit"
                   class="text-[11px] px-2 py-0.5 rounded border"
                   style="background: #0e2238; color: var(--info); border-color: #28486e;">

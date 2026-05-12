@@ -135,10 +135,18 @@ class EventKnobClearRequest(BaseModel):
 
 class StrikeKnobUpdateRequest(BaseModel):
     """POST /control/set_strike_knob — per-strike knob override.
-    Highest precedence — wins over global and per-event."""
+    Highest precedence — wins over global and per-event.
+
+    `side`: "both" (default) applies the override to both bid and ask
+    sides simultaneously. "bid" or "ask" applies only to that side,
+    layered ON TOP of any "both" override. Operator can dial in
+    asymmetric behavior (e.g. tighter `theo_tolerance_c` on the side
+    they're more skittish about) without disturbing the other side.
+    """
     ticker: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=64)
     value: float
+    side: Literal["both", "bid", "ask"] = "both"
     request_id: str = Field(min_length=8, max_length=128)
     if_version: int | None = Field(default=None, ge=0)
 
@@ -146,6 +154,7 @@ class StrikeKnobUpdateRequest(BaseModel):
 class StrikeKnobClearRequest(BaseModel):
     ticker: str = Field(min_length=1, max_length=128)
     name: str | None = Field(default=None, max_length=64)
+    side: Literal["both", "bid", "ask"] = "both"
     request_id: str = Field(min_length=8, max_length=128)
     if_version: int | None = Field(default=None, ge=0)
 

@@ -30,6 +30,7 @@ import yfinance as yf
 
 from feeds.tradingeconomics.spot import (
     TE_COBALT,
+    TE_LITHIUM,
     get_te_spot,
 )
 
@@ -40,24 +41,31 @@ logger = logging.getLogger(__name__)
 #
 # yfinance-clean tickers:
 #   HG=F     Copper (Comex)
-#   LIT      Global X Lithium & Battery Tech ETF — proxy (CME LTH=F is
-#            too illiquid for daily backtest).
 #   NICK.L   WisdomTree Nickel ETC (LSE) — direct nickel exposure that
 #            tracks LME 3-month nickel.
 #   PA=F     Palladium (NYMEX)
 #   PL=F     Platinum (NYMEX)
+#   LIT      Global X Lithium ETF — equity proxy. RETAINED FOR BACKTEST
+#            ONLY because it has yfinance daily history. Live theo
+#            uses LITHIUM_TE (TE scrape of China lithium carbonate
+#            spot) — much cleaner mapping to actual lithium prices,
+#            no equity-market beta contamination.
 #
-# TradingEconomics scrape sentinel:
-#   COBALT_TE  Cobalt LME — TE has spot only (no historicals); LIVE
-#              theo only. Backtest leaves cobalt unmodeled and
-#              renormalizes the other 5 weights to 1.0.
+# TradingEconomics scrape sentinels:
+#   COBALT_TE   Cobalt LME — TE spot only; live theo only. Backtest
+#               leaves cobalt unmodeled and renormalizes weights.
+#   LITHIUM_TE  China lithium carbonate spot (CNY/T) via TE — live
+#               theo only. Backtest still uses LIT proxy to keep the
+#               historical-coverage assumptions intact.
 COBALT_TE = "COBALT_TE"
+LITHIUM_TE = "LITHIUM_TE"
 
 TRUEV_PHASE1_SYMBOLS: tuple[str, ...] = (
-    "HG=F", "LIT", "NICK.L", "PA=F", "PL=F", COBALT_TE,
+    "HG=F", LITHIUM_TE, "NICK.L", "PA=F", "PL=F", COBALT_TE,
 )
 
-# Subset that yfinance can serve (used by backtest helpers)
+# Subset that yfinance can serve (used by backtest helpers — keeps the
+# LIT equity proxy because it has dense daily history that TE doesn't)
 TRUEV_YFINANCE_SYMBOLS: tuple[str, ...] = (
     "HG=F", "LIT", "NICK.L", "PA=F", "PL=F",
 )
@@ -78,10 +86,15 @@ class TruEvForwardSource:
     DEFAULT_SANITY_BOUNDS: dict[str, tuple[float, float]] = {
         "HG=F": (1.0, 15.0),       # Copper $/lb
         "LIT": (10.0, 200.0),      # Global X Lithium ETF $/share
-        "NICK.L": (1.0, 100.0),    # WisdomTree Nickel ETC $/share
+        # NICK.L is converted from GBp/share to USD/share via GBPUSD=X
+        # before being cached. Pre-conversion range was [1, 100] GBp;
+        # post-conversion is roughly [0.01, 1.5] USD per share. Bounds
+        # set generously to absorb both nickel and FX swings.
+        "NICK.L": (0.01, 5.0),     # WisdomTree Nickel ETC USD/share (FX-stripped)
         "PA=F": (200.0, 5000.0),   # Palladium $/oz
         "PL=F": (200.0, 5000.0),   # Platinum $/oz
-        COBALT_TE: (10_000.0, 200_000.0),  # Cobalt $/tonne via TE
+        COBALT_TE: (10_000.0, 200_000.0),     # Cobalt $/tonne via TE
+        LITHIUM_TE: (10_000.0, 1_000_000.0),  # Lithium CNY/tonne via TE
     }
 
     def __init__(
@@ -175,16 +188,35 @@ class TruEvForwardSource:
     def _fetch_sync(self) -> dict[str, float]:
         """Synchronous fetch for all symbols. Routes per source:
         yfinance for normal tickers, TE scrape for sentinel symbols.
+
+        NICK.L (LSE WisdomTree Nickel ETC) is GBp-denominated. We
+        convert to USD per share via GBPUSD=X, also from yfinance:
+
+            NICK.L_USD = NICK.L_GBp × GBPUSD / 100
+
+        This strips one layer of basis vs Truflation's MCX-INR nickel
+        (the GBP/USD layer). The remaining basis (LME-vs-MCX, plus
+        ETC tracking error vs futures) is unfixable without a different
+        data source. If GBPUSD fetch fails, NICK.L is dropped from the
+        cache (forward_freshness drops, strategy degrades gracefully)
+        rather than feeding a uncorrected value into the basket.
         """
         out: dict[str, float] = {}
-        yf_syms = [s for s in self._symbols if s != COBALT_TE]
-        if yf_syms:
+        te_sentinels = {COBALT_TE, LITHIUM_TE}
+        yf_syms = [s for s in self._symbols if s not in te_sentinels]
+        # Always fetch GBPUSD too if NICK.L is in the basket.
+        needs_fx = "NICK.L" in self._symbols
+        fx_sym = "GBPUSD=X"
+        all_yf = list(yf_syms) + ([fx_sym] if needs_fx else [])
+        gbpusd: float | None = None
+        if all_yf:
             try:
-                handle = yf.Tickers(" ".join(yf_syms))
+                handle = yf.Tickers(" ".join(all_yf))
             except Exception as exc:
                 logger.warning("yf.Tickers init failed: %s", exc)
                 handle = None
-            for sym in yf_syms:
+            raw: dict[str, float] = {}
+            for sym in all_yf:
                 try:
                     tk = handle.tickers.get(sym) if handle is not None else None
                     if tk is None:
@@ -197,13 +229,34 @@ class TruEvForwardSource:
                     if close <= 0:
                         logger.info("yfinance: %s close %.4f ≤ 0", sym, close)
                         continue
-                    out[sym] = close
+                    raw[sym] = close
                 except Exception as exc:
                     logger.warning("yfinance fetch failed for %s: %s", sym, exc)
+            if needs_fx:
+                gbpusd = raw.get(fx_sym)
+            for sym in yf_syms:
+                if sym not in raw:
+                    continue
+                if sym == "NICK.L":
+                    if gbpusd is None or gbpusd <= 0:
+                        logger.warning(
+                            "NICK.L: GBPUSD fetch failed; dropping nickel "
+                            "this poll rather than feeding GBp value into a "
+                            "USD-anchored basket",
+                        )
+                        continue
+                    # GBp → GBP → USD. /100 = pence-to-pound conversion.
+                    out[sym] = raw[sym] * gbpusd / 100.0
+                else:
+                    out[sym] = raw[sym]
 
         # TE scrapes (synchronous httpx). One commodity per sentinel.
         if COBALT_TE in self._symbols:
             price = get_te_spot(TE_COBALT)
             if price is not None and price > 0:
                 out[COBALT_TE] = price
+        if LITHIUM_TE in self._symbols:
+            price = get_te_spot(TE_LITHIUM)
+            if price is not None and price > 0:
+                out[LITHIUM_TE] = price
         return out

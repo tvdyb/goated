@@ -139,6 +139,27 @@ class StrikeScore:
         "rate × period" headline number)."""
         return self.pool_share * float(period_reward_dollars or 0)
 
+    def projected_remaining_dollars(
+        self, period_reward_dollars: float,
+        period_duration_s: float, time_remaining_s: float,
+    ) -> float:
+        """Forward-looking projection: 'if we hold our current pool
+        share for the remainder of the period, how much do we earn
+        from now to period end?' Treats the period as having paid out
+        proportionally up to now and our rate as constant going forward.
+
+        period_duration_s = full period length (period_end - period_start)
+        time_remaining_s  = period_end - now (clamped to 0)
+
+        Returns 0 when either input is non-positive or invalid.
+        """
+        if period_duration_s is None or period_duration_s <= 0:
+            return 0.0
+        if time_remaining_s is None or time_remaining_s <= 0:
+            return 0.0
+        full = self.pool_share * float(period_reward_dollars or 0)
+        return full * min(1.0, time_remaining_s / period_duration_s)
+
     def hourly_reward_dollars(
         self, period_reward_dollars: float, period_duration_s: float,
     ) -> float:

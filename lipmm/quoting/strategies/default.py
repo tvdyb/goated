@@ -119,6 +119,8 @@ class DefaultLIPQuoting:
         now_ts: float,
         time_to_settle_s: float,
         control_overrides: dict | None = None,
+        bid_overrides: dict | None = None,
+        ask_overrides: dict | None = None,
     ) -> QuotingDecision:
         # Build an effective config for this call from base + control overrides.
         # Overrides documented for this strategy:
@@ -126,7 +128,17 @@ class DefaultLIPQuoting:
         #   "theo_tolerance_c"    → DefaultLIPQuotingConfig.theo_tolerance_c
         #   "max_distance_from_best" → DefaultLIPQuotingConfig.max_distance_from_best
         #   "dollars_per_side"    → DefaultLIPQuotingConfig.dollars_per_side
+        #
+        # Per-side overrides: when `bid_overrides` / `ask_overrides` are
+        # passed, each side gets its own effective config. Used to
+        # support operator-set asymmetric knobs (different
+        # `theo_tolerance_c` on bid vs ask, etc). Falls back to the
+        # both-side `control_overrides` dict when per-side dicts aren't
+        # provided. The confidence-gate / crossed-book pre-checks use
+        # the both-side config since they're inherently symmetric.
         cfg = self._effective_cfg(control_overrides)
+        bid_cfg = self._effective_cfg(bid_overrides) if bid_overrides is not None else cfg
+        ask_cfg = self._effective_cfg(ask_overrides) if ask_overrides is not None else cfg
         # Use cfg locally instead of self._cfg so per-call helpers see overrides.
         # Helpers (_compute_bid, _compute_ask, _size_for_quote) read self._cfg
         # directly; we temporarily swap it for the duration of this call to
@@ -167,7 +179,10 @@ class DefaultLIPQuoting:
                 )
 
             fair = theo.yes_cents
+            # Compute each side under its own cfg by swapping in/out.
+            self._cfg = bid_cfg
             bid_decision = self._compute_bid(fair, orderbook, theo.confidence)
+            self._cfg = ask_cfg
             ask_decision = self._compute_ask(fair, orderbook, theo.confidence)
 
             # No-cross guard in t1c so sub-cent quotes pull back by one
@@ -177,6 +192,7 @@ class DefaultLIPQuoting:
                     and bid_decision.effective_t1c() >= best_ask_t1c):
                 tick = _tick_at(orderbook.tick_schedule, best_ask_t1c)
                 pulled_t1c = max(1, best_ask_t1c - tick)
+                self._cfg = bid_cfg
                 bid_decision = SideDecision(
                     price=max(1, (pulled_t1c + 5) // 10),
                     price_t1c=pulled_t1c,
@@ -189,6 +205,7 @@ class DefaultLIPQuoting:
                     and ask_decision.effective_t1c() <= best_bid_t1c):
                 tick = _tick_at(orderbook.tick_schedule, best_bid_t1c)
                 pulled_t1c = min(989, best_bid_t1c + tick)
+                self._cfg = ask_cfg
                 ask_decision = SideDecision(
                     price=min(99, (pulled_t1c + 5) // 10),
                     price_t1c=pulled_t1c,

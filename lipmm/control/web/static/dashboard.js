@@ -262,19 +262,33 @@
   }
 
   // Preserve scroll position across OOB swaps. The strike grid swaps
-  // every ~3s and a few sections grow/shrink, which makes the browser
-  // jump (sometimes to the bottom) — losing the operator's place.
-  // Capture window.scrollY before the swap, restore after.
+  // every ~3s and a few sections grow/shrink, which would otherwise
+  // jerk the operator around the page.
+  //
+  // **Important**: the dashboard's scrollable region is the `#ws-mount`
+  // <main> element (it has `overflow-auto` and `flex-1` inside an
+  // `h-screen` column). The window itself never scrolls — body height
+  // matches viewport. Earlier versions read window.scrollY / called
+  // window.scrollTo, which silently no-op'd, leaving the operator's
+  // place unpreserved across every swap. Fixed by tracking the
+  // container's scrollTop directly.
   let _scrollY = null;
+  function _scrollContainer() {
+    return document.getElementById("ws-mount");
+  }
   function captureScroll() {
-    _scrollY = window.scrollY;
+    const c = _scrollContainer();
+    if (c) _scrollY = c.scrollTop;
   }
   function restoreScroll() {
     if (_scrollY !== null) {
       // requestAnimationFrame so the swap's layout has settled before
       // we scroll — otherwise the restore can read a transient height.
       const y = _scrollY;
-      requestAnimationFrame(() => window.scrollTo(0, y));
+      requestAnimationFrame(() => {
+        const c = _scrollContainer();
+        if (c) c.scrollTop = y;
+      });
       _scrollY = null;
     }
   }
@@ -967,11 +981,15 @@
         const ticker = (fd.get("ticker") || form.dataset.ticker || "").trim();
         const name = (fd.get("name") || "").trim();
         const value = parseFloat(fd.get("value"));
+        const side = (fd.get("side") || "both").trim();
         if (!ticker) return showToast("ticker required");
         if (!name) return showToast("knob name required");
         if (!Number.isFinite(value)) return showToast("value must be a number");
+        if (!["both", "bid", "ask"].includes(side)) {
+          return showToast("side must be both/bid/ask");
+        }
         await callJson("/control/set_strike_knob", {
-          ticker, name, value,
+          ticker, name, value, side,
         });
         // Clear the draft so the next OOB swap doesn't re-fill the form
         // with the value we just submitted.

@@ -387,7 +387,7 @@ async def _amain(args: argparse.Namespace) -> int:
             from feeds.truflation import TruEvForwardSource
             from lipmm.theo.providers import (
                 DEFAULT_ANCHOR_PLACEHOLDER,
-                DEFAULT_WEIGHTS_Q4_2025,
+                DEFAULT_WEIGHTS_LIVE,
                 TruEVConfig,
                 TruEVTheoProvider,
                 TruEvAnchor,
@@ -438,13 +438,13 @@ async def _amain(args: argparse.Namespace) -> int:
                 )
             cfg = TruEVConfig(
                 settlement_time_iso=settlement_iso,
-                weights=DEFAULT_WEIGHTS_Q4_2025,
+                weights=DEFAULT_WEIGHTS_LIVE,    # Q1 2026 NNLS-fitted
                 anchor=anchor,
                 annualized_vol=args.truev_vol,
                 max_confidence=args.truev_max_confidence,
             )
             forward_src = TruEvForwardSource(poll_interval_s=120.0)
-            prov = TruEVTheoProvider(cfg, forward_src)
+            prov = TruEVTheoProvider(cfg, forward_src, state_ref=state)
             theo_registry.register(prov)
             truev_providers.append(prov)
             logger.info(

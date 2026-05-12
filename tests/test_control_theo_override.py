@@ -329,7 +329,7 @@ async def test_runner_uses_theo_override_when_set(monkeypatch) -> None:
         async def warmup(self) -> None: pass
         async def shutdown(self) -> None: pass
         async def quote(self, *, ticker, theo, orderbook, our_state,
-                        now_ts, time_to_settle_s, control_overrides=None):
+                        now_ts, time_to_settle_s, control_overrides=None, bid_overrides=None, ask_overrides=None):
             captured_theo.append(theo)
             captured_by_ticker[ticker] = theo
             from lipmm.quoting import QuotingDecision, SideDecision
@@ -408,7 +408,7 @@ async def test_runner_track_mid_builds_theo_from_orderbook_mid() -> None:
         async def warmup(self) -> None: pass
         async def shutdown(self) -> None: pass
         async def quote(self, *, ticker, theo, orderbook, our_state,
-                        now_ts, time_to_settle_s, control_overrides=None):
+                        now_ts, time_to_settle_s, control_overrides=None, bid_overrides=None, ask_overrides=None):
             captured.append(theo)
             from lipmm.quoting import QuotingDecision, SideDecision
             return QuotingDecision(
@@ -491,7 +491,7 @@ async def test_runner_track_mid_skips_on_degenerate_book() -> None:
         async def warmup(self) -> None: pass
         async def shutdown(self) -> None: pass
         async def quote(self, *, ticker, theo, orderbook, our_state,
-                        now_ts, time_to_settle_s, control_overrides=None):
+                        now_ts, time_to_settle_s, control_overrides=None, bid_overrides=None, ask_overrides=None):
             captured.append(theo)
             from lipmm.quoting import QuotingDecision, SideDecision
             return QuotingDecision(
@@ -568,7 +568,7 @@ async def test_runner_track_mid_one_sided_book_falls_back_to_yes_cents() -> None
         async def warmup(self) -> None: pass
         async def shutdown(self) -> None: pass
         async def quote(self, *, ticker, theo, orderbook, our_state,
-                        now_ts, time_to_settle_s, control_overrides=None):
+                        now_ts, time_to_settle_s, control_overrides=None, bid_overrides=None, ask_overrides=None):
             captured.append(theo)
             from lipmm.quoting import QuotingDecision, SideDecision
             return QuotingDecision(

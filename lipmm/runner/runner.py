@@ -608,8 +608,19 @@ class LIPRunner:
         if theo is not None:
             src = theo.source or ""
             kind = "override" if src.startswith("manual-override") else "provider"
+            # Pull the raw (uninflated) probability from extras when the
+            # provider exposes it (TruEV does; others don't). The
+            # dashboard renders both side-by-side so the operator can
+            # see "what the lognormal pricer thinks" vs "what we'll
+            # actually quote" when the RMSE inflation is on.
+            extras = theo.extras or {}
+            raw_cents = extras.get("yes_cents_raw")
             theo_payload = {
                 "yes_cents": round(theo.yes_probability * 100, 2),
+                "yes_cents_raw": (
+                    round(float(raw_cents), 2) if raw_cents is not None else None
+                ),
+                "model_rmse_pts": extras.get("model_rmse_pts"),
                 "confidence": float(theo.confidence),
                 "source": src,
                 "source_kind": kind,
@@ -648,10 +659,20 @@ class LIPRunner:
         # under an event get the merged dict from
         # `effective_knobs_for(ticker)` so operator-pinned values for
         # one strike don't leak to its siblings.
-        control_overrides = (
-            self._control.control_overrides_for_strategy(ticker=ticker)
-            if self._control is not None else None
-        )
+        #
+        # Per-side overrides: when the operator has set a knob on the
+        # bid or ask specifically (e.g. tighter `theo_tolerance_c` on
+        # one side), the strategy receives separate dicts for each
+        # side. The strategy already invokes _compute_bid and
+        # _compute_ask independently, so honoring per-side overrides
+        # is just a matter of building two dicts instead of one.
+        control_overrides = None
+        bid_overrides = None
+        ask_overrides = None
+        if self._control is not None:
+            control_overrides = self._control.effective_knobs_for(ticker)
+            bid_overrides = self._control.effective_knobs_for(ticker, side="bid")
+            ask_overrides = self._control.effective_knobs_for(ticker, side="ask")
         decision: QuotingDecision = await self._strategy.quote(
             ticker=ticker,
             theo=theo,
@@ -660,6 +681,8 @@ class LIPRunner:
             now_ts=now_ts,
             time_to_settle_s=time_to_settle_s,
             control_overrides=control_overrides,
+            bid_overrides=bid_overrides,
+            ask_overrides=ask_overrides,
         )
 
         # 3a. Per-side pause AND per-side lock from control plane.

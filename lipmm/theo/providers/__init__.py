@@ -22,6 +22,8 @@ from lipmm.theo.providers._function import function_provider
 from lipmm.theo.providers._truev_index import (
     DEFAULT_ANCHOR_PLACEHOLDER,
     DEFAULT_WEIGHTS_BACKTEST,
+    DEFAULT_WEIGHTS_LIVE,
+    DEFAULT_WEIGHTS_Q1_2026,
     DEFAULT_WEIGHTS_Q4_2025,
     TruEvAnchor,
     TruEvWeights,
@@ -34,6 +36,8 @@ from lipmm.theo.providers.truev import TruEVConfig, TruEVTheoProvider
 __all__ = [
     "DEFAULT_ANCHOR_PLACEHOLDER",
     "DEFAULT_WEIGHTS_BACKTEST",
+    "DEFAULT_WEIGHTS_LIVE",
+    "DEFAULT_WEIGHTS_Q1_2026",
     "DEFAULT_WEIGHTS_Q4_2025",
     "FilePollTheoProvider",
     "HttpPollTheoProvider",

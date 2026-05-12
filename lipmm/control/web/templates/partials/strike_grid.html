@@ -41,6 +41,18 @@
               · ${{ "%.2f"|format(group.collateral_dollars) }} capital
             </span>
           {% endif %}
+          {% if group.lip_projected_remaining and group.lip_projected_remaining > 0 %}
+            <span style="color: var(--lip);"
+                  title="Projected earnings if we hold our current per-strike pool share from NOW until the LIP period ends. Forward-looking, not full-period total.">
+              · ${{ "%.2f"|format(group.lip_projected_remaining) }} proj-rem
+            </span>
+          {% endif %}
+          {% if group.lip_avg_pool_share_quoting and group.lip_avg_pool_share_quoting > 0 %}
+            <span style="color: var(--lip);"
+                  title="Average pool share across the {{ group.lip_quoting_strike_count }} strikes where we have a resting order. Excludes strikes we aren't quoting on — so it answers 'of the strikes I'm playing, how big a slice am I getting on average'.">
+              · {{ "%.2f"|format(group.lip_avg_pool_share_quoting * 100) }}% avg-share ({{ group.lip_quoting_strike_count }} strikes)
+            </span>
+          {% endif %}
           {% if group.lip_rate_hourly and group.lip_rate_hourly > 0 %}
             <span style="color: var(--lip);"
                   title="Live earning rate: pool_share × pool, time-normalized">

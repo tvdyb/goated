@@ -140,7 +140,7 @@ async def test_runner_aggregates_orderbooks_per_cycle_and_broadcasts() -> None:
         async def warmup(self): pass
         async def shutdown(self): pass
         async def quote(self, *, ticker, theo, orderbook, our_state,
-                        now_ts, time_to_settle_s, control_overrides=None):
+                        now_ts, time_to_settle_s, control_overrides=None, bid_overrides=None, ask_overrides=None):
             from lipmm.quoting import QuotingDecision, SideDecision
             return QuotingDecision(
                 bid=SideDecision(price=0, size=0, skip=True, reason="stub"),

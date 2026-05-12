@@ -54,10 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         anchor_date = _yesterday()
 
-    # Pull yfinance closes for the 5 yfinance components on anchor_date.
-    # We use a 5-day window starting 2 days before to handle weekends.
+    # Pull yfinance closes for the 4 yfinance-clean components on
+    # anchor_date. We use a 5-day window starting 2 days before to
+    # handle weekends. Lithium is fetched from TE-spot below (no longer
+    # uses LIT-the-equity-ETF for live theo) and cobalt is the same.
     import yfinance as yf
-    syms = ("HG=F", "LIT", "NICK.L", "PA=F", "PL=F")
+    syms = ("HG=F", "NICK.L", "PA=F", "PL=F")
     start = (anchor_date - timedelta(days=4)).isoformat()
     end = (anchor_date + timedelta(days=2)).isoformat()
     closes: dict[str, float] = {}
@@ -67,34 +69,61 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"  {sym}: yfinance fetch failed: {exc}")
             continue
-        # Find the most recent close on-or-before anchor_date
+        # Find the most recent close on-or-before anchor_date.
+        # IMPORTANT: this can fall back to a STALE close if anchor_date
+        # itself has no data (yfinance backfill lag). The fall-back is
+        # the same family of bug the lithium / cobalt TE-spot branches
+        # had — silent staleness zeroes the day's signal. Marker below
+        # surfaces it visually so the operator can spot it.
         best = None
         for idx, row in h.iterrows():
             d = idx.date()
+            close_val = float(row["Close"]) if row["Close"] == row["Close"] else None
+            if close_val is None or close_val <= 0:
+                continue   # skip NaN closes; backfill may take a day
             if d <= anchor_date:
-                best = (d, float(row["Close"]))
+                best = (d, close_val)
         if best is None:
             print(f"  {sym}: no close available on or before {anchor_date}")
             continue
         actual_date, close = best
         closes[sym] = close
-        marker = "" if actual_date == anchor_date else f"  (using {actual_date} — closest available)"
+        if actual_date != anchor_date:
+            marker = (f"  ⚠️ STALE: using {actual_date} (yfinance has no "
+                      f"non-NaN close for {anchor_date}); rerun later "
+                      f"once data backfills")
+        else:
+            marker = ""
         print(f"  {sym:8s} {anchor_date}  close={close:.4f}{marker}")
 
-    # Cobalt: TE spot only — no historicals. Use today's spot as proxy.
+    # TE-only commodities: cobalt + lithium. TE has no historicals so we
+    # have to use the live spot as a proxy for the anchor day's close.
+    # **Latent bug**: if the live spot has moved AFTER the anchor day's
+    # actual close, that delta gets zeroed in tomorrow's reconstruction
+    # (we'd compute today/anchor with anchor=current_spot, so day-over-
+    # day moves disappear). Best mitigation: re-anchor as soon after the
+    # truflation EOD print as possible, ideally same evening, so the TE
+    # spot we capture is close to that day's close.
     print()
     try:
-        from feeds.tradingeconomics.spot import get_cobalt_spot
-        cobalt = get_cobalt_spot()
-        if cobalt is None:
-            print("  COBALT_TE: TE scrape failed — operator must fill in manually")
-            cobalt = 0.0
-        else:
-            print(f"  COBALT_TE: today's TE spot = {cobalt:.2f} (used as "
-                  f"proxy for {anchor_date} — TE has no historicals)")
-            closes["COBALT_TE"] = cobalt
+        from feeds.tradingeconomics.spot import (
+            get_cobalt_spot, get_lithium_spot,
+        )
+        for label, key, fetcher in [
+            ("COBALT_TE",  "COBALT_TE",  get_cobalt_spot),
+            ("LITHIUM_TE", "LITHIUM_TE", get_lithium_spot),
+        ]:
+            v = fetcher()
+            if v is None or v <= 0:
+                print(f"  {label}: TE scrape failed — fill in manually")
+                continue
+            print(f"  {label}: live TE spot = {v:.2f} (used as proxy "
+                  f"for {anchor_date} close — TE has no historicals; "
+                  f"latent staleness if spot has drifted since "
+                  f"truflation cutoff)")
+            closes[key] = float(v)
     except Exception as exc:
-        print(f"  COBALT_TE: error {exc}")
+        print(f"  TE scrape error: {exc}")
 
     # Index value: arg, env, or prompt
     print()
@@ -121,7 +150,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f'    anchor_date="{anchor_date.isoformat()}",')
     print(f"    anchor_index_value={index_value},  # truflation.com print")
     print(f"    anchor_prices={{")
-    for sym in ("HG=F", "LIT", "NICK.L", "COBALT_TE", "PA=F", "PL=F"):
+    # Order matches the live TRUEV_PHASE1_SYMBOLS basket: 6 components,
+    # LITHIUM_TE replaces the old LIT equity-ETF proxy.
+    for sym in ("HG=F", "LITHIUM_TE", "NICK.L", "COBALT_TE", "PA=F", "PL=F"):
         v = closes.get(sym)
         if v is None:
             print(f'        "{sym}": 0.0,  # MISSING — fill in manually')

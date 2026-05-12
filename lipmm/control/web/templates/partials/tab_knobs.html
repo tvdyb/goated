@@ -9,8 +9,8 @@
      'At conf ≥ this, strategy goes N ticks INSIDE best (bid = best+N, ask = best−N). N = penny_inside_distance. Default 0.95 = "near-certain". Should be ≥ match_best_min_confidence; otherwise the inside branch never fires. Anti-spoofing cap still binds.'),
     ('penny_inside_distance', 1.0, 1.0, 10.0, 1.0,
      'How many cents INSIDE best to quote in active-penny mode. Default 1 (penny inside). Higher = more aggressive: at 3, bid = best_bid+3 and ask = best_ask−3. The no-cross guard still binds (you cannot cross the opposite best), and the anti-spoofing cap (theo_tolerance_c) limits how far above theo you can sit — usually push tolerance higher when going beyond 1.'),
-    ('theo_tolerance_c', 2.0, 0.0, 50.0, 0.5,
-     'Anti-spoofing guard. Strategy will never bid above (theo - 1 + tolerance) or ask below (theo + 1 - tolerance). Keeps the bot from chasing fake quotes someone posts above fair value just to bait us into pennying them. Higher tolerance = more aggressive pennying; lower = safer.'),
+    ('theo_tolerance_c', 2.0, -50.0, 50.0, 0.5,
+     'Anti-spoofing guard. Strategy will never bid above (theo - 1 + tolerance) or ask below (theo + 1 - tolerance). NEGATIVE values are now allowed — they tighten the cap INWARD, forcing the bot to stay AWAY from theo on both sides. Use case: when you don''t trust theo and don''t want to fill anywhere near it. e.g. tolerance=-3 → bid capped at theo−4, ask floored at theo+4 (3¢ buffer on each side, plus the existing 1¢). Defaults: positive 2 = penny aggressive; 0 = match-but-don''t-cross theo; negative = repel from theo.'),
     ('max_distance_from_best', 1.0, 0.0, 50.0, 0.5,
      'Active-follow gap, in cents: how far behind the best we sit on each side when confidence is below the penny-inside threshold. Default 1 = stay 1¢ behind best (B = best_bid - 1, A = best_ask + 1). Higher = farther behind = less LIP capture but lower adverse-fill risk.'),
     ('dollars_per_side', 1.0, 0.0, 100.0, 1.0,
@@ -29,8 +29,10 @@
      'ADVERSE-SELECTION SAFEGUARD. Maximum |position| per strike before a side is vetoed. When net long Yes ≥ this, bid is blocked (we won''t buy more); when net short Yes ≥ this, ask is blocked. Set per-strike via the strike row to be more aggressive on illiquid markets, more conservative on volatile ones.'),
     ('mid_delta_threshold_c', 8.0, 0.0, 100.0, 1.0,
      'ADVERSE-SELECTION SAFEGUARD. Cents threshold for the mid-delta gate. If a strike''s mid jumped by ≥ this many cents since the last cycle, BOTH sides veto for that cycle (the bot pulls quotes during fast moves). 0 = disabled. Lower = more cautious. Tune per-strike for ones you know are jumpier.'),
-    ('max_distance_from_extremes_c', 0.0, 0.0, 50.0, 1.0,
-     'TAIL-ONLY MODE. When > 0, hard-caps bid at this many cents above 0¢ and ask at the same many cents below 100¢. e.g. 5 → bid ∈ [1, 5¢] and ask ∈ [95, 99¢] regardless of theo or book. 0 = disabled. Use case: batch-released markets with very wide spreads (02/98) where the middle is untrusted and naive pennying would expose us at risky prices like 95¢. Restricts the bot to the statistical tails until the book normalizes.'),
+    ('max_distance_from_extremes_c', 0.0, 0.0, 99.0, 1.0,
+     'TAIL-ONLY MODE. When > 0, hard-caps bid at this many cents above 0¢ and ask at the same many cents below 100¢. e.g. 5 → bid ∈ [1, 5¢] and ask ∈ [95, 99¢] regardless of theo or book. 0 = disabled. Use case: (a) batch-released markets with wide spreads (02/98) where the middle is untrusted; (b) one-sided LIP farming on a deep-ITM strike where you want to quote bids up to e.g. 80¢ to track close to LIP reference. Range was bumped from 50 → 99 to support that second use case. At 99, the cap is effectively disabled (bid ∈ [1, 99] = whole range).'),
+    ('truev_model_rmse_pts', 0.0, 0.0, 50.0, 0.5,
+     '⚠️ MOSTLY DEPRECATED / DO NOT USE. TRUEV-ONLY: model RMSE inflation in points. The symmetric σ-widening pushes deep-OTM probabilities from ~0% up toward 50% (bot would buy lottery tickets at 5-15¢) and deep-ITM down from ~100% (bot sells sure-things too cheap). Net-harmful in practice on a binary-settle market. Use `theo_tolerance_c` with a negative value for asymmetric distrust ("don''t want to fill near theo") instead — that''s almost always what you actually want. Keep this here as an opt-in escape hatch for the rare case where at-the-money probabilities genuinely need symmetric widening (e.g. a known data-feed degradation), but default is 0 and you should leave it there.'),
   ] %}
   <div class="text-[9px] uppercase tracking-wider mb-2" style="color: var(--ink-lo);">
     Active overrides ({{ snapshot.knob_overrides | length if snapshot and snapshot.knob_overrides else 0 }})

@@ -39,11 +39,16 @@ class ControlConfig:
         "match_best_min_confidence": (0.0, 1.0),
         "penny_inside_min_confidence": (0.0, 1.0),
         "penny_inside_distance": (1.0, 10.0),
-        "theo_tolerance_c": (0.0, 50.0),
+        "theo_tolerance_c": (-50.0, 50.0),
         "max_distance_from_best": (0.0, 50.0),
         "desert_threshold_c": (0.0, 50.0),
         "dollars_per_side": (0.0, 100.0),
-        "max_distance_from_extremes_c": (0.0, 50.0),
+        "max_distance_from_extremes_c": (0.0, 99.0),
+        # TruEV-provider-specific: inflates the lognormal σ to absorb
+        # model RMSE (default 0 = no inflation). Set on the Knobs tab
+        # to e.g. 8 for honest at-the-money probabilities. Read by
+        # TruEVTheoProvider each cycle from state.all_knobs().
+        "truev_model_rmse_pts": (0.0, 50.0),
         # StickyDefenseQuoting knobs
         "sticky_min_distance_from_theo": (0.0, 50.0),
         "sticky_desert_jump_cents": (0.0, 50.0),
@@ -183,8 +188,18 @@ class ControlState:
         # overrides. Runtime-only.
         self._event_knob_overrides: dict[str, dict[str, float]] = {}
         # Per-strike knob overrides: strike_ticker → {knob_name: value}.
-        # Highest precedence — wins over event and global.
+        # Highest precedence among "both-side" overrides.
         self._strike_knob_overrides: dict[str, dict[str, float]] = {}
+        # Per-strike PER-SIDE knob overrides:
+        #   (strike_ticker, side) → {knob_name: value}    side ∈ {"bid","ask"}
+        # Layered ON TOP of strike-level both-side overrides — lets the
+        # operator dial in different (e.g.) `theo_tolerance_c` for the
+        # bid vs ask side of one strike. Most useful when the operator
+        # has asymmetric trust in their theo (e.g. willing to fill on
+        # the YES side but skittish on the NO side, or vice versa).
+        self._strike_side_knob_overrides: dict[
+            tuple[str, str], dict[str, float]
+        ] = {}
 
     @property
     def version(self) -> int:
@@ -303,20 +318,33 @@ class ControlState:
         }
 
     def all_strike_knobs(self) -> dict[str, dict[str, float]]:
-        """Per-strike knob override map: strike_ticker → {name: value}."""
+        """Per-strike knob override map: strike_ticker → {name: value}.
+        Both-side overrides only; per-side via `all_strike_side_knobs()`."""
         return {
             t: dict(knobs) for t, knobs in self._strike_knob_overrides.items()
         }
 
-    def effective_knobs_for(self, ticker: str) -> dict[str, float]:
+    def all_strike_side_knobs(self) -> dict[str, dict[str, dict[str, float]]]:
+        """Per-strike-per-side knob overrides:
+            strike_ticker → {side: {name: value}}    side ∈ {"bid", "ask"}
+        """
+        out: dict[str, dict[str, dict[str, float]]] = {}
+        for (ticker, side), knobs in self._strike_side_knob_overrides.items():
+            out.setdefault(ticker, {})[side] = dict(knobs)
+        return out
+
+    def effective_knobs_for(
+        self, ticker: str, side: str | None = None,
+    ) -> dict[str, float]:
         """Return the merged knob dict for `ticker`, applying precedence:
 
-            strike-level  >  event-level  >  global  >  config default
+            strike-side ("bid"|"ask")  >  strike (both)  >  event  >  global
 
-        Strike-level wins per-knob over event-level (so an operator can
-        override `dollars_per_side` for one strike while keeping the
-        rest of the event's knobs). Event-level wins over global.
-        Global wins where neither event nor strike sets a value.
+        When `side` is "bid" or "ask", per-side strike overrides layer
+        on top of the both-side overrides. When None or "both", only
+        the both-side strike overrides apply (legacy behavior — what
+        callers got before per-side overrides existed).
+
         Caller should fall back to the strategy's config default for
         any knob NOT in the returned dict.
         """
@@ -326,6 +354,10 @@ class ControlState:
         event = ticker.rsplit("-", 1)[0] if "-" in ticker else ticker
         merged.update(self._event_knob_overrides.get(event, {}))
         merged.update(self._strike_knob_overrides.get(ticker, {}))
+        if side in ("bid", "ask"):
+            merged.update(
+                self._strike_side_knob_overrides.get((ticker, side), {})
+            )
         return merged
 
     def control_overrides_for_strategy(
@@ -388,6 +420,11 @@ class ControlState:
                 t: dict(knobs)
                 for t, knobs in sorted(self._strike_knob_overrides.items())
             },
+            # Per-strike-per-side overrides. Schema:
+            #   { ticker: { "bid": {name: value}, "ask": {name: value} } }
+            # Sides only appear when at least one override is set on
+            # them, so empty dict ≡ no per-side overrides anywhere.
+            "strike_side_knob_overrides": self.all_strike_side_knobs(),
         }
 
     # ── Mutations (locked + version-bumped) ─────────────────────────
@@ -528,9 +565,15 @@ class ControlState:
             return self._bump_version()
 
     async def set_strike_knob(
-        self, ticker: str, name: str, value: float,
+        self, ticker: str, name: str, value: float, side: str = "both",
     ) -> int:
-        """Highest-precedence knob override: applies to one strike only."""
+        """Per-strike knob override.
+
+        `side`: "both" (default — applies to bid AND ask), "bid", or "ask".
+        Per-side overrides layer ON TOP of "both" — so an operator can
+        set `dollars_per_side=5` for both sides AND `dollars_per_side=10`
+        only on the bid. The bid then sees 10, the ask still sees 5.
+        """
         if name not in self._cfg.knob_bounds:
             raise ValueError(
                 f"unknown knob {name!r}; permitted: {sorted(self._cfg.knob_bounds)}"
@@ -542,23 +585,48 @@ class ControlState:
             )
         if not ticker or not ticker.strip():
             raise ValueError("ticker required")
+        if side not in ("both", "bid", "ask"):
+            raise ValueError(
+                f"side must be 'both', 'bid', or 'ask'; got {side!r}"
+            )
         async with self._lock:
-            self._strike_knob_overrides.setdefault(ticker, {})[name] = float(value)
+            if side == "both":
+                self._strike_knob_overrides.setdefault(ticker, {})[name] = float(value)
+            else:
+                key = (ticker, side)
+                self._strike_side_knob_overrides.setdefault(key, {})[name] = float(value)
             return self._bump_version()
 
     async def clear_strike_knob(
-        self, ticker: str, name: str | None = None,
+        self, ticker: str, name: str | None = None, side: str = "both",
     ) -> int:
-        """Clear a single per-strike knob, or all per-strike knobs for
-        the ticker when `name` is None."""
+        """Clear a per-strike knob.
+
+        `side`: "both" clears the both-side override; "bid"/"ask" clears
+        only that side's override (the both-side override stays). When
+        `name` is None, clears every knob for that (ticker, side).
+        """
+        if side not in ("both", "bid", "ask"):
+            raise ValueError(
+                f"side must be 'both', 'bid', or 'ask'; got {side!r}"
+            )
         async with self._lock:
-            if name is None:
-                self._strike_knob_overrides.pop(ticker, None)
+            if side == "both":
+                if name is None:
+                    self._strike_knob_overrides.pop(ticker, None)
+                else:
+                    if ticker in self._strike_knob_overrides:
+                        self._strike_knob_overrides[ticker].pop(name, None)
+                        if not self._strike_knob_overrides[ticker]:
+                            self._strike_knob_overrides.pop(ticker, None)
             else:
-                if ticker in self._strike_knob_overrides:
-                    self._strike_knob_overrides[ticker].pop(name, None)
-                    if not self._strike_knob_overrides[ticker]:
-                        self._strike_knob_overrides.pop(ticker, None)
+                key = (ticker, side)
+                if name is None:
+                    self._strike_side_knob_overrides.pop(key, None)
+                elif key in self._strike_side_knob_overrides:
+                    self._strike_side_knob_overrides[key].pop(name, None)
+                    if not self._strike_side_knob_overrides[key]:
+                        self._strike_side_knob_overrides.pop(key, None)
             return self._bump_version()
 
     async def lock_side(

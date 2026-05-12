@@ -107,16 +107,26 @@ class TruEVTheoProvider:
 
     Owns a TruEvForwardSource for live commodity prices. `warmup()`
     starts the source's poll loop; `shutdown()` stops it.
+
+    `state_ref` (optional): a ControlState (or anything with a
+    `.knob_overrides` attribute returning a dict). When wired, the
+    provider reads the `truev_model_rmse_pts` knob each call to
+    inflate the lognormal σ for model-uncertainty-aware probabilities.
+    Default 0 = no inflation, original behavior. Set on the dashboard
+    Knobs tab to a value like 8 (= calibrated live RMSE) for honest
+    at-the-money probabilities.
     """
 
     def __init__(
         self,
         cfg: TruEVConfig,
         forward: TruEvForwardSource,
+        state_ref: Any = None,
     ) -> None:
         self._cfg = cfg
         self.series_prefix = cfg.series_prefix
         self._forward = forward
+        self._state_ref = state_ref
         try:
             self._settlement_dt = datetime.fromisoformat(cfg.settlement_time_iso)
         except ValueError as exc:
@@ -124,6 +134,42 @@ class TruEVTheoProvider:
                 f"settlement_time_iso {cfg.settlement_time_iso!r} is not a "
                 "valid ISO 8601 datetime"
             ) from exc
+
+    # Default model RMSE in points when the operator hasn't set the knob.
+    # **0 = no inflation by default.** Earlier we shipped 8 (calibrated
+    # walk-forward RMSE + basis risk estimate) but the symmetric σ-
+    # widening it applies to the lognormal pricer creates a pathology
+    # at the wings: it pushes deep-OTM probabilities from ~0% up to
+    # 17-27% and deep-ITM down from ~100% to ~85%, making the bot eager
+    # to buy lottery tickets at inflated prices and sell sure-things
+    # too cheap. The math is "right" given the stated RMSE, but the
+    # tradeoff is bad because counterparty market prices on the wings
+    # carry more information than our calibrated RMSE captures.
+    # Operator can opt in via the `truev_model_rmse_pts` knob if they
+    # understand the boundary distortion. For asymmetric distrust use
+    # `theo_tolerance_c` (negative values) instead.
+    DEFAULT_MODEL_RMSE_PTS = 0.0
+
+    def _get_model_rmse_pts(self) -> float:
+        """Read the `truev_model_rmse_pts` knob from the wired
+        ControlState, with safe fallback to DEFAULT_MODEL_RMSE_PTS
+        (= 8.0, calibrated from live backtest + basis risk estimate)
+        when state isn't wired OR when the knob isn't explicitly set.
+        Operator can set the knob to 0 if they want to disable
+        inflation."""
+        if self._state_ref is None:
+            return self.DEFAULT_MODEL_RMSE_PTS
+        try:
+            knobs = self._state_ref.all_knobs()
+        except Exception:
+            return self.DEFAULT_MODEL_RMSE_PTS
+        val = knobs.get("truev_model_rmse_pts")
+        if val is None:
+            return self.DEFAULT_MODEL_RMSE_PTS
+        try:
+            return max(0.0, float(val))
+        except (TypeError, ValueError):
+            return self.DEFAULT_MODEL_RMSE_PTS
 
     async def warmup(self) -> None:
         await self._forward.start()
@@ -181,7 +227,42 @@ class TruEVTheoProvider:
                                extras={"sigma": sigma})
         tau_years = tau_seconds / (365.25 * 86400)
         sig_sqrt_t = max(sigma * math.sqrt(tau_years), 1e-12)
-        d2 = (math.log(S / strike) - 0.5 * sigma * sigma * tau_years) / sig_sqrt_t
+
+        # Model RMSE inflation. The σ above is realized vol over tau —
+        # it captures "the index could random-walk away from S between
+        # now and settle." It does NOT capture "our reconstructed S
+        # could be wrong vs Truflation's actual published value by
+        # ~5-10 pts of model RMSE." We add the model RMSE in quadrature
+        # so the effective lognormal distribution widens to account
+        # for the fact that we don't really know S to the cent — we
+        # know it ± RMSE.
+        #
+        #     σ_realized_pts  = σ × √τ × S        (in points)
+        #     σ_combined_pts  = √(σ_realized² + RMSE²)   (in points)
+        #     σ_eff_√τ        = σ_combined_pts / S      (back to ratio)
+        #
+        # Operator dials this in via the `truev_model_rmse_pts` knob
+        # (dashboard Knobs tab). Default 0 → no inflation, original
+        # behavior. Recommended 5-10 pts based on calibrated walk-
+        # forward RMSE.
+        # Always compute the RAW (uninflated) probability so the dashboard
+        # can show both side-by-side and the operator can see exactly what
+        # the RMSE-inflation knob is doing.
+        sig_sqrt_t_raw = sig_sqrt_t
+        d2_raw = (math.log(S / strike)
+                  - 0.5 * sig_sqrt_t_raw * sig_sqrt_t_raw) / sig_sqrt_t_raw
+        p_above_raw = max(0.0, min(1.0, float(ndtr(d2_raw))))
+        yes_prob_raw = p_above_raw if cfg.direction == "above" else 1.0 - p_above_raw
+
+        model_rmse_pts = self._get_model_rmse_pts()
+        if model_rmse_pts > 0:
+            sigma_realized_pts = sig_sqrt_t * S
+            sigma_combined_pts = math.sqrt(
+                sigma_realized_pts ** 2 + model_rmse_pts ** 2
+            )
+            sig_sqrt_t = max(sigma_combined_pts / max(S, 1e-9), 1e-12)
+
+        d2 = (math.log(S / strike) - 0.5 * sig_sqrt_t * sig_sqrt_t) / sig_sqrt_t
         p_above = float(ndtr(d2))
         p_above = max(0.0, min(1.0, p_above))
 
@@ -214,7 +295,15 @@ class TruEVTheoProvider:
                 "tau_seconds": round(tau_seconds, 1),
                 "tau_years": round(tau_years, 6),
                 "sigma": sigma,
+                "model_rmse_pts": round(model_rmse_pts, 2),
+                "sig_sqrt_t_effective": round(sig_sqrt_t, 6),
                 "d2": round(d2, 4),
+                # Raw (uninflated) probability and d2 — useful for the UI
+                # to show "raw model vs RMSE-adjusted" side-by-side and
+                # for the operator to see the magnitude of the haircut.
+                "yes_probability_raw": round(yes_prob_raw, 6),
+                "yes_cents_raw": round(yes_prob_raw * 100, 2),
+                "d2_raw": round(d2_raw, 4),
                 "direction": cfg.direction,
                 "confidence_breakdown": {
                     "forward_freshness": round(forward_freshness, 3),

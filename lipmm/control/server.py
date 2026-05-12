@@ -572,7 +572,7 @@ def build_app(
         version_before = state.version
         try:
             new_version = await state.set_strike_knob(
-                req.ticker, req.name, req.value,
+                req.ticker, req.name, req.value, side=req.side,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -598,7 +598,9 @@ def build_app(
     ) -> CommandResponse:
         _check_if_version(req.if_version)
         version_before = state.version
-        new_version = await state.clear_strike_knob(req.ticker, req.name)
+        new_version = await state.clear_strike_knob(
+            req.ticker, req.name, side=req.side,
+        )
         emit_audit(
             request.app.state.decision_logger,
             request_id=req.request_id, actor=actor,

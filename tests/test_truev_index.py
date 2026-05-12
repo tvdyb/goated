@@ -171,7 +171,10 @@ def test_default_weights_sum_to_one() -> None:
 
 
 def test_default_weights_cover_six_components() -> None:
-    expected = {"HG=F", "LIT", "NICK.L", "COBALT_TE", "PA=F", "PL=F"}
+    # LIVE basket: TE-scraped lithium replaces the LIT equity proxy.
+    # Backtest path keeps LIT (see DEFAULT_WEIGHTS_BACKTEST) since TE
+    # has no historicals.
+    expected = {"HG=F", "LITHIUM_TE", "NICK.L", "COBALT_TE", "PA=F", "PL=F"}
     assert set(DEFAULT_WEIGHTS_Q4_2025.weights.keys()) == expected
 
 
@@ -180,7 +183,7 @@ def test_default_weights_renormalization_preserves_ratios() -> None:
     raw_cu = 0.3865
     raw_li = 0.3354
     w = DEFAULT_WEIGHTS_Q4_2025.weights
-    assert (w["HG=F"] / w["LIT"]) == pytest.approx(raw_cu / raw_li)
+    assert (w["HG=F"] / w["LITHIUM_TE"]) == pytest.approx(raw_cu / raw_li)
 
 
 def test_default_anchor_at_anchor_returns_anchor_value() -> None:

@@ -146,21 +146,71 @@ def reconstruct_index(
 # Sum of LIVE weights = 1.0. Sum of BACKTEST weights (cobalt excluded
 # and renormalized) is also 1.0 — see DEFAULT_WEIGHTS_BACKTEST.
 _Q4_2025_RAW = {
-    "HG=F":      0.3865,
-    "LIT":       0.3354,
-    "NICK.L":    0.1227,
-    "COBALT_TE": 0.0822,
-    "PA=F":      0.0607,
-    "PL=F":      0.0125,
+    "HG=F":       0.3865,
+    "LITHIUM_TE": 0.3354,   # was "LIT" — now TE China lithium spot
+    "NICK.L":     0.1227,
+    "COBALT_TE":  0.0822,
+    "PA=F":       0.0607,
+    "PL=F":       0.0125,
 }
 DEFAULT_WEIGHTS_Q4_2025 = TruEvWeights(
     quarter_start_iso="2025-10-01",
     weights=dict(_Q4_2025_RAW),
 )
 
-# Backtest weights: cobalt excluded (no daily history), other 5
-# renormalized to sum to 1.0. Used by deploy/truev_backtest.py.
-_BACKTEST_RAW = {k: v for k, v in _Q4_2025_RAW.items() if k != "COBALT_TE"}
+# Q1 2026 weights — fitted via NNLS regression against operator-supplied
+# `indexAndBasket.csv` (118 clean days of actuals + all 6 components,
+# Jan 1 → Apr 28, 2026). In-sample RMSE = 4.46 pts (0.37%). Bias ≈ 0.
+#
+# These weights reflect the **Dec 31, 2025 quarterly rebalance** that
+# set the EV-type production mix to:
+#     HEV   53.99%
+#     BEV   27.97%
+#     PHEV  18.01%
+#     FCEV   0.03%
+#
+# No further rebalance has occurred between then and the time these
+# weights were fit, so all 118 days share the same true weight vector
+# and the whole-period regression is the most-data estimate available.
+# (Earlier subset-fits suggesting "Q1 vs Q2 divergence" were small-
+# sample regression noise, NOT a real rebalance.)
+#
+# Compared to Q4 2025: copper jumped 39% → 57% (HEVs are Cu-heavy with
+# minimal battery), lithium collapsed 34% → 5% (HEVs use small NiMH
+# instead of Li-ion packs). Treating Q4 weights as a default for Q1
+# produces meaningfully wrong theos.
+_Q1_2026_FITTED_RAW = {
+    "HG=F":       0.57336,    # Copper — biggest contributor; HEVs Cu-heavy
+    "NICK.L":     0.21884,    # Nickel
+    "COBALT_TE":  0.07736,    # Cobalt
+    "PA=F":       0.07512,    # Palladium
+    "LITHIUM_TE": 0.04943,    # Lithium — collapsed from Q4 due to HEV mix
+    "PL=F":       0.00776,    # Platinum
+}
+_Q1_TOTAL = sum(_Q1_2026_FITTED_RAW.values())
+DEFAULT_WEIGHTS_Q1_2026 = TruEvWeights(
+    quarter_start_iso="2026-01-01",
+    weights={k: v / _Q1_TOTAL for k, v in _Q1_2026_FITTED_RAW.items()},
+)
+
+# Live default: ship Q1 2026 weights, since the rebalance happened on
+# Dec 31, 2025 and these are what's actually driving the published
+# index right now. Q4_2025 stays in the file for historical reference
+# and downstream tests that pinned the Q4 numbers.
+DEFAULT_WEIGHTS_LIVE = DEFAULT_WEIGHTS_Q1_2026
+
+# Backtest weights: cobalt excluded (no daily history) AND lithium
+# substituted back to LIT (the equity proxy is the only lithium series
+# with yfinance history). Other 4 weights renormalized to sum to 1.0.
+# Used by deploy/truev_backtest_csv.py + deploy/truev_backtest.py —
+# both walk historical data, both predate the live TE-lithium swap.
+_BACKTEST_RAW = {
+    "HG=F":   _Q4_2025_RAW["HG=F"],
+    "LIT":    _Q4_2025_RAW["LITHIUM_TE"],   # proxy substitution
+    "NICK.L": _Q4_2025_RAW["NICK.L"],
+    "PA=F":   _Q4_2025_RAW["PA=F"],
+    "PL=F":   _Q4_2025_RAW["PL=F"],
+}
 _BACKTEST_TOTAL = sum(_BACKTEST_RAW.values())
 DEFAULT_WEIGHTS_BACKTEST = TruEvWeights(
     quarter_start_iso="2025-10-01",
@@ -180,17 +230,32 @@ DEFAULT_ANCHOR_PLACEHOLDER = TruEvAnchor(
     # Re-anchor each morning before bot start: pull yesterday's
     # truflation.com EV-index close + yesterday's yfinance closes for
     # each component, plug in here.
-    anchor_date="2026-05-06",
-    anchor_index_value=1259.69,  # truflation.com/marketplace/ev-index, published 2026-05-06
+    anchor_date="2026-05-10",
+    anchor_index_value=1264.69,  # truflation.com/marketplace/ev-index,
+                                 # operator-confirmed value as of
+                                 # 2026-05-10 (most recent Truflation
+                                 # print before the May 11 settle window).
     anchor_prices={
-        "HG=F": 6.1365,          # 2026-05-06 yfinance Comex copper close
-        "LIT": 91.52,            # 2026-05-06 Global X Lithium ETF close
-        "NICK.L": 16.80,         # 2026-05-06 WisdomTree Nickel ETC close
-        "COBALT_TE": 56_290.0,   # cobalt — TE has no historicals; using
-                                 # today's spot as proxy for yesterday
-                                 # close (cobalt moves slowly day-to-day,
-                                 # acceptable bias for now)
-        "PA=F": 1546.00,         # 2026-05-06 NYMEX palladium close
-        "PL=F": 2048.70,         # 2026-05-06 NYMEX platinum close
+        # Yfinance closes for the most recent trading day (2026-05-08;
+        # markets were closed Sat-Sun). These are what the May 10
+        # truflation print is based on (Truflation can't refresh on
+        # weekends; the 1264.69 reflects the Fri-EOD basket).
+        "HG=F": 6.249,             # 2026-05-08 yfinance Comex copper close
+        "LITHIUM_TE": 194_000.0,   # current TE China carbonate spot
+                                   # (proxy for May 8 EOD; TE has no
+                                   # historicals so we accept this
+                                   # latent staleness — when TE next
+                                   # ticks, the model will absorb the
+                                   # move with this anchor as baseline.)
+        "NICK.L": 0.22427,         # = 16.545 GBp × GBPUSD_2026-05-08
+                                   # (1.355565) / 100 = USD per share.
+                                   # FX-stripped via the same conversion
+                                   # the live forward source applies.
+        "COBALT_TE": 56_290.0,     # current TE LME cobalt spot (proxy
+                                   # for May 8 EOD — cobalt has been
+                                   # flat for over a week so the
+                                   # latent staleness is lossless).
+        "PA=F": 1482.60,           # 2026-05-08 NYMEX palladium close
+        "PL=F": 2047.20,           # 2026-05-08 NYMEX platinum close
     },
 )
