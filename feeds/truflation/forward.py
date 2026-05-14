@@ -31,6 +31,7 @@ import yfinance as yf
 from feeds.tradingeconomics.spot import (
     TE_COBALT,
     TE_LITHIUM,
+    TE_NICKEL,
     get_te_spot,
 )
 
@@ -39,33 +40,63 @@ logger = logging.getLogger(__name__)
 
 # ── Symbol constants ────────────────────────────────────────────────
 #
-# yfinance-clean tickers:
-#   HG=F     Copper (Comex)
-#   NICK.L   WisdomTree Nickel ETC (LSE) — direct nickel exposure that
-#            tracks LME 3-month nickel.
-#   PA=F     Palladium (NYMEX)
-#   PL=F     Platinum (NYMEX)
-#   LIT      Global X Lithium ETF — equity proxy. RETAINED FOR BACKTEST
-#            ONLY because it has yfinance daily history. Live theo
-#            uses LITHIUM_TE (TE scrape of China lithium carbonate
-#            spot) — much cleaner mapping to actual lithium prices,
-#            no equity-market beta contamination.
+# Per Truflation's official website (verified 2026-05-11), the TruEV
+# index actually uses these data providers:
 #
-# TradingEconomics scrape sentinels:
-#   COBALT_TE   Cobalt LME — TE spot only; live theo only. Backtest
-#               leaves cobalt unmodeled and renormalizes weights.
-#   LITHIUM_TE  China lithium carbonate spot (CNY/T) via TE — live
-#               theo only. Backtest still uses LIT proxy to keep the
-#               historical-coverage assumptions intact.
+#   Copper      CME (= COMEX HG futures)         ← we match via yfinance HG=F
+#   Palladium   NYMEX                            ← we match via yfinance PA=F
+#   Platinum    NYMEX                            ← we match via yfinance PL=F
+#   Lithium     GFEX (Guangzhou Futures Exchange) lithium carbonate
+#               futures                          ← MISMATCH — we proxy via TE
+#   Cobalt      SMM (Shanghai Metals Market) China-domestic
+#               cobalt 99.8% price               ← MISMATCH — we proxy via TE LME
+#   Nickel      SMM (Shanghai Metals Market) China-domestic Ni 1#
+#               refined nickel price             ← MISMATCH — we proxy via NICK.L (LSE ETC tracking LME)
+#
+# **Our current proxies and their mismatches:**
+#
+# yfinance tickers (THREE EXACT MATCHES with Truflation's actual feeds):
+#   HG=F     COMEX copper futures — matches CME ✓
+#   PA=F     NYMEX palladium futures — matches NYMEX ✓
+#   PL=F     NYMEX platinum futures — matches NYMEX ✓
+#
+# Proxies that DON'T match Truflation (three of six basket components):
+#   NICK.L   WisdomTree Nickel ETC on LSE, FX-stripped to USD via
+#            GBPUSD. Tracks LME 3-month nickel, NOT SMM Chinese
+#            nickel. Basis risk during periods when CN/Western
+#            metals decouple (tariff news, supply shocks).
+#   COBALT_TE  TE scrape of LME cobalt (`LCO1:COM`). NOT SMM
+#              Chinese cobalt. Same basis-risk caveat.
+#   LITHIUM_TE TE scrape of Chinese lithium (unclear exact contract;
+#              not GFEX lithium carbonate futures). Maybe partially
+#              aligned but not exact.
+#
+#   LIT      Global X Lithium ETF — equity proxy. RETAINED FOR BACKTEST
+#            ONLY because it has yfinance daily history. The TE scrape
+#            doesn't expose historicals, and we don't yet have a GFEX
+#            scraper.
+#
+# **Practical impact:** with three mismatched proxies, our NNLS-fitted
+# weights have absorbed the basis empirically (~5 pt walk-forward
+# RMSE). The official methodology weights (Cu 41.6%, Li 30.5%,
+# Ni 13.2%, Co 8.9%, Pa 4.7%, Pt 1.1%) only reproduce the index if
+# fed with Truflation's actual GFEX/SMM-priced inputs.
+#
+# **Future work:** swap to direct GFEX lithium futures + SMM cobalt +
+# SMM nickel scrapes. Should bring live RMSE from ~5 pt → ~2-3 pt
+# and validate the official weights.
 COBALT_TE = "COBALT_TE"
 LITHIUM_TE = "LITHIUM_TE"
+NICKEL_TE = "NICKEL_TE"
 
 TRUEV_PHASE1_SYMBOLS: tuple[str, ...] = (
-    "HG=F", LITHIUM_TE, "NICK.L", "PA=F", "PL=F", COBALT_TE,
+    "HG=F", LITHIUM_TE, NICKEL_TE, "PA=F", "PL=F", COBALT_TE,
 )
 
 # Subset that yfinance can serve (used by backtest helpers — keeps the
-# LIT equity proxy because it has dense daily history that TE doesn't)
+# LIT equity proxy because it has dense daily history that TE doesn't,
+# and retains NICK.L since it has historical bars that the backtest
+# harness needs)
 TRUEV_YFINANCE_SYMBOLS: tuple[str, ...] = (
     "HG=F", "LIT", "NICK.L", "PA=F", "PL=F",
 )
@@ -85,16 +116,16 @@ class TruEvForwardSource:
 
     DEFAULT_SANITY_BOUNDS: dict[str, tuple[float, float]] = {
         "HG=F": (1.0, 15.0),       # Copper $/lb
-        "LIT": (10.0, 200.0),      # Global X Lithium ETF $/share
-        # NICK.L is converted from GBp/share to USD/share via GBPUSD=X
-        # before being cached. Pre-conversion range was [1, 100] GBp;
-        # post-conversion is roughly [0.01, 1.5] USD per share. Bounds
-        # set generously to absorb both nickel and FX swings.
-        "NICK.L": (0.01, 5.0),     # WisdomTree Nickel ETC USD/share (FX-stripped)
+        "LIT": (10.0, 200.0),      # Global X Lithium ETF $/share (backtest only)
+        # NICK.L retained for backtest harness only — TE nickel has no
+        # historicals, so daily-bar backtests fall back to NICK.L's
+        # yfinance-served daily Closes.
+        "NICK.L": (0.01, 5.0),     # WisdomTree Nickel ETC USD/share (FX-stripped, backtest fallback)
         "PA=F": (200.0, 5000.0),   # Palladium $/oz
         "PL=F": (200.0, 5000.0),   # Platinum $/oz
         COBALT_TE: (10_000.0, 200_000.0),     # Cobalt $/tonne via TE
         LITHIUM_TE: (10_000.0, 1_000_000.0),  # Lithium CNY/tonne via TE
+        NICKEL_TE: (5_000.0, 80_000.0),       # Nickel $/tonne via TE (LME 3M)
     }
 
     def __init__(
@@ -187,24 +218,21 @@ class TruEvForwardSource:
 
     def _fetch_sync(self) -> dict[str, float]:
         """Synchronous fetch for all symbols. Routes per source:
-        yfinance for normal tickers, TE scrape for sentinel symbols.
+        yfinance for the cleanly-listed front-month futures (HG=F, PA=F,
+        PL=F), TE scrape for the three sentinel symbols (LITHIUM_TE,
+        COBALT_TE, NICKEL_TE).
 
-        NICK.L (LSE WisdomTree Nickel ETC) is GBp-denominated. We
-        convert to USD per share via GBPUSD=X, also from yfinance:
-
-            NICK.L_USD = NICK.L_GBp × GBPUSD / 100
-
-        This strips one layer of basis vs Truflation's MCX-INR nickel
-        (the GBP/USD layer). The remaining basis (LME-vs-MCX, plus
-        ETC tracking error vs futures) is unfixable without a different
-        data source. If GBPUSD fetch fails, NICK.L is dropped from the
-        cache (forward_freshness drops, strategy degrades gracefully)
-        rather than feeding a uncorrected value into the basket.
+        NICKEL_TE returns LME 3-month nickel in USD/T directly — no FX
+        strip, no LSE-close gap, no GBp conversion. Replaces the legacy
+        NICK.L (WisdomTree ETC) proxy which had to be FX-stripped via
+        GBPUSD=X and froze when LSE closed. NICK.L is retained in the
+        backtest-only symbol set since TE has no historicals.
         """
         out: dict[str, float] = {}
-        te_sentinels = {COBALT_TE, LITHIUM_TE}
+        te_sentinels = {COBALT_TE, LITHIUM_TE, NICKEL_TE}
         yf_syms = [s for s in self._symbols if s not in te_sentinels]
-        # Always fetch GBPUSD too if NICK.L is in the basket.
+        # Legacy NICK.L path: only fires if NICK.L is in the symbol set
+        # (backtest harnesses). The live basket uses NICKEL_TE instead.
         needs_fx = "NICK.L" in self._symbols
         fx_sym = "GBPUSD=X"
         all_yf = list(yf_syms) + ([fx_sym] if needs_fx else [])
@@ -259,4 +287,8 @@ class TruEvForwardSource:
             price = get_te_spot(TE_LITHIUM)
             if price is not None and price > 0:
                 out[LITHIUM_TE] = price
+        if NICKEL_TE in self._symbols:
+            price = get_te_spot(TE_NICKEL)
+            if price is not None and price > 0:
+                out[NICKEL_TE] = price
         return out

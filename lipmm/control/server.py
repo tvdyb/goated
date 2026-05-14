@@ -124,6 +124,7 @@ def build_app(
     exploit_kill_handler: Any = None,
     earnings_history: Any = None,
     markout_tracker: Any = None,
+    notebook_registry: "Any | None" = None,
 ) -> FastAPI:
     """Construct the FastAPI app. Caller wires in the ControlState and
     optional collaborators:
@@ -177,6 +178,10 @@ def build_app(
     # Optional fill-markout tracker for the dashboard's markout tab.
     # When None, /control/markout returns an empty placeholder.
     app.state.markout_tracker = markout_tracker
+    # Optional theo-notebooks registry. Each registered notebook
+    # contributes a modular widget to the dashboard's Notebooks tab.
+    # When None, the tab shows an empty placeholder.
+    app.state.notebook_registry = notebook_registry
     if broadcaster is not None:
         broadcaster.attach_state(state)
 
@@ -1393,6 +1398,50 @@ def build_app(
         from lipmm.control.web.renderer import render_earnings_history
         return HTMLResponse(render_earnings_history(stats))
 
+    @app.get("/control/notebooks")
+    async def list_notebooks(
+        actor: str = Depends(require_auth),
+    ) -> Any:
+        """Return the list of registered theo notebooks.
+
+        Each notebook is a provider-contributed modular widget. The
+        dashboard polls /control/notebooks/{key} for the selected
+        notebook's HTML fragment.
+        """
+        registry = app.state.notebook_registry
+        if registry is None:
+            return {"notebooks": []}
+        return {
+            "notebooks": [
+                {"key": key, "label": label}
+                for key, label in registry.list()
+            ]
+        }
+
+    @app.get("/control/notebooks/{key}")
+    async def get_notebook(
+        key: str,
+        actor: str = Depends(require_auth),
+    ) -> Any:
+        """Return the HTML fragment for a registered notebook."""
+        from fastapi.responses import HTMLResponse
+        registry = app.state.notebook_registry
+        if registry is None:
+            raise HTTPException(status_code=404, detail="no notebook registry")
+        nb = registry.get(key)
+        if nb is None:
+            raise HTTPException(status_code=404, detail=f"unknown notebook: {key}")
+        try:
+            html_fragment = await nb.render()
+        except Exception as exc:
+            return HTMLResponse(
+                f'<div style="color: var(--no, #f87171); font-size: 11px;">'
+                f'notebook render failed: {type(exc).__name__}: {exc}'
+                f'</div>',
+                status_code=500,
+            )
+        return HTMLResponse(html_fragment)
+
     @app.get("/control/orderbooks", response_model=OrderbookSnapshotResponse)
     async def get_orderbooks(
         actor: str = Depends(require_auth),
@@ -1717,6 +1766,7 @@ class ControlServer:
         rate_limit_stats: Any = None,
         earnings_history: Any = None,
         markout_tracker: Any = None,
+        notebook_registry: "Any | None" = None,
     ) -> None:
         self._state = state
         # Auto-create a broadcaster if none provided — the server's WS
@@ -1747,6 +1797,7 @@ class ControlServer:
             rate_limit_stats=rate_limit_stats,
             earnings_history=earnings_history,
             markout_tracker=markout_tracker,
+            notebook_registry=notebook_registry,
         )
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None

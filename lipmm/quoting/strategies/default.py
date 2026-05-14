@@ -204,7 +204,7 @@ class DefaultLIPQuoting:
             if (ask_decision.effective_t1c() > 0 and best_bid_t1c > 0
                     and ask_decision.effective_t1c() <= best_bid_t1c):
                 tick = _tick_at(orderbook.tick_schedule, best_bid_t1c)
-                pulled_t1c = min(989, best_bid_t1c + tick)
+                pulled_t1c = min(999, best_bid_t1c + tick)
                 self._cfg = ask_cfg
                 ask_decision = SideDecision(
                     price=min(99, (pulled_t1c + 5) // 10),
@@ -276,6 +276,12 @@ class DefaultLIPQuoting:
         price_t1c (precise) — adapter routes through Kalshi's
         fractional path when price_t1c isn't a whole-cent multiple.
         """
+        if fair < 1 or fair > 99:
+            logger.warning(
+                "bid: theo out of expected [1, 99]¢ range: fair=%d. "
+                "Anti-spoofing cap may be degenerate; final clamp will "
+                "still produce a valid quote.", fair,
+            )
         cfg = self._cfg
         best_bid_t1c = ob.best_bid_t1c
         best_bid_c = best_bid_t1c // 10  # for desert/deep-itm checks (cents semantics)
@@ -330,8 +336,16 @@ class DefaultLIPQuoting:
             extremes_cap_t1c = cfg.max_distance_from_extremes_c * 10
             bound_target_t1c = min(bound_target_t1c, extremes_cap_t1c)
 
-        # Clamp to valid range [1, 989] t1c (= 0.1¢ to 98.9¢)
-        final_t1c = max(1, min(989, bound_target_t1c))
+        # Clamp to valid range [1, 999] t1c (= 0.1¢ to 99.9¢). Kalshi
+        # binaries trade [1c, 99c] so 999 t1c (99.9c) is the topmost
+        # valid quote on sub-cent markets; on whole-cent markets the
+        # tick-snap below rounds it to 990 t1c = 99¢, the topmost
+        # integer cent. Previously clamped at 989 which prevented the
+        # bot from ever bidding 99¢ on deep-ITM strikes where theo=100c
+        # — losing 1¢ of free LIP rebate per fill. post_only protects
+        # against the rare crossing case (99c bid + 99c ask landing
+        # simultaneously).
+        final_t1c = max(1, min(999, bound_target_t1c))
         # Snap to a quotable tick at the final price.
         final_tick = _tick_at(ob.tick_schedule, final_t1c)
         if final_tick > 1:
@@ -357,10 +371,16 @@ class DefaultLIPQuoting:
     def _compute_ask(
         self, fair: int, ob: OrderbookSnapshot, confidence: float = 0.0,
     ) -> SideDecision:
+        if fair < 1 or fair > 99:
+            logger.warning(
+                "ask: theo out of expected [1, 99]¢ range: fair=%d. "
+                "Anti-spoofing floor may be degenerate; final clamp will "
+                "still produce a valid quote.", fair,
+            )
         cfg = self._cfg
         best_ask_t1c = ob.best_ask_t1c
         best_ask_c = best_ask_t1c // 10
-        tick = _tick_at(ob.tick_schedule, min(989, best_ask_t1c))
+        tick = _tick_at(ob.tick_schedule, min(999, best_ask_t1c))
 
         if best_ask_t1c >= 1000:
             target_t1c = (fair + cfg.max_half_spread_c) * 10
@@ -402,7 +422,7 @@ class DefaultLIPQuoting:
             extremes_floor_t1c = (100 - cfg.max_distance_from_extremes_c) * 10
             bound_target_t1c = max(bound_target_t1c, extremes_floor_t1c)
 
-        final_t1c = max(1, min(989, bound_target_t1c))
+        final_t1c = max(1, min(999, bound_target_t1c))  # see bid clamp note re 999
         final_tick = _tick_at(ob.tick_schedule, final_t1c)
         if final_tick > 1:
             # Round UP to next tick on ask (don't sell cheaper than tick allows)

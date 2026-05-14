@@ -16,6 +16,7 @@
           ('pnl', 'PnL'),
           ('earnings', 'Earnings $/hr'),
           ('markout', 'Markout'),
+          ('notebooks', 'Notebooks'),
         ] %}
           <button data-htab="{{ key }}"
                   class="header-tab px-4 py-2 text-[11px] uppercase tracking-wider relative"
@@ -42,6 +43,9 @@
       </div>
       <div data-htab-panel="markout" class="hidden">
         {% include "partials/tab_markout.html" %}
+      </div>
+      <div data-htab-panel="notebooks" class="hidden">
+        {% include "partials/tab_notebooks.html" %}
       </div>
     </div>
   </div>

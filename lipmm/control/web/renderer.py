@@ -921,8 +921,17 @@ class HtmlWebSocketAdapter:
         if et == "decision":
             self._records.append(self._normalize(event.get("record", {})))
             return render_decision_feed(list(self._records))
+        # Three grid-rerendering events that aren't `state_change` —
+        # each ride-along carries the broadcaster's latest state
+        # snapshot so the grid renders against fresh operator overrides
+        # / pauses / locks even if the WS hasn't delivered the matching
+        # `state_change` event yet (closes the race that caused per-
+        # strike override chips to flicker for ~2s after a mutation).
         if et == "runtime_snapshot":
             self._last_runtime = event.get("snapshot")
+            fresh = event.get("state_snapshot")
+            if fresh is not None:
+                self._last_state = fresh
             return render_runtime(
                 self._last_runtime,
                 snapshot=self._last_state,
@@ -933,6 +942,9 @@ class HtmlWebSocketAdapter:
             )
         if et == "orderbook_snapshot":
             self._last_orderbooks = event.get("snapshot")
+            fresh = event.get("state_snapshot")
+            if fresh is not None:
+                self._last_state = fresh
             return render_orderbooks(
                 self._last_orderbooks,
                 snapshot=self._last_state,
@@ -941,6 +953,9 @@ class HtmlWebSocketAdapter:
             )
         if et == "incentives_snapshot":
             self._last_incentives = event.get("snapshot")
+            fresh = event.get("state_snapshot")
+            if fresh is not None:
+                self._last_state = fresh
             return render_incentives(
                 self._last_incentives,
                 snapshot=self._last_state,

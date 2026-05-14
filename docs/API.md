@@ -197,6 +197,18 @@ Full snapshot of `ControlState`. Mirrors the dashboard's drawer.
   "paused_tickers": ["KXISMPMI-26MAY-50"],
   "paused_sides": [["KXISMPMI-26MAY-51", "ask"]],
   "knob_overrides": {"min_theo_confidence": 0.5},
+  "event_knob_overrides": {
+    "KXISMPMI-26MAY": {"theo_tolerance_c": 1.0}
+  },
+  "strike_knob_overrides": {
+    "KXISMPMI-26MAY-50": {"dollars_per_side": 3.0}
+  },
+  "strike_side_knob_overrides": {     // shipped 2026-05; layered ON TOP
+    "KXISMPMI-26MAY-50": {            // of strike_knob_overrides
+      "bid": {"theo_tolerance_c": -3.0},
+      "ask": {"theo_tolerance_c":  2.0}
+    }
+  },
   "side_locks": [
     {"ticker": "...", "side": "bid", "mode": "lock", "reason": "...",
      "locked_at": 1.7e9, "auto_unlock_at": null}
@@ -239,6 +251,17 @@ raising → that field empty + `errors` enumerates).
 Schema: `RuntimeSnapshotResponse`. Pulled every 5s by the runtime
 broadcast loop (configurable via `runtime_refresh_s`).
 
+> **Position field derivation caveats** (relevant for downstream
+> calculators):
+> - `avg_cost_cents` is derived from Kalshi's `market_exposure / |position|`,
+>   NOT the (non-existent) `average_cost_cents` field. Kalshi's v2 API
+>   doesn't return an explicit avg-cost field.
+> - `realized_pnl_dollars` reads Kalshi's `realized_pnl` (cents) and
+>   converts. Same for `fees_paid_dollars` ← `fees_paid` (cents).
+> - For short YES positions (`quantity < 0`), `avg_cost_cents` is the
+>   YES price the short was opened at — to interpret as a "long NO at
+>   X¢ price", compute `100 - avg_cost_cents`.
+
 #### `GET /control/orderbooks` *(requires Bearer)*
 
 Last per-strike L2 depth snapshot the runner pushed. Includes
@@ -259,6 +282,37 @@ Schema: `IncentiveSnapshotResponse`.
 
 Convenience subset of `GET /control/state` — just the side locks list.
 Schema: `LocksResponse`.
+
+#### `GET /control/pnl_grid` *(requires Bearer)*
+
+**Returns HTML fragment** (not JSON). Per-position PnL grid rendered
+server-side from the most-recent runtime + orderbook snapshots in
+the broadcaster cache. Each row: `ticker, qty (signed), avg_cost,
+mtm_mark, mtm_value, unrealized, theo, expected_settle, edge_per_c,
+realized, fees`. Totals row at the bottom.
+
+Used by the dashboard's "PnL" header tab via `hx-get` + `hx-target`.
+Refresh cadence is operator-controlled (template polls every 10s).
+
+#### `GET /control/earnings_history` *(requires Bearer)*
+
+**Returns HTML fragment.** $/hr histogram of LIP earnings rate over
+the bot's lifetime, computed from a persistent JSONL log
+(`logs/<event>_decisions/earnings_history.jsonl`). Sampled once per
+minute by the runner. Bins: $0-0.05, $0.05-0.10, $0.10-0.25, $0.25-
+0.50, $0.50-1.00, $1-2, $2-4, $4-8, $8-16, $16+. Time-weighted mean
++ peak rate displayed.
+
+Used by the dashboard's "Earnings $/hr" header tab.
+
+#### `GET /control/markout` *(requires Bearer)*
+
+**Returns HTML fragment.** Per-fill +1m/+5m mid-drift table from the
+in-memory `MarkoutTracker`. Fills detected via per-cycle position
+delta; mids sampled async. Toxic flag fires when 5m markout < −2¢
+across ≥ 2 fills.
+
+Used by the dashboard's "Markout" header tab.
 
 ---
 
@@ -315,17 +369,75 @@ configurable; for `DefaultLIPQuoting` see the dashboard's Knobs tab
 }
 ```
 
-Active knobs (DefaultLIPQuoting v0.2):
+Active knobs (DefaultLIPQuoting v0.3):
 
-| Name | Default | What it does |
-|---|---|---|
-| `min_theo_confidence` | 0.10 | Below this confidence, both sides skip |
-| `match_best_min_confidence` | 0.70 | At ≥, strategy MATCHES best (active-match mode) |
-| `penny_inside_min_confidence` | 0.95 | At ≥, strategy goes 1¢ INSIDE best (active-penny) |
-| `theo_tolerance_c` | 2.0 | Anti-spoofing tolerance |
-| `max_distance_from_best` | 1.0 | Active-follow gap (cents behind best) |
-| `desert_threshold_c` | 10.0 | Gap that triggers desert mode |
-| `dollars_per_side` | 1.00 | Notional per cycle per side |
+| Name | Default | Range | What it does |
+|---|---|---|---|
+| `min_theo_confidence` | 0.10 | [0, 1] | Below this confidence, both sides skip |
+| `match_best_min_confidence` | 0.70 | [0, 1] | At ≥, strategy MATCHES best (active-match mode) |
+| `penny_inside_min_confidence` | 0.95 | [0, 1] | At ≥, strategy goes 1¢ INSIDE best (active-penny) |
+| `penny_inside_distance` | 1 | [1, 10] | How many ticks inside best in active-penny mode |
+| `theo_tolerance_c` | 2.0 | **[-50, 50]** | Anti-spoofing tolerance. **Negative values REPEL from theo on both sides** (e.g. `-3` → bid ≤ theo-4, ask ≥ theo+4). |
+| `max_distance_from_best` | 1.0 | [0, 50] | Active-follow gap (cents behind best) |
+| `desert_threshold_c` | 10.0 | [0, 50] | Gap that triggers desert mode |
+| `dollars_per_side` | 1.00 | [0, 100] | Notional per cycle per side |
+| `max_notional_per_side_dollars` | (from `--cap-dollars`) | [0, 1000] | Per-side hard ceiling enforced by `MaxNotionalPerSideGate`. Also auto-lifted when `dollars_per_side` is bumped per-strike. |
+| `max_orders_per_cycle` | 100 | [1, 1000] | Cycle-wide cap on placements |
+| `max_position_per_side` | 200 | [0, 100k] | Per-strike absolute position cap |
+| `mid_delta_threshold_c` | 8 | [0, 100] | Vetoes both sides if mid jumped ≥ this since last cycle |
+| `max_distance_from_extremes_c` | 0 | **[0, 99]** | Tail-only mode. At N: bid capped at N¢, ask floored at (100-N)¢. **Range bumped from 50 → 99** for one-sided deep-ITM/OTM LIP farming. |
+| `truev_model_rmse_pts` | 0 | [0, 50] | **⚠️ TRUEV-ONLY, mostly deprecated.** Inflates lognormal σ by RMSE in quadrature. Causes deep-OTM probabilities to spike toward 50% (boundary distortion); for asymmetric distrust use `theo_tolerance_c` negative instead. |
+| `sticky_min_distance_from_theo` | 3.0 | [0, 50] | StickyDefenseQuoting only |
+| `sticky_desert_jump_cents` | 5.0 | [0, 50] | StickyDefenseQuoting only |
+
+#### `POST /control/set_event_knob` / `POST /control/clear_event_knob`
+
+Per-event knob override. Layered between global knobs and per-strike
+knobs. Useful when one event has very different liquidity/volatility
+than others (e.g. tail-only mode for a batch-released event).
+
+```json
+{
+  "event_ticker": "KXTRUEV-26MAY11",
+  "name": "max_distance_from_extremes_c",
+  "value": 5.0,
+  "request_id": "req-event-knob-1"
+}
+```
+
+#### `POST /control/set_strike_knob` / `POST /control/clear_strike_knob`
+
+Per-strike knob override. Highest precedence in the both-side path.
+**Per-side overrides** (introduced 2026-05) layer ON TOP via the
+`side` field:
+
+```json
+{
+  "ticker": "KXTRUEV-26MAY11-T1290.90",
+  "name": "theo_tolerance_c",
+  "value": -3.0,
+  "side": "bid",          // "both" (default) | "bid" | "ask"
+  "request_id": "req-strike-knob-1"
+}
+```
+
+Precedence (highest first):
+```
+strike-side ("bid"|"ask")  >  strike (both)  >  event  >  global  >  config default
+```
+
+**Worked example.** Operator wants `theo_tolerance_c = 2` everywhere
+(default), `theo_tolerance_c = 1` on a particular event, and
+`theo_tolerance_c = -3` on JUST the bid side of one strike in that
+event. Submit:
+
+```
+POST /control/set_event_knob   {event_ticker, theo_tolerance_c=1}
+POST /control/set_strike_knob  {ticker, theo_tolerance_c=-3, side="bid"}
+```
+
+The bid side of that strike sees `-3`; ask side sees `1` (event-level
+fallback); other strikes in the event see `1`; other events see `2`.
 
 #### `POST /control/lock_side` / `POST /control/unlock_side`
 
@@ -508,9 +620,59 @@ client doesn't need a separate REST round-trip.
 | `orderbook_snapshot` | every runner cycle | `{strikes, last_cycle_ts, ts}` |
 | `incentives_snapshot` | hourly | `IncentiveSnapshotResponse` shape |
 | `decision` | every strategy decision | the decision-log record |
+| **`fill`** | per-cycle position-delta detection | `{ticker, delta, prev_qty, cur_qty, price_c, ts}` |
 | `tab_connected` | new connection | `{tab_id, total_tabs, presence}` |
 | `tab_disconnected` | close | `{tab_id, total_tabs, presence}` |
 | `heartbeat` | optional periodic | (silent in HTML adapter) |
+
+#### `orderbook_snapshot` — per-strike `theo` payload
+
+Each strike entry in the `strikes` array carries a `theo` dict
+(shipped 2026-05) summarizing the active theo for the strike:
+
+```json
+{
+  "ticker": "KXTRUEV-26MAY11-T1290.90",
+  "best_bid_c": 88,
+  "best_ask_c": 96,
+  "yes_levels": [{"price_cents": 88, "price_t1c": 880, "size": 100}, ...],
+  "no_levels":  [...],
+  "theo": {
+    "yes_cents": 87.5,
+    "yes_cents_raw": 99.0,        // present only when RMSE inflation active
+    "model_rmse_pts": 8.0,        // present only when RMSE inflation active
+    "confidence": 0.95,
+    "source": "TruEV",
+    "source_kind": "provider"     // or "override" (manual)
+  }
+}
+```
+
+`yes_cents_raw` and `model_rmse_pts` are only attached when the
+provider exposes them (TruEV does; generic providers don't). When
+present, the dashboard renders both raw and inflated values
+side-by-side in the strike row's Theo column.
+
+#### `fill` — per-cycle position-delta detection
+
+```json
+{
+  "event_type": "fill",
+  "ticker": "KXTRUEV-26MAY11-T1290.90",
+  "delta": 5,                    // signed; +5 = bought 5 YES
+  "prev_qty": 0,
+  "cur_qty": 5,
+  "price_c": 47.5,               // mid proxy (NOT exact fill price)
+  "ts": 1715432123.4
+}
+```
+
+Emitted by the runner once per cycle when any strike's position
+changed. `price_c` is the cycle's mid; exact per-fill prices require
+Kalshi's `/portfolio/fills` endpoint which we don't currently
+plumb. Dashboard's HTML adapter renders this as an OOB swap into
+`<div id="fill-events">`, where `dashboard.js` observes the addition
+and triggers a browser Notification + audio beep.
 
 Subscription model: every connected tab receives every event. No
 per-event filtering today.
@@ -735,7 +897,80 @@ theo_registry.register(pmi_theo)
 For everything else — stateful providers, background refresh tasks,
 external SDK integration. Implement the `TheoProvider` protocol
 directly. See `lipmm/theo/providers/gbm_commodity.py` for the soy
-reference.
+reference, or `lipmm/theo/providers/truev.py` (documented below) for
+a more complex case with anchored multi-component basket math.
+
+### F. TruEVTheoProvider — KXTRUEV-* daily binaries
+
+A first-class provider that ships with lipmm. Models a Truflation
+EV Commodity Index daily binary as a multi-component lognormal:
+
+**Architecture:**
+
+- **Forward source**: `TruEvForwardSource` in
+  `feeds/truflation/forward.py` polls 6 commodity prices every 60s
+  (5 yfinance + 1 TradingEconomics scrape).
+- **Basket math**: `_truev_index.py` reconstructs the index as
+  `V_today = V_anchor × Σ wᵢ × (priceᵢ_today / priceᵢ_anchor)`.
+- **Lognormal binary**: `P(YES > K) = Φ(d2)` where
+  `d2 = (ln(S/K) - 0.5σ²τ) / (σ√τ)`.
+- **Confidence**: `forward_freshness × tau_factor`, capped at
+  `max_confidence` (default 0.7; CLI flag `--truev-max-confidence`).
+
+**Component sources (live):**
+
+| Metal | Symbol | Source | Notes |
+|---|---|---|---|
+| Cu | `HG=F` | yfinance Comex futures | Same exchange Truflation uses |
+| Pa | `PA=F` | yfinance NYMEX futures | Same exchange |
+| Pt | `PL=F` | yfinance NYMEX futures | Same exchange |
+| Co | `COBALT_TE` | TradingEconomics scrape (LME spot) | Same exchange |
+| Ni | `NICK.L` | yfinance LSE ETC × GBPUSD/100 | **FX-stripped to USD**; basis vs MCX (Truflation's source) |
+| Li | `LITHIUM_TE` | TradingEconomics scrape (China lithium hydroxide spot) | Basis vs Shanghai SE futures |
+
+**Q1 2026 fitted weights** (NNLS regression on 118 days of
+operator-supplied basket+actuals; in-sample R²=0.985, walk-forward
+RMSE 5.1 pts):
+
+| Metal | Weight |
+|---|---|
+| Cu  (HG=F) | 57.23% |
+| Ni  (NICK.L) | 21.84% |
+| Co  (COBALT_TE) |  7.72% |
+| Pa  (PA=F) |  7.50% |
+| Li  (LITHIUM_TE) |  4.93% |
+| Pt  (PL=F) |  0.77% |
+
+Quarterly rebalance happens Jan/Apr/Jul/Oct 1; operator re-fits
+weights via `deploy/truev_fit_weights.py` after each rebalance.
+
+**Anchor management.** Anchor MUST be a real `(date, V, prices)`
+triple from a recent EOD. Refreshed each morning via
+`deploy/truev_reanchor.py` which:
+1. Pulls yesterday's yfinance closes for Cu/Pa/Pt/NICK.L/GBPUSD
+2. Scrapes current TE spots for cobalt + lithium (proxy for EOD)
+3. Prompts operator for yesterday's Truflation print
+4. Prints a ready-to-paste anchor block
+
+**Settlement time auto-detection.** `deploy/lipmm_run.py` reads
+Kalshi's `close_time` field from the event metadata for KXTRUEV
+events at startup, so `--truev-settlement-iso` is no longer
+required. The CLI flag is still accepted as an override.
+
+**RMSE knob (deprecated).** `truev_model_rmse_pts` inflates the
+lognormal σ to absorb model uncertainty. Default 0; symmetric
+widening causes harmful boundary distortion (deep-OTM probabilities
+pulled toward 50%). For asymmetric distrust use
+`theo_tolerance_c` with a negative value instead.
+
+**Backtest harnesses:**
+
+- `deploy/truev_backtest_csv.py` — walk-forward backtest against an
+  operator-supplied `(date, index, components)` CSV. Reports RMSE,
+  worst-day errors, and realized σ_annual.
+- `deploy/truev_fit_weights.py` — NNLS fit to recover basket
+  weights after a Truflation rebalance.
+- `deploy/truev_smoke.py` — quick sanity check vs the live Kalshi book.
 
 ### Staleness semantics
 

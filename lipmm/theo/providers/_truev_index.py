@@ -181,7 +181,7 @@ DEFAULT_WEIGHTS_Q4_2025 = TruEvWeights(
 # produces meaningfully wrong theos.
 _Q1_2026_FITTED_RAW = {
     "HG=F":       0.57336,    # Copper — biggest contributor; HEVs Cu-heavy
-    "NICK.L":     0.21884,    # Nickel
+    "NICKEL_TE":  0.21884,    # Nickel — TE LME 3-month USD/T (was NICK.L)
     "COBALT_TE":  0.07736,    # Cobalt
     "PA=F":       0.07512,    # Palladium
     "LITHIUM_TE": 0.04943,    # Lithium — collapsed from Q4 due to HEV mix
@@ -227,35 +227,17 @@ DEFAULT_ANCHOR_PLACEHOLDER = TruEvAnchor(
     # multiple days is NOT a valid anchor — it produces an inflated
     # base value that biases today's reconstructed index above truth.
     #
-    # Re-anchor each morning before bot start: pull yesterday's
-    # truflation.com EV-index close + yesterday's yfinance closes for
-    # each component, plug in here.
-    anchor_date="2026-05-10",
-    anchor_index_value=1264.69,  # truflation.com/marketplace/ev-index,
-                                 # operator-confirmed value as of
-                                 # 2026-05-10 (most recent Truflation
-                                 # print before the May 11 settle window).
+    # Auto-rewritten by deploy/truev_wait_and_reanchor.py
+    # source event: KXTRUEV-26MAY13 (Kalshi expiration_value)
+    # rewrite UTC : 2026-05-14T03:06:27Z
+    anchor_date="2026-05-13",
+    anchor_index_value=1316.8500,  # Kalshi-settled value for 2026-05-13 (operator preliminary was 1315.23; corrected to 1316.85 after Kalshi finalized)
     anchor_prices={
-        # Yfinance closes for the most recent trading day (2026-05-08;
-        # markets were closed Sat-Sun). These are what the May 10
-        # truflation print is based on (Truflation can't refresh on
-        # weekends; the 1264.69 reflects the Fri-EOD basket).
-        "HG=F": 6.249,             # 2026-05-08 yfinance Comex copper close
-        "LITHIUM_TE": 194_000.0,   # current TE China carbonate spot
-                                   # (proxy for May 8 EOD; TE has no
-                                   # historicals so we accept this
-                                   # latent staleness — when TE next
-                                   # ticks, the model will absorb the
-                                   # move with this anchor as baseline.)
-        "NICK.L": 0.22427,         # = 16.545 GBp × GBPUSD_2026-05-08
-                                   # (1.355565) / 100 = USD per share.
-                                   # FX-stripped via the same conversion
-                                   # the live forward source applies.
-        "COBALT_TE": 56_290.0,     # current TE LME cobalt spot (proxy
-                                   # for May 8 EOD — cobalt has been
-                                   # flat for over a week so the
-                                   # latent staleness is lossless).
-        "PA=F": 1482.60,           # 2026-05-08 NYMEX palladium close
-        "PL=F": 2047.20,           # 2026-05-08 NYMEX platinum close
+        "HG=F": 6.576000213623047,          # yfinance close 2026-05-13
+        "LITHIUM_TE": 200500.0,  # live TE scrape at re-anchor time
+        "NICKEL_TE": 19165.0,    # TE LME 3-month nickel close 2026-05-13 ($/T) — operator-supplied
+        "COBALT_TE": 56290.0,   # live TE scrape at re-anchor time
+        "PA=F": 1517.0,        # yfinance close 2026-05-13
+        "PL=F": 2151.60009765625,        # yfinance close 2026-05-13
     },
 )

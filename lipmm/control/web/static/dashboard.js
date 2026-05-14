@@ -480,7 +480,7 @@
   const VALID_TABS = new Set([
     "theos", "pauses", "knobs", "locks", "manual",
   ]);
-  const VALID_HTABS = new Set(["pnl", "earnings", "markout"]);
+  const VALID_HTABS = new Set(["pnl", "earnings", "markout", "notebooks"]);
   const HTAB_KEY = "lipmm_htab";
   const HTAB_COLLAPSED_KEY = "lipmm_htab_collapsed";
 
@@ -507,6 +507,34 @@
       p.classList.toggle("hidden", p.dataset.tabPanel !== name);
     });
   }
+
+  // Notebooks (in the header panels area). Chips are rendered server-
+  // side from `notebooks` context. Selecting a chip swaps the content
+  // div's `hx-get` URL and triggers an immediate fetch.
+  const NOTEBOOK_KEY = "lipmm_active_notebook";
+  function setActiveNotebook(key) {
+    if (!key) return;
+    localStorage.setItem(NOTEBOOK_KEY, key);
+    document.querySelectorAll("[data-notebook-key]").forEach((b) => {
+      const active = b.dataset.notebookKey === key;
+      b.style.background = active ? "var(--surface-2)" : "transparent";
+      b.style.color = active ? "var(--ink-hi)" : "var(--ink-lo)";
+      b.style.borderColor = active ? "var(--info)" : "var(--border)";
+    });
+    const content = document.getElementById("notebook-content");
+    if (!content) return;
+    const url = "/control/notebooks/" + encodeURIComponent(key);
+    content.setAttribute("hx-get", url);
+    if (window.htmx) window.htmx.ajax("GET", url, content);
+  }
+  function initActiveNotebookFromStorage() {
+    const chips = document.querySelectorAll("[data-notebook-key]");
+    if (!chips.length) return;
+    const stored = localStorage.getItem(NOTEBOOK_KEY);
+    const keys = Array.from(chips).map((c) => c.dataset.notebookKey);
+    const key = keys.includes(stored) ? stored : keys[0];
+    setActiveNotebook(key);
+  }
   function applyPersistedDrawerState() {
     if (localStorage.getItem(DRAWER_KEY) === "1") {
       document.body.classList.add("drawer-open");
@@ -528,6 +556,13 @@
       if (!tab) return;
       e.preventDefault();
       setActiveTab(tab.dataset.tab);
+    });
+    // Notebook chip clicks
+    document.body.addEventListener("click", (e) => {
+      const chip = e.target.closest("[data-notebook-key]");
+      if (!chip) return;
+      e.preventDefault();
+      setActiveNotebook(chip.dataset.notebookKey);
     });
     // After every htmx OOB swap of the drawer, re-apply the active tab
     // AND re-open any strike rows that were expanded — the swap blew
@@ -1357,6 +1392,12 @@
       if (body) body.classList.add("hidden");
       if (icon) icon.textContent = "▸";
     }
+    // NOTE: notebook initialization happens once on DOMContentLoaded
+    // (see bottom of file). Calling it here on every htmx swap caused
+    // a feedback loop: setActiveNotebook triggers htmx.ajax which
+    // fires another beforeSwap/afterSwap which calls reapplyAll →
+    // applyPersistedHeaderState → setActiveNotebook → ... infinite,
+    // ~5 Hz, made scrolling impossible.
   }
 
   // ── Fill notifications ─────────────────────────────────────────
@@ -1478,6 +1519,11 @@
       applyTheoDrafts();
       applyKnobDrafts();
       applyAllModeToggles();
+      // Initialize notebook chip selection ONCE on page load. Not
+      // safe to put inside reapplyAll — setActiveNotebook triggers
+      // htmx.ajax which itself fires swap events, causing infinite
+      // loop with reapplyAll.
+      initActiveNotebookFromStorage();
       ensureNotifyPermission();
       observeFillMount();
       // Lazily unlock the AudioContext on the first user click —

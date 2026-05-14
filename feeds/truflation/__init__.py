@@ -12,13 +12,19 @@ today's basket value and price KXTRUEV-* binary contracts.
 
 from feeds.truflation.forward import (
     COBALT_TE,
+    LITHIUM_TE,
+    NICKEL_TE,
     TRUEV_PHASE1_SYMBOLS,
     TRUEV_YFINANCE_SYMBOLS,
     TruEvForwardSource,
 )
+from feeds.truflation.snapshot_logger import BasketSnapshotLogger
 
 __all__ = [
+    "BasketSnapshotLogger",
     "COBALT_TE",
+    "LITHIUM_TE",
+    "NICKEL_TE",
     "TRUEV_PHASE1_SYMBOLS",
     "TRUEV_YFINANCE_SYMBOLS",
     "TruEvForwardSource",

@@ -206,6 +206,41 @@ async def test_confidence_at_penny_threshold_uses_penny_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_inverted_confidence_thresholds_safe() -> None:
+    """When penny_inside_min_confidence < match_best_min_confidence (operator
+    misconfiguration / violation of the help-text "should be ≥" guidance),
+    the strategy still picks a well-defined branch. Penny-inside fires
+    earlier and shadows match-best — confusing UX, but not a crash."""
+    cfg = DefaultLIPQuotingConfig(
+        match_best_min_confidence=0.80,
+        penny_inside_min_confidence=0.70,
+        penny_inside_distance=1,
+        theo_tolerance_c=10,
+        dollars_per_side=1.0,
+    )
+    strat = DefaultLIPQuoting(cfg)
+    # confidence 0.75: clears penny (0.70) before reaching match (0.80) →
+    # penny-inside fires; bid steps 1¢ inside best_bid=40, ask 1¢ inside 60
+    decision = await strat.quote(
+        ticker="KX-T1", theo=_theo(0.50, confidence=0.75),
+        orderbook=_ob(best_bid=40, best_ask=60),
+        our_state=_our_state(),
+        now_ts=0.0, time_to_settle_s=0.0,
+    )
+    assert decision.bid.price_t1c == 410
+    assert decision.ask.price_t1c == 590
+    # confidence 0.65: fails both thresholds → active-follow (1¢ behind best)
+    decision = await strat.quote(
+        ticker="KX-T1", theo=_theo(0.50, confidence=0.65),
+        orderbook=_ob(best_bid=40, best_ask=60),
+        our_state=_our_state(),
+        now_ts=0.0, time_to_settle_s=0.0,
+    )
+    assert decision.bid.price_t1c == 390
+    assert decision.ask.price_t1c == 610
+
+
+@pytest.mark.asyncio
 async def test_dollars_per_side_zero_falls_back_to_contracts_per_side() -> None:
     """dollars_per_side <= 0 → strategy uses contracts_per_side directly."""
     cfg = DefaultLIPQuotingConfig(

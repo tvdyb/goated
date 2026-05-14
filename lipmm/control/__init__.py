@@ -27,6 +27,7 @@ from lipmm.control.manual_orders import (
     ManualOrderOutcome,
     submit_manual_order,
 )
+from lipmm.control.notebooks import NotebookRegistry, TheoNotebook
 from lipmm.control.state import (
     ControlConfig,
     ControlState,
@@ -45,8 +46,10 @@ __all__ = [
     "ControlState",
     "KillState",
     "ManualOrderOutcome",
+    "NotebookRegistry",
     "PauseScope",
     "SideLock",
+    "TheoNotebook",
     "TheoOverride",
     "build_app",
     "mount_dashboard",

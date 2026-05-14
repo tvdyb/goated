@@ -109,6 +109,8 @@ def mount_dashboard(
         pnl_total = (runtime or {}).get("total_realized_pnl_dollars", 0.0)
         balance = (runtime or {}).get("balance") or {}
         rate_limit = (runtime or {}).get("rate_limit")
+        nb_registry = getattr(request.app.state, "notebook_registry", None)
+        notebooks = nb_registry.list() if nb_registry is not None else []
         ctx = {
             "snapshot": snap,
             "presence": broadcaster.presence(),
@@ -124,6 +126,7 @@ def mount_dashboard(
             "pnl_total": pnl_total,
             "balance": balance,
             "rate_limit": rate_limit,
+            "notebooks": notebooks,
         }
         return _templates.TemplateResponse(request, "dashboard.html", ctx)
 

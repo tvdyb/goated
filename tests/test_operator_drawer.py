@@ -263,6 +263,7 @@ def test_only_phase10_partials_remain() -> None:
         "tab_knobs.html",
         "tab_locks.html",
         "tab_manual.html",
+        "tab_notebooks.html",
         "tab_pauses.html",
         "tab_theos.html",
         # Wave 2 dashboard parity tabs (PnL grid, earnings histogram,

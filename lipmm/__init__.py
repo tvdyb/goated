@@ -47,8 +47,10 @@ from lipmm.control import (
     ControlState,
     KillState,
     ManualOrderOutcome,
+    NotebookRegistry,
     PauseScope,
     SideLock,
+    TheoNotebook,
     TheoOverride,
     build_app,
     mount_dashboard,
@@ -87,6 +89,7 @@ from lipmm.quoting.strategies import (
 )
 from lipmm.runner import LIPRunner, RunnerConfig, TickerSource
 from lipmm.theo import TheoProvider, TheoRegistry, TheoResult
+from lipmm.theo.providers.truev_notebook import TruEVNotebook
 
 __all__ = [
     # theo layer
@@ -145,9 +148,12 @@ __all__ = [
     "ControlState",
     "KillState",
     "ManualOrderOutcome",
+    "NotebookRegistry",
     "PauseScope",
     "SideLock",
+    "TheoNotebook",
     "TheoOverride",
+    "TruEVNotebook",
     "build_app",
     "build_operator_command_record",
     "mount_dashboard",

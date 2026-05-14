@@ -32,6 +32,7 @@ from lipmm.theo.providers._truev_index import (
 from lipmm.theo.providers.file import FilePollTheoProvider
 from lipmm.theo.providers.http import HttpPollTheoProvider
 from lipmm.theo.providers.truev import TruEVConfig, TruEVTheoProvider
+from lipmm.theo.providers.truev_notebook import TruEVNotebook
 
 __all__ = [
     "DEFAULT_ANCHOR_PLACEHOLDER",
@@ -42,6 +43,7 @@ __all__ = [
     "FilePollTheoProvider",
     "HttpPollTheoProvider",
     "TruEVConfig",
+    "TruEVNotebook",
     "TruEVTheoProvider",
     "TruEvAnchor",
     "TruEvWeights",

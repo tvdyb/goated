@@ -1,0 +1,36 @@
+{# Theo notebooks panel — modular provider-contributed widgets, lives
+   in the header panels area alongside PnL / Earnings / Markout.
+
+   Chips are rendered server-side from the `notebooks` context list
+   (populated in router.py from app.state.notebook_registry). No JS
+   chip loader needed — page-load wiring just selects the active chip
+   from localStorage and sets the content div's hx-get URL. The
+   content div polls every 5s. #}
+<div id="notebooks-root">
+  {% if notebooks %}
+    <div id="notebooks-chips" class="flex flex-wrap gap-1.5 mb-3">
+      {% for key, label in notebooks %}
+        <button data-notebook-key="{{ key }}"
+                class="notebook-chip px-2 py-1 text-[11px] rounded border"
+                style="color: var(--ink-lo); border-color: var(--border); background: transparent;">
+          {{ label }}
+        </button>
+      {% endfor %}
+    </div>
+    <div id="notebook-content"
+         class="rounded border p-3"
+         style="background: var(--surface); border-color: var(--border);"
+         hx-trigger="every 5s"
+         hx-swap="innerHTML">
+      <div class="text-[11px]" style="color: var(--ink-dim);">
+        select a notebook above to view
+      </div>
+    </div>
+  {% else %}
+    <div class="text-[11px]" style="color: var(--ink-dim);">
+      no notebooks registered — providers can supply notebooks via
+      <code style="color: var(--info);">NotebookRegistry.register(...)</code>
+      at bot startup
+    </div>
+  {% endif %}
+</div>

@@ -154,11 +154,18 @@ class Broadcaster:
         Emitted by the LIPRunner once per cycle so the dashboard's strike
         grid (Phase 10) can render Yes/No best prices + L2 depth without
         each tab fetching its own books. Also caches as `last_orderbook`
-        so newly-connected tabs can seed their initial paint."""
+        so newly-connected tabs can seed their initial paint.
+
+        `state_snapshot` rides along so the WS adapter can render the
+        grid against the latest operator state (overrides, locks,
+        pauses) even if a `state_change` event from a mutation hasn't
+        been delivered yet — closes the WS race window that otherwise
+        causes the strike-knob override chips to flicker."""
         self._last_orderbook = snapshot
         await self._broadcast_event({
             "event_type": "orderbook_snapshot",
             "snapshot": snapshot,
+            "state_snapshot": self._state.snapshot() if self._state is not None else None,
             "ts": time.time(),
         })
 
@@ -172,10 +179,15 @@ class Broadcaster:
     async def broadcast_incentives(self, snapshot: dict[str, Any]) -> None:
         """Push an incentive-programs snapshot as `incentives_snapshot`.
         The renderer's HTML adapter recognizes this event type and
-        OOB-swaps the incentives panel."""
+        OOB-swaps the incentives panel.
+
+        `state_snapshot` rides along (see `broadcast_orderbook` for
+        why) — the incentives render re-paints the whole strike grid,
+        which depends on state-derived chips."""
         await self._broadcast_event({
             "event_type": "incentives_snapshot",
             "snapshot": snapshot,
+            "state_snapshot": self._state.snapshot() if self._state is not None else None,
             "ts": time.time(),
         })
 
@@ -192,6 +204,7 @@ class Broadcaster:
         await self._broadcast_event({
             "event_type": "runtime_snapshot",
             "snapshot": snapshot,
+            "state_snapshot": self._state.snapshot() if self._state is not None else None,
             "ts": time.time(),
         })
 

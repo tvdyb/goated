@@ -357,6 +357,11 @@ async def _amain(args: argparse.Namespace) -> int:
     # 3. Build the rest
     order_manager = OrderManager()
     theo_registry = TheoRegistry()
+    # Notebooks: provider-contributed dashboard widgets. TruEV
+    # registers its anchor/delta notebook below when a TruEV provider
+    # is wired.
+    from lipmm.control import NotebookRegistry
+    notebook_registry = NotebookRegistry()
     # External theo providers from CLI flags (--theo-csv, --theo-json,
     # --theo-http). These override the per-prefix stub fallback below.
     cli_providers = _build_theo_providers_from_args(args)
@@ -447,6 +452,12 @@ async def _amain(args: argparse.Namespace) -> int:
             prov = TruEVTheoProvider(cfg, forward_src, state_ref=state)
             theo_registry.register(prov)
             truev_providers.append(prov)
+            # Register the TruEV anchor/delta notebook ONCE. Subsequent
+            # KXTRUEV events share the same provider instance via the
+            # registry, so the notebook reads any of them.
+            if not any(key == "truev" for key, _ in notebook_registry.list()):
+                from lipmm.theo.providers import TruEVNotebook
+                notebook_registry.register(TruEVNotebook(provider=prov))
             logger.info(
                 "registered TruEVTheoProvider: prefix=%s settle=%s "
                 "σ=%.3f anchor_date=%s anchor_idx=%.4f",
@@ -549,6 +560,7 @@ async def _amain(args: argparse.Namespace) -> int:
         incentive_cache=incentive_cache,
         earnings_history=earnings_history,
         markout_tracker=markout_tracker,
+        notebook_registry=notebook_registry,
     )
 
     retention = RetentionManager(
@@ -585,6 +597,29 @@ async def _amain(args: argparse.Namespace) -> int:
     # 7. Start everything
     await server.start(host=args.host, port=args.port)
     await retention.start()
+
+    # Basket snapshot loggers: one per TruEV provider, each writes a
+    # JSONL row every --basket-snapshot-interval-s. Build our own time
+    # series so re-anchoring tomorrow doesn't depend on TE's
+    # no-historicals API. Disabled when interval <= 0.
+    basket_snapshot_loggers: list[Any] = []
+    if args.basket_snapshot_interval_s > 0 and truev_providers:
+        from feeds.truflation import BasketSnapshotLogger
+        for prov in truev_providers:
+            snap_logger = BasketSnapshotLogger(
+                forward=prov._forward,
+                weights=prov._cfg.weights,
+                anchor=prov._cfg.anchor,
+                log_dir=log_dir,
+                interval_s=args.basket_snapshot_interval_s,
+            )
+            await snap_logger.start()
+            basket_snapshot_loggers.append(snap_logger)
+        logger.info(
+            "basket-snapshot logging: %d logger(s), interval=%.0fs, dir=%s/basket_snapshots/",
+            len(basket_snapshot_loggers), args.basket_snapshot_interval_s, log_dir,
+        )
+
     runner_task = asyncio.create_task(runner.run())
 
     try:
@@ -612,6 +647,11 @@ async def _amain(args: argparse.Namespace) -> int:
             )
         except Exception as exc:
             logger.warning("shutdown: cancel_all_resting failed: %s", exc)
+        for snap_logger in basket_snapshot_loggers:
+            try:
+                await snap_logger.stop()
+            except Exception as exc:
+                logger.warning("basket snapshot logger stop failed: %s", exc)
         await retention.stop()
         await server.stop()
         decision_logger.close()
@@ -726,6 +766,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Cap on TruEV theo confidence (default 0.7). σ is "
              "uncalibrated in Phase 1, so we don't go beyond active-match "
              "mode by default.",
+    )
+    p.add_argument(
+        "--basket-snapshot-interval-s", type=float, default=900.0,
+        help="How often (seconds) to capture a basket snapshot to the "
+             "logs/basket_snapshots/ JSONL. Default 900 (15 min). Set 0 "
+             "to disable. TE has no historicals, so this builds our own "
+             "time series for re-anchoring the next morning.",
     )
     return p.parse_args(argv)
 

@@ -294,32 +294,107 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
 - **Status**: live and calibrated. Provider is
   `lipmm/theo/providers/truev.py`; basket math in `_truev_index.py`;
   forward source in `feeds/truflation/forward.py`.
-- **Methodology recap (per Truflation v1.42)**: index is a Laspeyres
-  basket of six battery metals — Cu, Li, Ni, Co, Pa, Pt — with
-  per-vehicle metal intensities × EV-type production share as the
-  weights. Quarterly rebalance Jan/Apr/Jul/Oct 1. **Last rebalance:
-  2025-12-31** (effective Q1 2026), set the production-share mix to:
-  HEV 53.99%, BEV 27.97%, PHEV 18.01%, FCEV 0.03%. **No rebalance
-  has occurred since.**
+- **Methodology recap (per Truflation v2.0, Feb 5, 2026)**: index
+  is a Laspeyres basket of six battery metals — Cu, Li, Ni, Co, Pa,
+  Pt — with per-vehicle metal intensities × EV-type production
+  share as the weights. **Methodology PDF says annual rebalance**
+  ("Index is rebalanced annually"), but the version history table
+  on page 17 shows methodology updates labeled "Rebalance Update"
+  at v1.4 (Jul 2025), v1.41 (Oct 2025), v2.0 (Feb 2026) — so the
+  documented annual schedule and actual practice diverge. **Last
+  rebalance: 2025-12-31** (effective Q1 2026), set the
+  production-share mix to: HEV 53.99%, BEV 27.97%, PHEV 18.01%,
+  FCEV 0.03%. Operator confirmed 2026-05-11: no rebalance since.
+  Official Q1 2026 weights per methodology Exhibit 6: Cu 41.6%,
+  Li 30.5%, Ni 13.2%, Co 8.9%, Pa 4.7%, Pt 1.1%.
 - **Component sources Truflation actually uses (per their public
-  page)**:
-    - Cu: NYMEX/COMEX futures
-    - Pt, Pa: NYMEX futures
-    - Co: LME spot
-    - Ni: MCX (India) futures
-    - Li: Shanghai Stock Exchange futures
-- **Component sources WE use (live)** — proxies for the real ones
-  since not all are accessible to retail / yfinance:
-    - `HG=F`     copper (yfinance Comex) — same exchange as Truflation ✓
-    - `PA=F`     palladium (yfinance NYMEX) — same ✓
-    - `PL=F`     platinum (yfinance NYMEX) — same ✓
-    - `COBALT_TE` cobalt (TradingEconomics scrape of LME spot) — close ✓
-    - `NICK.L`   WisdomTree Nickel ETC (LSE, GBp-denominated) — basis
-                 risk vs Truflation's MCX nickel; FX contamination too
-    - `LITHIUM_TE` TE scrape of China lithium carbonate spot
-                   (CNY/T) — basis risk vs Shanghai SE lithium futures.
-                   Replaced earlier `LIT` (Global X Lithium ETF) which
-                   was an equity proxy with ~0.6 beta to Russell 2000.
+  TruEV product page; the methodology PDF v2.0 is intentionally
+  vague — Section 5 only says "global commodity pricing organizations"
+  and names no exchanges per metal)**: their site lists exactly
+  **four data providers — GFEX, CME, NYMEX, SMM** — which map by
+  elimination as:
+    - Cu: **CME** (COMEX HG futures)
+    - Pt, Pa: **NYMEX** futures
+    - Li: **GFEX** (Guangzhou Futures Exchange) lithium carbonate
+          futures — NOT Shanghai SE (some Truflation copy implies
+          SSE, but their data-provider list says GFEX)
+    - Co: **SMM** (Shanghai Metals Market) — specifically
+          `SMM-CO-CM-001` China Cobalt Metal ≥99.8%, USD/T. NOT LME
+          despite an earlier-version of their per-metal display
+          page also referencing LME.
+    - Ni: **SMM** Ni 1# refined cathode ≥99.90%, CNY/T. NOT MCX
+          India (which their marketing copy "Multi Commodities
+          Exchange" can read as either MCX-India or LME-generic;
+          their data-provider list disambiguates → SMM).
+- **Component sources WE use (live)** — three exact matches and
+  three structural mismatches:
+    - `HG=F`     copper (yfinance COMEX) — matches CME ✓
+    - `PA=F`     palladium (yfinance NYMEX) — matches ✓
+    - `PL=F`     platinum (yfinance NYMEX) — matches ✓
+    - `COBALT_TE` cobalt (TradingEconomics scrape of LME `LCO1:COM`)
+                  — MISMATCH (Truflation uses SMM). Tested
+                  empirically; LME-spot tracks reasonably.
+    - `NICK.L`   WisdomTree Nickel ETC on LSE (GBp, FX-stripped via
+                 GBPUSD before caching) — MISMATCH (Truflation uses
+                 SMM Ni 1#). Tested vs MCX India nickel; NICK.L
+                 wins by ~1.8pt walk-forward RMSE.
+    - `LITHIUM_TE` TE scrape of China lithium carbonate spot — used
+                   to be `LIT` (Global X Lithium ETF) but that was
+                   an equity proxy with ~0.6 beta to Russell 2000.
+                   Possibly MISMATCH on contract type (Truflation
+                   uses GFEX futures) but empirically TE-spot is
+                   the best lithium series we have access to.
+- **Source-mismatch investigation (2026-05-11) — three findings**:
+    1. **GFEX LC2609 tested, rejected.** Pulled 82 days of LC2609
+       (Sep 2026 contract) settles from gfex.com.cn, converted
+       CNY→USD via `cny_usd.csv`. Daily-return correlation with
+       Truflation's published index: **TE-Li +0.391** vs **LC2609
+       +0.350**. NNLS-fitted weight: LC2609 gets **1.7%** (down
+       from TE-Li's 3.4% — opposite of expected if GFEX were right).
+       Walk-forward RMSE under Truflation's *official* weights:
+       LC2609 13.31 pts vs TE-Li 8.19 pts — GFEX is WORSE under
+       official weights, not better. Conclusion: stop trying to
+       find the "right" lithium source; the published 30.5% weight
+       is structurally unrecoverable from any retail lithium data.
+    2. **MCX India nickel tested, rejected.** 89 days of MCX nickel
+       (INR-denominated, converted via `inr_usd.csv`). Forced into
+       the regression as the sole nickel source: walk-forward RMSE
+       **4.88 pts** vs **3.09 pts** for the TE-LME-via-NICK.L
+       proxy. Strong evidence Truflation doesn't actually use MCX
+       despite their marketing copy mentioning it.
+    3. **Kitchen-sink NNLS (9 candidates: 3 lithium sources + 2
+       nickel sources + the 4 unambiguous metals).** NNLS *zero'd
+       out LC2609 entirely*, picked TE-Li + TE-Nickel as the
+       best-fit pair, gave platinum 8.7% (Pa-Pt collinearity
+       absorbing missing lithium signal). 47 obs / 9 params = ~5
+       obs/param → solidly overfit, don't use as production
+       weights. But the diagnostic is clear: among all retail
+       sources we have, our current LITHIUM_TE + NICK.L proxies
+       are NNLS's preferred picks.
+- **FX conversion does NOT help anchor-ratio reconstruction.**
+  Multiplicative anchored reconstruction (`V_t = V_anchor × Σ
+  w_i × p_i_t/p_i_anchor`) is invariant to slow monotonic FX
+  drift because the ratios cancel the constant unit conversion.
+  Tested CNY→USD conversion of LC2609 and CNY: regression
+  weights changed by <0.1pp. Lesson: when adding a new
+  CNY-denominated source, the unit doesn't matter for the
+  reconstruction, only the *daily-return profile* does.
+- **The published 30.5% lithium weight is structurally
+  unrecoverable.** Implied effective weight (from corr × σ-ratio):
+  TE-Li ≈ 18%, LC2609 ≈ 11%. Both far from Truflation's 30.5%.
+  Either: (a) Truflation smooths/lags lithium internally; (b)
+  they use an inaccessible source (paid SMM feed, GFEX internal
+  spot index); or (c) the methodology PDF doesn't match what they
+  actually compute. We trade against the index they publish, not
+  the methodology — so this is a feature, not a bug. **Don't
+  re-investigate.** Three serious lithium candidates (LIT, TE,
+  LC2609) plus two cobalt and two nickel candidates have all been
+  empirically tested. Diminishing returns from further search.
+- **GFEX product list** (full roster as of 2026): lithium
+  carbonate (LC), industrial silicon (SI), polysilicon. **No
+  palladium, no nickel, no cobalt, no copper.** If a future user
+  hands you a "GFEX palladium" PDF, suspect it's actually
+  polysilicon or a different exchange's product.
 - **Weights**: `DEFAULT_WEIGHTS_LIVE` aliases `DEFAULT_WEIGHTS_Q1_2026`
   in `_truev_index.py`. Q1 2026 weights were **fitted via NNLS
   regression** against the operator-supplied `indexAndBasket.csv`
@@ -328,9 +403,13 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
     - Ni  21.9%   (was 12.3%)
     - Co   7.7%   (was  8.2%)
     - Pa   7.5%   (was  6.1%)
-    - Li   4.9%   (was 33.5% — collapsed because HEV-heavy mix uses
-                 NiMH, not Li-ion)
-    - Pt   0.8%   (was  1.2%)
+    - Li   4.9%   (was 33.5% — collapsed because no retail lithium
+                 source we have access to matches Truflation's
+                 actual lithium signal; see "source-mismatch
+                 investigation" above. Empirically tested vs three
+                 candidates incl. GFEX LC2609 — none recover the
+                 30.5% Laspeyres weight Truflation publishes.)
+    - Pt   0.8%   (was  1.2%; unstable due to Pa-Pt collinearity)
   In-sample fit RMSE = 4.46 pts (0.37%). Walk-forward (daily
   re-anchor, mirrors live bot) RMSE = 5.12 pts (0.43%). The old Q4
   weights had walk-forward RMSE = 8.70 pts (0.73%); proper Q1
@@ -340,9 +419,16 @@ prompts/, research/, mm-setup-main/  ← Soy-era; not used by lipmm
     - **Pa-Pt collinearity = 0.92** in component-price returns over
       the period → NNLS can't reliably split their 8.3% combined
       weight. Pt's bootstrap CoV is 87% — could really be 0% or 4%.
-      Doesn't bite in practice because Pa and Pt move together.
+      Treat Pa+Pt combined (~8.3%) as the meaningful unit, not the
+      individual splits. Doesn't bite in practice because Pa and
+      Pt move together.
     - Cu and Ni weights are bootstrap-stable (CoV 2.6% and 7.9%).
     - Sample size 19.7 obs/param — comfortable but more would help.
+    - **Don't fit on smaller samples.** A 9-candidate kitchen-sink
+      NNLS on 47 days got walk-forward RMSE 2.95 pts (vs 5.12 on
+      6 candidates × 118 days) but at 5.2 obs/param — solidly
+      overfit. The 6-source × 118-day fit is the operational
+      baseline.
 - **σ_annual = 15.0%** — calibrated from log returns of the actual
   index over the full backtest period. Wire via `--truev-vol 0.15`.
 - **Anchor discipline**: `DEFAULT_ANCHOR_PLACEHOLDER` in

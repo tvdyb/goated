@@ -42,6 +42,7 @@ class ControlConfig:
         "theo_tolerance_c": (-50.0, 50.0),
         "max_distance_from_best": (0.0, 50.0),
         "desert_threshold_c": (0.0, 50.0),
+        "desert_relative_pct": (0.0, 1.0),
         "dollars_per_side": (0.0, 100.0),
         "max_distance_from_extremes_c": (0.0, 99.0),
         # TruEV-provider-specific: inflates the lognormal σ to absorb
@@ -54,7 +55,7 @@ class ControlConfig:
         "sticky_desert_jump_cents": (0.0, 50.0),
         # Risk gate knobs
         "max_notional_per_side_dollars": (0.0, 1000.0),
-        "max_orders_per_cycle": (1.0, 1000.0),
+        "max_orders_per_cycle": (0.0, 1000.0),
         "max_position_per_side": (0.0, 100000.0),
         "mid_delta_threshold_c": (0.0, 100.0),
     })
