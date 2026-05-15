@@ -229,15 +229,15 @@ DEFAULT_ANCHOR_PLACEHOLDER = TruEvAnchor(
     #
     # Auto-rewritten by deploy/truev_wait_and_reanchor.py
     # source event: KXTRUEV-26MAY14 (Kalshi expiration_value)
-    # rewrite UTC : 2026-05-15T03:16:49Z
+    # rewrite UTC : 2026-05-15T02:59:25Z
     anchor_date="2026-05-14",
     anchor_index_value=1299.0000,  # Kalshi-settled value for 2026-05-14
     anchor_prices={
-        "HG=F": 6.408,          # operator-supplied EOD 2026-05-14 (manual anchor, revised)
-        "LITHIUM_TE": 195000.0,  # operator-supplied EOD 2026-05-14 (manual anchor, revised)
-        "NICKEL_TE": 18670.0,  # operator-supplied EOD 2026-05-14 (manual anchor, revised)
-        "COBALT_TE": 56290.0,   # operator-supplied EOD 2026-05-14 (manual anchor, revised)
-        "PA=F": 1431.0,        # operator-supplied EOD 2026-05-14 (manual anchor, revised)
-        "PL=F": 2031.0,        # operator-supplied EOD 2026-05-14 (manual anchor, revised)
+        "HG=F": 6.58,          # operator-supplied EOD 2026-05-14 (manual anchor)
+        "LITHIUM_TE": 195000.0,  # operator-supplied TE EOD 2026-05-14
+        "NICKEL_TE": 18895.0,  # operator-supplied TE EOD 2026-05-14
+        "COBALT_TE": 56290.0,   # operator-supplied TE EOD 2026-05-14
+        "PA=F": 1453.0,        # operator-supplied EOD 2026-05-14
+        "PL=F": 2075.0,        # operator-supplied EOD 2026-05-14
     },
 )
